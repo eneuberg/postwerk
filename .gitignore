@@ -1,0 +1,23 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Local data and secrets
+/data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+secrets/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
