@@ -3,7 +3,9 @@
 What Postwerk should do, what it should not do, how it differs from other ways to send mail, and whether it fits your
 setup. It starts from the ideal and compares it with the current [design](design.md) at the end.
 
-Status: design stage, no code yet. Everything here describes intent, not measured behavior.
+Status: early development. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
+event log on stdout, retention and encryption at rest); the query API, the UI, provider status and the external sinks
+are planned. Nothing here is measured production behavior yet.
 
 ## 1. The ideal in one paragraph
 
@@ -40,7 +42,10 @@ On item 15, the argument: the target list already makes a staging setup with onl
 risk is the mixed case ("tests against a real provider"), where one wrong address in a test fixture reaches a real
 person. An allow-list such as `*@example.test, qa-*@your-domain` per target is a few lines of code, needs no content
 access, and protects against a mistake that is hard to undo. Mailpit offers a similar setting for its own relay
-feature, which shows the need is real.
+feature, which shows the need is real. It is built as the per-target setting `ALLOW_RECIPIENTS`.
+
+Built so far: items 1 to 7, 11 to 13 and 15, and item 9 for stdout. Planned: items 8, 10 and 14, and item 9 for
+OpenTelemetry, the error tracker and webhooks.
 
 ### Should not do
 
@@ -78,7 +83,7 @@ can be checked in the deployed container.
 | No inbound port from the internet | SMTP ingress and HTTP listen for internal traffic only; provider status is polled |
 | No DNS MX lookups, no port 25 egress | only egress to the configured targets and the provider API |
 | Configuration by environment variables and secret files | no config language to learn |
-| Small dependency list (planned) | SMTP library, SQLite driver, OpenTelemetry and Sentry SDKs |
+| Small dependency list | today: the SMTP library, its SASL package and the SQLite driver (`go.mod`); every new dependency needs a recorded reason |
 
 What it costs:
 
@@ -96,7 +101,7 @@ What it costs:
 
 ### Postwerk, Postfix, maddy
 
-| | Postwerk (planned) | Postfix | maddy |
+| | Postwerk | Postfix | maddy |
 |---|---|---|---|
 | What it is | outbound relay with audit trail | full mail transfer agent | all-in-one mail server (SMTP, submission, IMAP, DKIM) |
 | Processes | one | several daemons (`master`, `smtpd`, `qmgr`, `smtp`, `cleanup`, …) | one |
@@ -107,10 +112,10 @@ What it costs:
 | DKIM signing | no (provider does it) | via milter (e.g. OpenDKIM) | built in |
 | Upstream login rejected (`535`) | queue held, retried, error event at once | deferred and retried by default (`smtp_sasl_auth_soft_bounce = yes`) | in our reading of the v0.9.7 source, treated as a permanent failure (not retried) on the SMTP downstream |
 | Several destinations per mail | list of targets, each with its own status | extra recipients via `always_bcc` or `recipient_bcc_maps`; not tracked as separate deliveries for audit | several `deliver_to` targets possible per the docs |
-| Per-mail status lookup | API and UI by id, sender reference or `Message-ID` | log files and `postqueue` | logs |
-| Provider status after hand-off | polled (Mailjet first) | no | no |
-| Error reports to monitoring | events to stdout, OpenTelemetry, Sentry protocol, webhook | via log shipping | via log shipping |
-| Maturity | none yet (design) | decades of production use | younger project |
+| Per-mail status lookup | event log by mail id today; API and UI by id, sender reference or `Message-ID` planned | log files and `postqueue` | logs |
+| Provider status after hand-off | planned, polled (Mailjet first) | no | no |
+| Error reports to monitoring | events as JSON on stdout today; OpenTelemetry, Sentry protocol, webhook planned | via log shipping | via log shipping |
+| Maturity | early development, foundation built, not production-ready | decades of production use | younger project |
 
 The point is not that Postfix or maddy are worse. They are complete mail servers. They solve transport, including the
 hard parts Postwerk leaves to a provider. What they do not give you out of the box is a per-mail answer to "what
@@ -155,8 +160,10 @@ needs.
 - Senders must speak SMTP with `AUTH`. Each application gets its own credentials.
 - Set `X-Postwerk-Ref: <your id>` (for example the id of your own notification record). You can look the mail up by it
   later. Postwerk also returns its own id in the reply: `250 2.0.0 queued as pw_…`.
-- Your application's "sent" flag now means "Postwerk has stored it". It does not mean delivered. For delivery, query the
-  status API or consume the webhook events.
+- Your application's "sent" flag now means "Postwerk has stored it". It does not mean delivered. For delivery, read the
+  events (stdout today; the status API and webhook events are planned).
+- Postwerk removes every `X-Postwerk-*` header you set before it stores the mail. Towards the targets it adds
+  `X-Postwerk-Id` and, for Mailjet targets, `X-MJ-CustomID`. A `ref` that contains `@` is not stored.
 
 **Duplicates.** Postwerk avoids sending twice towards its targets. It cannot see duplicates created before it. If your
 application's mail library retries after a timeout, and the first attempt did reach Postwerk, you get two mails. To
@@ -175,24 +182,30 @@ SQLite file at a time.
 
 - Egress: to each target (for Mailjet, SMTP on port 587 and the HTTPS API for status).
 - Ingress: SMTP and HTTP only from inside your network. Never expose the UI or API to the internet.
-- Inside the cluster, SMTP login passwords travel in plaintext unless you enable STARTTLS on ingress or your network
-  encrypts traffic between nodes.
+- `AUTH` on ingress needs STARTTLS with a certificate. Cleartext `AUTH` must be allowed explicitly
+  (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`); do that only on a local machine or if your network encrypts traffic
+  between nodes.
+- Towards targets, TLS is required: `smtps://` or `smtp://` with STARTTLS. Cleartext needs `smtp+plain://`, for a local
+  capture tool only, and cannot carry credentials.
 
 **Storage and backups.** Use a local disk or block volume, not a network file system. Size it for the raw messages of
 a long target outage (mail size × mails per day × days). A copied SQLite file of a running process may be inconsistent;
 use SQLite's online backup (for example `VACUUM INTO`). If the audit trail matters to you, export events to
 OpenTelemetry as well, so they survive the loss of the volume.
 
-**Secrets.** Sender credentials, target credentials and the provider API key live in secret files, not in environment
-variables or images. Rotate target credentials before they expire; a rejected login holds the queue and raises an error.
+**Secrets.** Sender password hashes, target credentials, the encryption key and the hash key live in secret files, not
+in environment variables or images. Rotate target credentials before they expire; a rejected login holds the queue and
+raises an error.
 
-**Privacy and retention.** Recipient addresses are personal data. Postwerk keeps them in the mail record and replaces
-them with a keyed hash after a configurable period. A hash with a key is pseudonymized, not anonymous. Set retention to
-the shortest period your support process needs, and write it into your records of processing.
+**Privacy and retention.** Recipient addresses are personal data. Postwerk keeps them in its records and replaces them
+with a keyed hash after a configurable period (default 30 days). A hash with a key is pseudonymized, not anonymous. The
+defaults are reasoned, not legal requirements; set retention to the shortest period your support process needs, and
+write it into your records of processing. Details: [privacy-and-security.md](privacy-and-security.md#3-lifecycle-and-retention).
 
 **Capture targets.** A capture tool such as Mailpit stores full mail content, including password reset links and
-one-time codes. In production, only add one temporarily, with its own short retention and access control. Mark mails
-with credentials with `X-Postwerk-Skip: <capture target name>` so they never reach it.
+one-time codes. Use one in development and tests. In production, add one only temporarily, with its own short
+retention and access control. Mark mails with credentials with `X-Postwerk-Skip: <capture target name>` so they never
+reach it.
 
 **DNS and authentication of your domain.** SPF, DKIM and DMARC are still set up at the provider. Postwerk does not
 change them. It adds only tracking headers, which does not break the provider's DKIM signature. If your application
@@ -206,77 +219,98 @@ signs DKIM itself, do not include `X-Postwerk-*` headers in the signed header li
 
 ## 7. Gaps between the ideal and the current design
 
-These are suggestions. They do not change the design until they are accepted there.
+These started as suggestions against the design. Each item now says whether it is built or still open; open items do
+not change the design until they are accepted there.
 
 1. **Duplicate submissions from senders.** The design prevents duplicates towards targets but not at ingress.
    *Suggestion:* if the same sender submits a mail with the same `X-Postwerk-Ref` (or, without it, the same
    `Message-ID`) within a configurable window, reply `250` with the existing id and store nothing new. Log it as an
    event.
+   *Status:* open.
 
 2. **Resend after `failed` is not possible.** The raw message is removed when every delivery is final, and `failed` is
    final. The resend call needs the raw message. A credential outage longer than the 24 h retry window also turns every
    queued mail into `failed` and then deletes it.
    *Suggestion:* keep the raw message for a configurable period after a failure (for example 72 h). Consider a separate,
    longer window for errors on Postwerk's own side (`535`, target unreachable), since these are not about the mail.
+   *Status:* built: the raw message is kept 72 h after a failure by default. A separate window for Postwerk's own errors
+   is open.
 
 3. **Every deploy can create `unknown` deliveries.** If the process stops while it is sending `DATA` to a target, the
    outcome is unclear. With `hold`, each deploy could leave work for an admin.
    *Suggestion:* define graceful shutdown: stop accepting new sessions (`421`), finish incoming transactions, finish
    outgoing transactions that are already in `DATA`, start no new ones, then exit. Document the needed grace period.
+   *Status:* built: a send in progress is always finished; the deadline is `POSTWERK_SHUTDOWN_TIMEOUT` (default 100 s).
 
 4. **Outbound TLS is not specified.** The target URL is `smtp://` or `smtps://`, but the design does not say whether
    STARTTLS is required on `smtp://`.
    *Suggestion:* require TLS on every target by default. Allow plaintext only with an explicit per-target setting (for a
    local Mailpit).
+   *Status:* built: `smtp://` requires STARTTLS, cleartext needs the scheme `smtp+plain://` and refuses credentials.
 
 5. **No recipient allow-list for test setups.** See item 15 in section 2.
    *Suggestion:* per-target `ALLOW_RECIPIENTS` with address or domain patterns. Recipients that do not match are dropped
    for that target and logged. If a mail has no allowed recipient on any required target, reject it at `RCPT TO` so the
    sender sees the mistake.
+   *Status:* built in a simpler form: if any recipient does not match, the mail is not delivered to that target
+   (`skipped`, event `delivery.not_allowed`, level `warn`). There is no rejection at `RCPT TO` yet.
 
 6. **Keeping credentials out of capture tools depends on matching names.** `X-Postwerk-Skip` takes target names. If an
    application writes `capture` and the deployment calls the target `mailpit`, the mail reaches the capture tool and
    the mismatch is only logged. The design also lets a sender skip a required target.
    *Suggestion:* add a header such as `X-Postwerk-Sensitive: yes` and a per-target setting `ACCEPT_SENSITIVE`, which is
    `false` for optional targets by default. This fails safe. Allow skipping only for optional targets.
+   *Status:* open.
 
 7. **Internal headers reach recipients.** The design removes `X-Postwerk-Skip` but not `X-Postwerk-Ref`, so a sender's
    internal id goes to the recipient.
    *Suggestion:* remove all `X-Postwerk-*` headers set by senders before delivery. Keep `X-Postwerk-Id` only where it is
    useful (capture targets), configurable per target. List in the README exactly which headers reach the recipient.
+   *Status:* built in part: every `X-Postwerk-*` header set by the sender is removed before storage. `X-Postwerk-Id` is
+   added for every target (and `X-MJ-CustomID` for Mailjet); making it configurable per target is open.
 
-8. **No rate or concurrency limit towards targets.** The design limits connections per sender at ingress, not per
-   target at egress. A large batch from one sender can also delay a password reset from another.
+8. **No rate or concurrency limit towards targets.** The design limits connections at ingress (in total), not
+   per sender or per target at egress. A large batch from one sender can also delay a password reset from another.
    *Suggestion:* per-target maximum connections and optional messages per second. Pick due deliveries round-robin across
    senders, so one sender cannot starve the others. No priority classes.
+   *Status:* open (requirement D12, later phase).
 
 9. **Full disk is not handled.** A long target outage keeps raw messages on disk.
    *Suggestion:* reply `452` (temporary) at ingress when free space or queue size crosses a limit, fail `readyz`, and
    raise an event. Senders then retry instead of losing mail.
+   *Status:* open.
 
 10. **No backup or restore story.**
     *Suggestion:* a `postwerk backup <file>` command that uses SQLite's online backup, and a short restore guide. Note
     that events exported to sinks are a second copy of the audit trail.
+    *Status:* open.
 
 11. **Events are hard to map back in applications.** Events carry no recipient address (correct) but also no sender
     reference. An application that wants to react to `provider.bounced` must call the API for each event.
     *Suggestion:* include `ref` in events. The sender chooses it, so it can be kept free of personal data. This is the
     supported way to "process bounces in the app" without Postwerk doing it.
+    *Status:* open.
 
 12. **Secret rotation needs a restart.** Fixing a `535` means new credentials, and a restart closes the ingress.
     *Suggestion:* re-read secret files when they change (mounted secrets in Kubernetes update in place).
+    *Status:* open.
 
 13. **Senders can use any envelope sender.** A compromised application could send mail with another application's
     address.
     *Suggestion:* optional per-sender list of allowed envelope-from addresses or domains. This is an envelope check and
     stays content-blind. The provider's own domain checks remain the second line.
+    *Status:* open.
 
 14. **Bounces and envelope sender are not described.** The design does not say that Postwerk sends no bounce mails
     (DSN) to senders, or which envelope sender it passes to the target.
     *Suggestion:* state both: no DSN, envelope sender passed through unchanged, bounce handling belongs to the provider.
+    *Status:* open in the docs. Postwerk sends no bounce mails (DSN).
 
 15. **Dependency weight is not yet bounded.** The OpenTelemetry and Sentry SDKs bring many indirect dependencies, and
     the planned feature list (four sinks, status adapter, API, UI) is large for a "thin" relay.
     *Suggestion:* use OTLP over HTTP only. Consider sending Sentry-protocol events with the standard library. Define a
     first release with ingress, store, delivery, retry policy, stdout events and the lookup API; add the rest after it
     runs.
+    *Status:* in part: the foundation (ingress, store, delivery, retry policy, stdout events, health checks) was built
+    first with three direct dependencies. The lookup API and the choice between SDKs and the standard library for the
+    sinks are open.
