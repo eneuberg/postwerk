@@ -114,8 +114,31 @@ its default is listed in [configuration.md](configuration.md).
 | ID | Requirement | Phase |
 |---|---|---|
 | H1 | Separate HTTP listener, default `127.0.0.1:8080`. `/healthz` (alive) and `/readyz` (store reachable, workers running). | F |
-| H2 | Read-only query API with bearer tokens (`read`, `admin`), token use logged; resend and close for admins. | L |
-| H3 | Small read-only UI, server-rendered, no content. | L |
+| H2 | Read-only query API with bearer tokens (`read`, `admin`), token use logged; resend and close for admins. On the admin listener (U1), on top of the query layer (U15). | L |
+| H3 | Small read-only UI, server-rendered, no content: U1–U16 below, [ui.md](ui.md). | F |
+
+## UI and admin listener
+
+Details and reasons: [ui.md](ui.md), decision D29.
+
+| ID | Requirement | Phase |
+|---|---|---|
+| U1 | A separate admin listener `POSTWERK_ADMIN_LISTEN` (default `127.0.0.1:8081`) serves the UI and later the query API; it is never the health listener. `off` or empty turns it off. | F |
+| U2 | The admin listener must be a loopback address (`127.0.0.0/8`, `::1`, `localhost`). Another address is a configuration error unless `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true` (for Docker port publishing); then a warning is logged at every start. | F |
+| U3 | No Service port, Ingress or NetworkPolicy rule for the admin listener; people reach it with `kubectl port-forward` or an SSH tunnel. | F |
+| U4 | `POSTWERK_UI_TOKENS_FILE` is required while the admin listener is on: `name:role:<PBKDF2 hash>` per line, role `read` or `admin`. `postwerk gen-token <name> <role>` prints a random 32-byte base64url token and its line. | F |
+| U5 | Login by `POST` with name and token; every check costs the strongest hash in the file (as I12); at most `GOMAXPROCS` checks at once, 5 s wait for a slot, then a fixed "try again" reply (as I13). | F |
+| U6 | Server-side sessions in memory: 32 random bytes, idle timeout 30 min, absolute 8 h, new id at login, deleted at logout. Cookie `HttpOnly; SameSite=Strict; Path=/`, `Secure` only over TLS. | F |
+| U7 | Requests whose `Host` is not `localhost`, `127.0.0.1` or `[::1]` (any port) or a name in `POSTWERK_ADMIN_HOSTS` get `403` (DNS rebinding). | F |
+| U8 | Every `POST` form carries a CSRF token (session-bound; on the login form bound to a short-lived cookie); missing or wrong → `403`. Cross-site `POST`s are refused by `Sec-Fetch-Site`/`Origin` as well. | F |
+| U9 | Every response carries `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Frame-Options: DENY`. No JavaScript. | F |
+| U10 | Pages: overview (per target: last 24 h by recipient status, queued count, age of the oldest queued; recent `failed`/`unknown`/`partial` mails), mail list (filters state, target, time range; pagination), search, mail detail (record, envelope parameters, per target and recipient status, event timeline). | F |
+| U11 | Search by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address, by `POST` only; addresses are found after pseudonymization through K3. The query never appears in a URL, log line or event. | F |
+| U12 | Addresses: full for `admin`, masked for `read` (`j•••@e•••.com`), "pseudonymized" for everyone after S8. | F |
+| U13 | Events `ui.login`, `ui.login_failed`, `ui.search` name the token in a new `actor` field (on a failed login only if the name is known); never the query or an address. | F |
+| U14 | No message content on any page. Read-only; resend and close come later, for `admin` only. | F |
+| U15 | Read logic lives in `internal/query` on top of the store (SQL stays in the store), so the JSON API (H2) reuses it, masking included. | F |
+| U16 | At most 30 searches per minute per token name; more get `429`. | F |
 
 ## Operations and supply chain
 

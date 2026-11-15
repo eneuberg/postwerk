@@ -53,8 +53,8 @@ deferred). Webhooks may be added later.
 
 ## D10 Internal UI, read-only
 
-A small server-rendered UI for status and history, on a listener meant for internal networks only. It never shows
-message content.
+A small server-rendered UI for status and history. It never shows message content. How it is reached and protected
+is D29.
 
 ## D11 MIT license
 
@@ -246,3 +246,35 @@ The chart encodes what the design needs, so a default install is a safe one:
 - **TLS by default, cert-manager optional.** STARTTLS from an internal CA, because common clients (Go's `net/smtp`)
   refuse to send a password without it. Postwerk reads the certificate at start, so a renewal needs a restart; hot
   reloading is an open point.
+
+## D29 The UI on a loopback admin listener, reached through a tunnel, with a login anyway
+
+The UI shows addresses and delivery history, so it must not be reachable by anyone who happens to be on the cluster
+network. Options were a Service port with a NetworkPolicy, an Ingress with an identity proxy, or a loopback listener
+reached through a tunnel. The tunnel wins: it adds nothing to the attack surface, needs no identity provider, and
+reuses access control that already exists and is already audited.
+
+- **Its own listener, `127.0.0.1:8081`.** The health listener must accept the kubelet's probes, so in containers it
+  binds to `:8080`; sharing it would put the UI on the pod network. A separate loopback listener is reachable only
+  from inside the pod's network namespace. `kubectl port-forward` ends there, so access is decided by Kubernetes RBAC
+  (`pods/portforward`) and travels inside the API server's TLS connection. On a host, `ssh -L` does the same.
+- **Docker needs an exception.** Docker's port publishing forwards to the container's interface, not to its loopback,
+  so a loopback-only listener inside a container cannot be published at all. Instead of dropping the loopback rule,
+  `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true` allows another address explicitly, with a warning at every start; compose
+  publishes the port on the host's `127.0.0.1` only. Kubernetes does not need it.
+- **A login anyway.** A forwarded port on `localhost` is open to every process on the operator's machine, and inside
+  the pod to every other container. Tokens use the same PBKDF2 hashes and login hardening as senders (D15, D26), so
+  there is one scheme to review. The form asks for name and token: with the name, a login costs one PBKDF2 check;
+  with the token alone, it would have to be checked against every line.
+- **Sessions in memory.** One instance (D6), so nothing needs sharing; a restart logs everyone out, which is
+  acceptable for an admin tool. Cookies are `HttpOnly` and `SameSite=Strict`, `Secure` only over TLS: the admin
+  listener has no TLS of its own, and browsers treat `http://localhost` as a secure context.
+- **Browser attacks.** A web page can make the operator's browser talk to `localhost`. A Host allow-list stops DNS
+  rebinding; it accepts the loopback names with any port, because the port of a tunnel is the operator's choice
+  and plays no part in the attack. CSRF tokens on every form, Go's cross-origin check, a strict
+  Content-Security-Policy and no JavaScript at all cover the rest.
+- **Addresses stay out of URLs.** Search is a `POST` whose results come back in the same response, so an address never
+  reaches a URL, the browser history or an access log. Events record who searched and by what kind of key, never the
+  query (privacy-and-security.md, changes 8 and 10).
+- **Masking in the query layer.** `read` sees `j•••@e•••.com`, `admin` the full address. The masking happens where the
+  data is read (`internal/query`), not in the templates, so the later JSON API cannot forget it.
