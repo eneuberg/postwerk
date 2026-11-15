@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
@@ -55,8 +56,10 @@ var (
 	errAuthFailed   = &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "Authentication failed"}
 	errAuthTooMany  = &smtp.SMTPError{Code: 421, EnhancedCode: smtp.EnhancedCode{4, 7, 0}, Message: "Too many failed authentication attempts, closing connection"}
 	errBadAddress   = &smtp.SMTPError{Code: 553, EnhancedCode: smtp.EnhancedCode{5, 1, 3}, Message: "Invalid address"}
+	errNeedsUTF8    = &smtp.SMTPError{Code: 553, EnhancedCode: smtp.EnhancedCode{5, 6, 7}, Message: "Non-ASCII address requires SMTPUTF8"}
 	errTooBig       = &smtp.SMTPError{Code: 552, EnhancedCode: smtp.EnhancedCode{5, 3, 4}, Message: "Message too big"}
 	errTooManyRcpt  = &smtp.SMTPError{Code: 452, EnhancedCode: smtp.EnhancedCode{4, 5, 3}, Message: "Too many recipients"}
+	errBadParams    = &smtp.SMTPError{Code: 501, EnhancedCode: smtp.EnhancedCode{5, 5, 4}, Message: "Invalid parameters"}
 	errBadSequence  = &smtp.SMTPError{Code: 503, EnhancedCode: smtp.EnhancedCode{5, 5, 1}, Message: "Bad sequence of commands"}
 	errStorage      = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "Temporary local problem, try again later"}
 	errReadFailed   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 2}, Message: "Error while reading the message"}
@@ -120,6 +123,11 @@ func New(opts Options) *Server {
 	srv.ReadTimeout = readTimeout
 	srv.WriteTimeout = writeTimeout
 	srv.AllowInsecureAuth = opts.AllowInsecure
+	// The library always offers 8BITMIME. SMTPUTF8 is offered too, and both
+	// are passed on to every target that offers them (store.Params). DSN
+	// and REQUIRETLS are not offered: Postwerk could not keep their promise
+	// towards every target.
+	srv.EnableSMTPUTF8 = true
 	srv.ErrorLog = errorLog{opts.Logger}
 	if opts.TLSCertificate != nil {
 		srv.TLSConfig = &tls.Config{
@@ -273,6 +281,7 @@ type session struct {
 	sender  string // set after a successful AUTH
 	from    string
 	hasFrom bool
+	params  store.Params
 	to      []string
 }
 
@@ -332,10 +341,22 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	if !validAddress(from) {
 		return errBadAddress
 	}
-	if opts != nil && opts.Size > s.srv.opts.MaxMessageBytes {
-		return errTooBig
+	var p store.Params
+	if opts != nil {
+		if opts.Size > s.srv.opts.MaxMessageBytes {
+			return errTooBig
+		}
+		p = store.Params{Body: string(opts.Body), SMTPUTF8: opts.UTF8, DeclaredSize: opts.Size}
+		// The library refuses other BODY values; this keeps the store's
+		// CHECK constraint safe if that ever changes.
+		if p.Body != "" && p.Body != store.Body7Bit && p.Body != store.Body8BitMIME {
+			return errBadParams
+		}
 	}
-	s.from, s.hasFrom, s.to = from, true, nil
+	if !p.SMTPUTF8 && !isASCII(from) {
+		return errNeedsUTF8
+	}
+	s.from, s.hasFrom, s.params, s.to = from, true, p, nil
 	return nil
 }
 
@@ -351,6 +372,9 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	if to == "" || !validAddress(to) {
 		return errBadAddress
 	}
+	if !s.params.SMTPUTF8 && !isASCII(to) {
+		return errNeedsUTF8
+	}
 	if len(s.to) >= s.srv.opts.MaxRecipients {
 		return errTooManyRcpt
 	}
@@ -360,7 +384,7 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 
 func (s *session) Data(r io.Reader) error {
 	s.mu.Lock()
-	sender, from, to := s.sender, s.from, slices.Clone(s.to)
+	sender, from, params, to := s.sender, s.from, s.params, slices.Clone(s.to)
 	ok := s.sender != "" && s.hasFrom && len(s.to) > 0
 	s.mu.Unlock()
 	if sender == "" {
@@ -386,7 +410,7 @@ func (s *session) Data(r io.Reader) error {
 		return errTooBig
 	}
 
-	mailID, err := s.srv.accept(sender, from, to, raw)
+	mailID, err := s.srv.accept(sender, from, to, params, raw)
 	if err != nil {
 		s.srv.opts.Logger.Error("storing mail failed, replied 451", "sender", sender, "err", err)
 		return errStorage
@@ -397,13 +421,13 @@ func (s *session) Data(r io.Reader) error {
 func (s *session) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.from, s.hasFrom, s.to = "", false, nil
+	s.from, s.hasFrom, s.params, s.to = "", false, store.Params{}, nil
 }
 
 func (s *session) Logout() error { return nil }
 
 // accept processes and stores one mail. It returns the new id.
-func (s *Server) accept(sender, from string, to []string, raw []byte) (string, error) {
+func (s *Server) accept(sender, from string, to []string, params store.Params, raw []byte) (string, error) {
 	now := s.opts.Now()
 	mailID := id.NewAt(now)
 	msg := message.Process(raw)
@@ -414,7 +438,7 @@ func (s *Server) accept(sender, from string, to []string, raw []byte) (string, e
 
 	m := store.NewMail{
 		ID: mailID, ReceivedAt: now, Sender: sender, EnvelopeFrom: from, Recipients: to,
-		MessageID: msg.MessageID, Ref: msg.Ref, Raw: sealed, Size: len(msg.Message),
+		MessageID: msg.MessageID, Ref: msg.Ref, Raw: sealed, Size: len(msg.Message), Params: params,
 	}
 	known := make(map[string]bool)
 	for _, t := range s.opts.Targets {
@@ -450,21 +474,33 @@ func (s *Server) accept(sender, from string, to []string, raw []byte) (string, e
 }
 
 // validAddress checks an envelope address: at most 320 bytes, at most one
-// "@", no control characters, and none of the characters that would need a
+// "@", valid UTF-8, no control characters (C0, DEL, C1, Unicode line and
+// paragraph separators), and none of the characters that would need a
 // quoted local part (space, '"', backslash, '<', '>', '(', ')', ',', ';'). The
 // SMTP library removes the quotes of a quoted local part, so such an address
 // could not be passed on unchanged: written into the RCPT or MAIL command
 // towards a target, a '>' would end the path early and the rest would be read
 // as parameters, and a recipient allow-list would check a different address
-// than the target sees. The empty (null) sender is allowed here; Rcpt rejects
-// it separately.
+// than the target sees. Non-ASCII characters (RFC 6531) are allowed here;
+// Mail and Rcpt require SMTPUTF8 for them. The empty (null) sender is
+// allowed here; Rcpt rejects it separately.
 func validAddress(a string) bool {
-	if len(a) > maxAddressLen || strings.Count(a, "@") > 1 {
+	if len(a) > maxAddressLen || strings.Count(a, "@") > 1 || !utf8.ValidString(a) {
 		return false
 	}
-	for i := 0; i < len(a); i++ {
-		c := a[i]
-		if c < 0x20 || c == 0x7f || strings.IndexByte(" \"\\<>(),;", c) >= 0 {
+	for _, r := range a {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 ||
+			r < utf8.RuneSelf && strings.IndexByte(" \"\\<>(),;", byte(r)) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// isASCII reports whether s has only 7-bit characters.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
 			return false
 		}
 	}

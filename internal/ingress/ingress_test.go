@@ -351,7 +351,13 @@ func TestValidAddress(t *testing.T) {
 			t.Errorf("validAddress(%q) = false", a)
 		}
 	}
-	for _, a := range []string{"a\r\n@b", "a\n@b", "a\x00@b", strings.Repeat("a", 321)} {
+	for _, a := range []string{"jörg@exämple.test", "用户@例子.广告"} {
+		if !validAddress(a) {
+			t.Errorf("validAddress(%q) = false", a)
+		}
+	}
+	for _, a := range []string{"a\r\n@b", "a\n@b", "a\x00@b", strings.Repeat("a", 321),
+		"a\xff@b", "a\u0085@b", "a\u2028@b", "a\u00a0b@c\u2029"} {
 		if validAddress(a) {
 			t.Errorf("validAddress(%q) = true", a)
 		}
@@ -509,5 +515,123 @@ func TestEnvelopeAddressSyntax(t *testing.T) {
 		if err := c.Rcpt(good, nil); err != nil {
 			t.Errorf("Rcpt(%s): %v", good, err)
 		}
+	}
+}
+
+// rawSession opens a connection, says EHLO, logs in and returns the
+// connection with the EHLO lines.
+func rawSession(t *testing.T, addr string) (*textproto.Conn, string) {
+	t.Helper()
+	conn, err := textproto.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if _, _, err := conn.ReadResponse(220); err != nil {
+		t.Fatal(err)
+	}
+	conn.Cmd("EHLO x")
+	_, ehlo, err := conn.ReadResponse(250)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Cmd("AUTH PLAIN AGFwcABzZWNyZXQ=") // \0app\0secret
+	if _, _, err := conn.ReadResponse(235); err != nil {
+		t.Fatal(err)
+	}
+	return conn, ehlo
+}
+
+func cmd(conn *textproto.Conn, line string) (int, string) {
+	conn.Cmd("%s", line)
+	code, text, _ := conn.ReadResponse(0)
+	return code, text
+}
+
+func TestExtensionsOffered(t *testing.T) {
+	e := start(t, nil)
+	_, ehlo := rawSession(t, e.addr)
+	lines := strings.Split(ehlo, "\n")
+	has := func(ext string) bool {
+		for _, l := range lines {
+			if l == ext || strings.HasPrefix(l, ext+" ") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, ext := range []string{"8BITMIME", "SMTPUTF8", "SIZE"} {
+		if !has(ext) {
+			t.Errorf("EHLO lacks %s: %q", ext, ehlo)
+		}
+	}
+	for _, ext := range []string{"DSN", "REQUIRETLS", "BINARYMIME"} {
+		if has(ext) {
+			t.Errorf("EHLO offers %s: %q", ext, ehlo)
+		}
+	}
+}
+
+func TestMailParamsStored(t *testing.T) {
+	e := start(t, nil)
+	conn, _ := rawSession(t, e.addr)
+	tests := []struct {
+		mail string
+		rcpt string
+		want store.Params
+	}{
+		{"MAIL FROM:<a@example.test>", "x@example.test", store.Params{}},
+		{"MAIL FROM:<a@example.test> BODY=7BIT SIZE=100", "x@example.test", store.Params{Body: "7BIT", DeclaredSize: 100}},
+		{"MAIL FROM:<jörg@exämple.test> BODY=8BITMIME SMTPUTF8", "用户@例子.广告",
+			store.Params{Body: "8BITMIME", SMTPUTF8: true}},
+	}
+	for _, tt := range tests {
+		if c, text := cmd(conn, tt.mail); c != 250 {
+			t.Fatalf("%s: %d %s", tt.mail, c, text)
+		}
+		if c, text := cmd(conn, "RCPT TO:<"+tt.rcpt+">"); c != 250 {
+			t.Fatalf("RCPT: %d %s", c, text)
+		}
+		if c, _ := cmd(conn, "DATA"); c != 354 {
+			t.Fatalf("DATA: %d", c)
+		}
+		c, text := cmd(conn, "Subject: hi\r\n\r\nbody\r\n.")
+		m := queuedRe.FindStringSubmatch(text)
+		if c != 250 || m == nil {
+			t.Fatalf("end of data: %d %s", c, text)
+		}
+		rec, err := e.store.Mail(context.Background(), m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Params != tt.want {
+			t.Errorf("%s: params = %+v, want %+v", tt.mail, rec.Params, tt.want)
+		}
+	}
+}
+
+func TestNonASCIIAddressNeedsSMTPUTF8(t *testing.T) {
+	e := start(t, nil)
+	conn, _ := rawSession(t, e.addr)
+	if c, text := cmd(conn, "MAIL FROM:<jörg@exämple.test>"); c != 553 || text != "5.6.7 Non-ASCII address requires SMTPUTF8" {
+		t.Fatalf("MAIL: %d %q", c, text)
+	}
+	if c, _ := cmd(conn, "MAIL FROM:<a@example.test>"); c != 250 {
+		t.Fatalf("MAIL: %d", c)
+	}
+	if c, text := cmd(conn, "RCPT TO:<用户@例子.广告>"); c != 553 || text != "5.6.7 Non-ASCII address requires SMTPUTF8" {
+		t.Fatalf("RCPT: %d %q", c, text)
+	}
+	if c, text := cmd(conn, "RCPT TO:<a\xffb@example.test>"); c != 553 || text != "5.1.3 Invalid address" {
+		t.Fatalf("RCPT with invalid UTF-8: %d %q", c, text)
+	}
+	if c, _ := cmd(conn, "RSET"); c != 250 {
+		t.Fatal("RSET")
+	}
+	if c, _ := cmd(conn, "MAIL FROM:<a@example.test> SMTPUTF8"); c != 250 {
+		t.Fatalf("MAIL SMTPUTF8: %d", c)
+	}
+	if c, text := cmd(conn, "RCPT TO:<用户@例子.广告>"); c != 250 {
+		t.Fatalf("RCPT with SMTPUTF8: %d %q", c, text)
 	}
 }

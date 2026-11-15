@@ -25,9 +25,11 @@ const Placeholder = "<redacted>"
 const maxInput = 4096
 
 // addrRe matches a token that contains "@", with optional angle brackets.
-// The token ends at white space, brackets, quotes and common separators. A
-// quoted local part ("jane doe"@example.com) counts as part of the token.
-var addrRe = regexp.MustCompile(`<?(?:"[^"]*"|[^\s<>"'(),;:\[\]]*)@[^\s<>"'(),;:\[\]]*>?`)
+// The token ends at white space (ASCII or Unicode), brackets, quotes and
+// common separators; every other character, including non-ASCII letters of
+// an internationalized address (RFC 6531), belongs to it. A quoted local
+// part ("jane doe"@example.com) counts as part of the token.
+var addrRe = regexp.MustCompile(`<?(?:"[^"]*"|[^\s\p{Z}<>"'(),;:\[\]]*)@[^\s\p{Z}<>"'(),;:\[\]]*>?`)
 
 // Text returns s with addresses replaced, control characters removed, runs of
 // white space collapsed and the length cut to MaxLen bytes.
