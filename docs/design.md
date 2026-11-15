@@ -306,7 +306,9 @@ serves the `check` policy in section 6.
 ## 13. Security
 
 - Ingress requires `AUTH PLAIN` before `MAIL`; sender names and PBKDF2-SHA256 password hashes come from a senders file.
-  A connection is closed after 3 failed attempts.
+  A connection is closed after 3 failed attempts, and after 30 s without a login. Every failed check costs the same
+  (the strongest hash in the file), and at most one check per CPU runs at once (`454` when all are busy for 5 s).
+  There is no blocking per IP address: in a cluster, pod addresses change and many senders share a node's address.
 - `AUTH` is only offered over TLS (STARTTLS with a configured certificate). Cleartext `AUTH` needs an explicit setting
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), meant for a local machine or a network that encrypts traffic between
   nodes. Without a certificate and without that setting, Postwerk does not start.

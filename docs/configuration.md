@@ -157,7 +157,9 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 | `POSTWERK_MAX_CONNECTIONS` | `100` | 1 to 10000 | Concurrent SMTP connections. A connection over the limit gets `421 4.7.0 Too many connections, try again later` and is closed. |
 
 Fixed, not configurable: line length 2000 bytes, address length 320 bytes, connection closed after 3 failed `AUTH`,
-SMTP read timeout 2 minutes, write timeout 1 minute. Envelope addresses with more than one `@`, or with characters that
+connection closed when it has not logged in within 30 s (`421`), at most as many password checks at once as the
+process has CPUs (`GOMAXPROCS`; a login waits up to 5 s for a slot, then gets `454 4.7.0`), SMTP read timeout 2
+minutes, write timeout 1 minute. Envelope addresses with more than one `@`, or with characters that
 need a quoted local part (space, `"`, `\`, `<`, `>`, `(`, `)`, `,`, `;`), get `553`: they could not be passed on to a
 target unchanged. Internationalized addresses (UTF-8, RFC 6531) are accepted only when the sender gives `SMTPUTF8` in
 `MAIL`; otherwise they get `553 5.6.7 Non-ASCII address requires SMTPUTF8`.

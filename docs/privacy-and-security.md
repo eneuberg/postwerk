@@ -287,6 +287,10 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **Deleted data.** SQLite `secure_delete` is on, so deleted content is overwritten
   ([SQLite docs](https://www.sqlite.org/pragma.html#pragma_secure_delete)). Old page copies can sit in the WAL file
   until a checkpoint, so the retention job checkpoints after a purge.
+- **Login hardening.** Every password check that is not a repeat of a successful login costs the strongest iteration
+  count in the senders file, so the time of a failed login reveals neither which names exist nor which hashes are
+  weaker. At most one check per CPU runs at once, so a burst of logins cannot starve delivery; a connection that has
+  not logged in within 30 s is closed. There is no per-IP blocking (decision D26).
 - **Sender passwords.** The senders file holds PBKDF2-SHA256 hashes (`postwerk hash-password`, 600,000 iterations;
   fewer than 100,000 are refused). Only `AUTH PLAIN` is offered; it works with hashes. Mechanisms that need the
   plaintext on the server (such as `CRAM-MD5`) are not offered. A connection is closed after 3 failed attempts. Target

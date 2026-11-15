@@ -80,7 +80,8 @@ the UI and events. This is stated in the README so that senders do not read thei
 The senders file holds `name:pbkdf2-sha256$<iterations>$<salt>$<key>`, never a plaintext password. PBKDF2-SHA256 is in
 Go's standard library (`crypto/pbkdf2`), so it adds no dependency. Argon2id or bcrypt would need
 `golang.org/x/crypto`. `postwerk hash-password` uses 600,000 iterations; a hash with fewer than 100,000 is refused at
-start. Unknown sender names cost the same time as known ones, so a login attempt does not reveal which names exist.
+start. Unknown sender names cost the same time as known ones, so a login attempt does not reveal which names exist
+(D26 makes this exact).
 
 ## D16 `AUTH PLAIN` only
 
@@ -185,3 +186,26 @@ once. The limit also bounds memory per mail (D27). The only gap is Postwerk's ow
 message within those bytes of the limit fails at the target with `delivery.too_large`, visibly, instead of being sent
 and bounced. Towards each target, Postwerk checks the `SIZE` it offers before sending and passes the exact size as
 `SIZE=`.
+
+## D26 Login hardening without extra packages
+
+Three cheap measures, no new dependency:
+
+- **Equal cost.** Every password check that is not a cached login costs PBKDF2 with the strongest iteration count in
+  the senders file. An unknown name is checked against a dummy hash with that count; a sender whose hash has fewer
+  iterations (an older line, made with a lower setting) pays the difference with extra rounds; a mismatched
+  authorization identity pays the full cost too. The time of a failed login therefore says nothing about which names
+  exist or how strong their hashes are, so names cannot be enumerated by timing. The cache of successful logins (an
+  HMAC under a random in-memory key) stays: only the right password can take that path, so it reveals nothing an
+  attacker does not already have.
+- **Limited concurrency.** PBKDF2 at 600,000 iterations takes a CPU core for a noticeable time. At most
+  `runtime.GOMAXPROCS(0)` checks run at once; a login waits up to 5 s for a slot and then gets `454 4.7.0`
+  (temporary, RFC 4954). A burst of logins, by mistake or on purpose, then slows logins, not delivery and storage.
+  Cached logins need no slot, so a well-behaved application with a connection pool is not affected.
+- **Login deadline.** A connection that has not logged in within 30 s is closed, so idle unauthenticated connections
+  cannot hold the connection limit. The SMTP library closes it with its fixed `421 4.4.2` idle reply; reads before the
+  login, including a STARTTLS handshake, simply get that deadline.
+
+No per-IP blocking or rate limit: in Kubernetes, pod addresses change with every restart, and many senders can share
+a node's address behind NAT. Blocking by address would hit the wrong clients and miss the attacker. The network
+policy (D28) limits who can connect at all.

@@ -35,6 +35,9 @@ its default is listed in [configuration.md](configuration.md).
 | I9 | An invalid `X-Postwerk-Ref` (contains `@`, is longer than 256 bytes or not printable ASCII) is not stored; the mail is still accepted, without a ref. The header is removed either way. | F |
 | I10 | Ingress offers `8BITMIME` and `SMTPUTF8`, not `DSN`, `REQUIRETLS` or `BINARYMIME`. The MAIL parameters `BODY=7BIT\|8BITMIME`, `SMTPUTF8` and `SIZE=` are stored as declared. | F |
 | I11 | Envelope addresses may hold UTF-8 (RFC 6531) only with `SMTPUTF8`; otherwise fixed reply `553 5.6.7`. Invalid UTF-8, control characters (C0, DEL, C1) and Unicode line separators get `553 5.1.3`. | F |
+| I12 | Every password check that is not a cached login costs PBKDF2 with the strongest iteration count in the senders file, for unknown names, mismatched identities and weaker hashes alike. | F |
+| I13 | At most `runtime.GOMAXPROCS(0)` password checks run at once; a login that finds no slot within 5 s gets `454 4.7.0 Temporary authentication failure, try again later` (not counted as a failure). Cached logins (one HMAC) need no slot. | F |
+| I14 | A connection that has not logged in within 30 s is closed (`421 4.4.2`, the SMTP library's fixed idle reply); the deadline also covers a STARTTLS handshake. No per-IP blocking. | F |
 
 ## Store
 
