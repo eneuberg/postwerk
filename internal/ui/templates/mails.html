@@ -1,0 +1,45 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Mails</h1>
+  <p class="muted">Newest first. Times in UTC.</p>
+</div>
+<form class="card filters" method="get" action="/mails">
+  <div>
+    <label for="state">State</label>
+    <select id="state" name="state">
+      <option value="">any</option>
+      {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{status .}}</option>{{end}}
+    </select>
+  </div>
+  <div>
+    <label for="target">Target</label>
+    <select id="target" name="target">
+      <option value="">all</option>
+      {{range .Data.Targets}}<option value="{{.}}"{{if eq . $.Data.Target}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+  <div>
+    <label for="from">Received from</label>
+    <input id="from" name="from" type="date" value="{{.Data.From}}">
+  </div>
+  <div>
+    <label for="to">Received to</label>
+    <input id="to" name="to" type="date" value="{{.Data.To}}">
+  </div>
+  <div class="filter-actions">
+    <button type="submit">Filter</button>
+    {{if .Data.Filtered}}<a href="/mails">Reset</a>{{end}}
+  </div>
+</form>
+{{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+<section class="card">
+  {{template "mailtable" .Data.List.Rows}}
+  {{if or .Data.PrevURL .Data.NextURL}}
+  <nav class="pager" aria-label="Pages">
+    {{if .Data.PrevURL}}<a href="{{.Data.PrevURL}}" rel="prev">← Newer</a>{{else}}<span></span>{{end}}
+    <span class="muted">Page {{.Data.List.Filter.Page}}</span>
+    {{if .Data.NextURL}}<a href="{{.Data.NextURL}}" rel="next">Older →</a>{{else}}<span></span>{{end}}
+  </nav>
+  {{end}}
+</section>
+{{end}}

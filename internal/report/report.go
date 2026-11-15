@@ -168,6 +168,7 @@ type line struct {
 	SMTP     *smtpReply `json:"smtp,omitempty"`
 	Sender   string     `json:"sender,omitempty"`
 	Actor    string     `json:"actor,omitempty"` // token name for UI events, never an address
+	Text     string     `json:"text,omitempty"`  // detail of a UI event (role, search kind), never a query
 	Instance string     `json:"instance,omitempty"`
 }
 
@@ -178,7 +179,11 @@ func (s *Stdout) Export(_ context.Context, e store.Event) error {
 		MailID: e.MailID, Target: e.Target, Rcpt: e.Recipient, Attempt: e.Attempt, Sender: e.Sender, Actor: e.Actor,
 		Instance: s.instance,
 	}
-	if e.Code != 0 || e.Text != "" {
+	switch {
+	case e.Actor != "":
+		// An event caused by a person: its text is not an SMTP reply.
+		l.Text = e.Text
+	case e.Code != 0 || e.Text != "":
 		l.SMTP = &smtpReply{Code: e.Code, Text: e.Text}
 	}
 	var buf bytes.Buffer

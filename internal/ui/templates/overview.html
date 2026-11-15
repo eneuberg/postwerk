@@ -13,9 +13,9 @@
     <dl class="figures">
       <div><dt>Queued now</dt><dd>{{if .Queued}}<a href="/mails?target={{.Target}}&amp;state=queued">{{.Queued}}</a>{{else}}0{{end}}</dd></div>
       <div><dt>Oldest queued</dt><dd>{{if .Queued}}{{ago .OldestQueuedAge}}{{else}}—{{end}}</dd></div>
-      <div><dt>Recipients, 24 h</dt><dd>{{.RecentTotal}}</dd></div>
+      <div><dt>Last 24&nbsp;h</dt><dd>{{.RecentTotal}}</dd></div>
     </dl>
-    <ul class="counts" aria-label="Recipients of the last 24 hours by status">
+    <ul class="counts" aria-label="Recipients of the last 24 hours by status" title="Recipients of mails received in the last 24 hours, by status">
       {{range .Recent}}<li class="{{if not .Count}}zero{{end}}"><span class="st {{statusClass .Status}}">{{status .Status}}</span> <span class="num">{{.Count}}</span></li>{{end}}
     </ul>
   </article>

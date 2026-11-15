@@ -47,7 +47,7 @@
     <td>{{.Sender}}</td>
     <td class="r num">{{.Recipients}}</td>
     <td><span class="st {{statusClass .Status}}">{{status .Status}}</span></td>
-    <td class="targets-cell">{{range .Targets}}<span class="tgt">{{.Target}} <span class="st st-sm {{statusClass .Status}}">{{status .Status}}</span></span>{{end}}</td>
+    <td><div class="targets-cell">{{range .Targets}}<span class="tgt">{{.Target}} <span class="st st-sm {{statusClass .Status}}">{{status .Status}}</span></span>{{end}}</div></td>
   </tr>
   {{end}}
   </tbody>
@@ -57,3 +57,5 @@
 <p class="empty">Nothing here.</p>
 {{end}}
 {{end}}
+
+{{define "addr"}}{{if pseudo .}}<span class="muted">pseudonymized</span>{{else if nullSender .}}<span class="muted">&lt;&gt; (null sender)</span>{{else if masked .}}<span class="mono masked" title="masked for your role">{{.Text}}</span>{{else}}<span class="mono">{{.Text}}</span>{{end}}{{end}}

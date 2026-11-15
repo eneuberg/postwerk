@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eneuberg/postwerk/internal/addrhash"
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/store"
@@ -85,9 +86,16 @@ type harness struct {
 	logs   *testutil.SafeBuffer
 	tokens *countingVerifier
 	dbPath string
+	sender string // of seeded mails; default "shop"
 }
 
 func newHarness(t *testing.T, opts ...func(*Options)) *harness {
+	t.Helper()
+	return newHarnessWithHasher(t, nil, opts...)
+}
+
+// newHarnessWithHasher lets the query layer find pseudonymized addresses.
+func newHarnessWithHasher(t *testing.T, hs *addrhash.Hasher, opts ...func(*Options)) *harness {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "pw.db")
 	st, err := store.Open(context.Background(), dbPath, store.Options{})
@@ -102,7 +110,7 @@ func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	h := &harness{t: t, st: st, clock: &clock{t: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		logs: &testutil.SafeBuffer{}, tokens: &countingVerifier{Verifier: tokens}, dbPath: dbPath}
 	o := Options{
-		Query:    query.New(query.Options{Store: st, Targets: []string{"mailjet", "capture"}, Now: h.clock.Now}),
+		Query:    query.New(query.Options{Store: st, Hasher: hs, Targets: []string{"mailjet", "capture"}, Now: h.clock.Now}),
 		Tokens:   h.tokens,
 		Events:   st,
 		Hosts:    []string{"relay.example.test"},

@@ -90,13 +90,13 @@ func TestStdoutLine(t *testing.T) {
 
 	// A UI event names its actor.
 	at := time.UnixMilli(1763000000123)
-	if err := s.Append(ctx, store.Event{Time: at, Kind: "ui.login", Level: store.Info, Actor: "ops"}); err != nil {
+	if err := s.Append(ctx, store.Event{Time: at, Kind: "ui.login", Level: store.Info, Actor: "ops", Text: "admin"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want = `{"seq":3,"time":"2025-11-13T02:13:20.123Z","level":"info","kind":"ui.login","actor":"ops","instance":"prod"}`
+	want = `{"seq":3,"time":"2025-11-13T02:13:20.123Z","level":"info","kind":"ui.login","actor":"ops","text":"admin","instance":"prod"}`
 	if got := strings.TrimSpace(buf.String()); got != want {
 		t.Fatalf("line:\n%s\nwant\n%s", got, want)
 	}
