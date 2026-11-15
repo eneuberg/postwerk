@@ -35,6 +35,10 @@ import (
 
 const canary = "canary-leak@example.test"
 
+// utf8Canary is an internationalized canary address (RFC 6531). The leak
+// check looks for it and for its parts.
+const utf8Canary = "kanarienvögel-leck@exämple.test"
+
 const timeout = 10 * time.Second
 
 // ---- fake target ----
@@ -42,6 +46,7 @@ const timeout = 10 * time.Second
 type received struct {
 	from string
 	to   []string
+	opts smtp.MailOptions
 	data []byte
 }
 
@@ -53,6 +58,7 @@ type behavior struct {
 	drop     int     // number of messages after which the connection is dropped without reply
 	hold     chan struct{}
 	holding  chan struct{} // closed when a message is being held
+	hide     []string      // extensions removed from the EHLO reply, such as "SMTPUTF8"
 }
 
 type fakeTarget struct {
@@ -80,6 +86,7 @@ func newTarget(t *testing.T, sc scheme, cert *testutil.Cert, user, pass string) 
 		return &fakeSession{f: f, conn: c}, nil
 	}))
 	srv.Domain = "target.test"
+	srv.EnableSMTPUTF8 = true // hidden per test with behavior.hide
 	srv.AllowInsecureAuth = sc == plain
 	srv.ErrorLog = log.New(io.Discard, "", 0)
 	var l net.Listener
@@ -88,6 +95,7 @@ func newTarget(t *testing.T, sc scheme, cert *testutil.Cert, user, pass string) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	l = hidingListener{Listener: l, f: f}
 	switch sc {
 	case startTLS:
 		srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert.TLS}}
@@ -98,6 +106,41 @@ func newTarget(t *testing.T, sc scheme, cert *testutil.Cert, user, pass string) 
 	go srv.Serve(l)
 	t.Cleanup(func() { srv.Close() })
 	return f
+}
+
+// hidingListener removes the extensions in behavior.hide from EHLO replies.
+// The SMTP library always offers 8BITMIME, so this is the only way to fake a
+// target without it.
+type hidingListener struct {
+	net.Listener
+	f *fakeTarget
+}
+
+func (l hidingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return hidingConn{Conn: c, f: l.f}, nil
+}
+
+type hidingConn struct {
+	net.Conn
+	f *fakeTarget
+}
+
+func (c hidingConn) Write(b []byte) (int, error) {
+	c.f.mu.Lock()
+	hide := c.f.b.hide
+	c.f.mu.Unlock()
+	out := b
+	for _, ext := range hide {
+		out = []byte(strings.ReplaceAll(string(out), "250-"+ext+"\r\n", ""))
+	}
+	if _, err := c.Conn.Write(out); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 func (f *fakeTarget) set(fn func(b *behavior)) {
@@ -117,6 +160,7 @@ type fakeSession struct {
 	conn   *smtp.Conn
 	authed bool
 	from   string
+	opts   smtp.MailOptions
 	to     []string
 }
 
@@ -140,11 +184,14 @@ func (s *fakeSession) Auth(string) (sasl.Server, error) {
 	}), nil
 }
 
-func (s *fakeSession) Mail(from string, _ *smtp.MailOptions) error {
+func (s *fakeSession) Mail(from string, opts *smtp.MailOptions) error {
 	if s.f.user != "" && !s.authed {
 		return &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "auth required"}
 	}
 	s.from = from
+	if opts != nil {
+		s.opts = *opts
+	}
 	return nil
 }
 
@@ -165,7 +212,7 @@ func (s *fakeSession) Data(r io.Reader) error {
 		return err
 	}
 	s.f.mu.Lock()
-	s.f.received = append(s.f.received, received{from: s.from, to: s.to, data: data})
+	s.f.received = append(s.f.received, received{from: s.from, to: s.to, opts: s.opts, data: data})
 	b := &s.f.b
 	hold, holding := b.hold, b.holding
 	drop := b.drop > 0
@@ -189,7 +236,7 @@ func (s *fakeSession) Data(r io.Reader) error {
 	return reply
 }
 
-func (s *fakeSession) Reset()        { s.from, s.to = "", nil }
+func (s *fakeSession) Reset()        { s.from, s.opts, s.to = "", smtp.MailOptions{}, nil }
 func (s *fakeSession) Logout() error { return nil }
 
 func target(name string, f *fakeTarget, sc scheme, mod ...func(*config.Target)) config.Target {
@@ -358,6 +405,20 @@ func (h *harness) send(to []string, msg string) string {
 }
 
 func (h *harness) trySend(to []string, msg string) (string, error) {
+	return h.trySendWith(nil, to, msg)
+}
+
+// sendWith submits one mail with MAIL parameters.
+func (h *harness) sendWith(opts *smtp.MailOptions, to []string, msg string) string {
+	h.t.Helper()
+	id, err := h.trySendWith(opts, to, msg)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return id
+}
+
+func (h *harness) trySendWith(opts *smtp.MailOptions, to []string, msg string) (string, error) {
 	c, err := smtp.Dial(h.addr)
 	if err != nil {
 		return "", err
@@ -366,7 +427,7 @@ func (h *harness) trySend(to []string, msg string) (string, error) {
 	if err := c.Auth(sasl.NewPlainClient("", "app", "secret")); err != nil {
 		return "", err
 	}
-	if err := c.Mail("noreply@example.test", nil); err != nil {
+	if err := c.Mail("noreply@example.test", opts); err != nil {
 		return "", err
 	}
 	for _, r := range to {
@@ -447,7 +508,7 @@ func kinds(evs []store.Event, target string) []string {
 // table and the stored message.
 func (h *harness) checkNoLeak() {
 	t := h.t
-	needles := []string{canary, "canary-leak"}
+	needles := []string{canary, "canary-leak", utf8Canary, "kanarienvögel", "exämple"}
 	check := func(where, s string) {
 		for _, n := range needles {
 			if strings.Contains(s, n) {
@@ -710,7 +771,7 @@ func TestSkipHeader(t *testing.T) {
 		t.Fatalf("capture = %+v", d)
 	}
 	if got := a.got(); len(got) != 1 || strings.Contains(string(got[0].data), "X-Postwerk-Skip") {
-		t.Fatalf("main received %q", got)
+		t.Fatalf("main received %+v", got)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if len(b.got()) != 0 {

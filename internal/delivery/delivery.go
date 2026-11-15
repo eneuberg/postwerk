@@ -320,6 +320,10 @@ func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
 		w.log.Error("store failed during send, message not sent", "mail_id", c.MailID, "err", storeErr)
 		r.Status, r.NextAttempt = store.Queued, now.Add(w.opts.Backoff(c.Attempt))
 		r.Kind, r.Level, r.Text = store.KindDeliveryRetry, store.Warn, "internal storage error before sending"
+	} else if res.refused != "" {
+		// The target lacks something the mail needs; nothing was sent and
+		// a later attempt would not change that.
+		r.Status, r.Kind, r.Level, r.Text = store.Failed, res.refused, problem, res.reason
 	} else {
 		o, code, text := Classify(res.err, res.dataSent)
 		if o == HandedOff && res.err == nil {
@@ -349,6 +353,8 @@ type sendResult struct {
 	reply    string // the target's text after the message, on success
 	err      error  // from the network or the target
 	storeErr error  // recording data_sent_at failed; nothing was sent
+	refused  string // event kind: the mail was not sent because the target cannot take it
+	reason   string // why, for the event
 }
 
 // send makes one attempt with the decrypted message raw.
@@ -359,12 +365,17 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 	}
 	defer client.Close()
 
+	opts, reason := mailOptions(client, c, raw)
+	if reason != "" {
+		_ = client.Quit()
+		return sendResult{refused: store.KindDeliveryUnsupported, reason: reason}
+	}
 	if w.target.Username != "" {
 		if err := client.Auth(sasl.NewPlainClient("", w.target.Username, w.target.Password)); err != nil {
 			return sendResult{err: err}
 		}
 	}
-	if err := client.Mail(c.EnvelopeFrom, nil); err != nil {
+	if err := client.Mail(c.EnvelopeFrom, opts); err != nil {
 		return sendResult{err: err}
 	}
 	for _, rcpt := range c.Recipients {
@@ -396,6 +407,48 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 	}
 	_ = client.Quit()
 	return sendResult{dataSent: true, reply: resp.StatusText}
+}
+
+// mailOptions returns the MAIL parameters for this target, passing on what
+// the sender declared (store.Params) where the target offers the extension.
+// If the mail needs an extension the target does not offer, it returns the
+// reason instead; the mail must then not be sent, because sending it without
+// the parameter would hand the target data it did not agree to take.
+//
+//   - SMTPUTF8 is needed when the sender declared it and the envelope or the
+//     header section really holds non-ASCII characters. Many clients (Go's
+//     net/smtp, for one) declare SMTPUTF8 whenever it is offered; for a pure
+//     ASCII mail the parameter changes nothing, so it is dropped where the
+//     target lacks it.
+//   - 8BITMIME is needed when the message holds any byte outside 7-bit
+//     ASCII, declared or not. The SMTP library sends BODY=8BITMIME to every
+//     target that offers it; a 7-bit message is valid 8BITMIME as well.
+func mailOptions(client *smtp.Client, c *store.Claimed, raw []byte) (*smtp.MailOptions, string) {
+	opts := &smtp.MailOptions{}
+	if c.Params.SMTPUTF8 {
+		hasUTF8, _ := client.Extension("SMTPUTF8")
+		switch {
+		case hasUTF8:
+			opts.UTF8 = true
+		case !asciiEnvelope(c) || message.HeaderHas8Bit(raw):
+			return nil, "the mail needs SMTPUTF8 (non-ASCII address or header), which the target does not offer; not sent"
+		}
+	}
+	if has8Bit, _ := client.Extension("8BITMIME"); !has8Bit && message.Has8Bit(raw) {
+		return nil, "the message has 8-bit content and needs 8BITMIME, which the target does not offer; not sent"
+	}
+	return opts, ""
+}
+
+func asciiEnvelope(c *store.Claimed) bool {
+	for _, a := range append([]string{c.EnvelopeFrom}, c.Recipients...) {
+		for i := 0; i < len(a); i++ {
+			if a[i] >= 0x80 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (w *worker) headers(mailID string) []message.Field {
