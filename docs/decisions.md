@@ -57,3 +57,20 @@ A small server-rendered UI for status and history, on a listener meant for inter
 message content.
 
 ## D11 MIT license
+
+## D12 A list of targets instead of one upstream and a mirror
+
+Delivery goes to every configured target, and each target is tracked on its own. This covers production (a provider),
+tests (a capture tool such as Mailpit) and both at once with one mechanism, instead of a main path plus a best-effort
+mirror. A broken target does not block the others. Senders can skip named targets per mail with a header.
+
+## D13 Unclear outcome is a per-target policy
+
+After `DATA`, a broken connection leaves it open whether the target has the mail. `hold` waits for an admin, `check`
+asks the provider and resends only if the mail is not found there, `retry` resends at once. The default is `check` where
+a status adapter exists and `hold` otherwise, so a duplicate is only risked where it is checked first or does no harm.
+
+## D14 `250` means stored, not delivered
+
+Postwerk replies `250` once the mail is stored, like every SMTP relay. Delivery is reported later through the status API,
+the UI and events. This is stated in the README so that senders do not read their own "sent" flag as "delivered".

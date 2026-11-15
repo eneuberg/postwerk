@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 490" width="960" height="490" role="img" aria-labelledby="title desc">
+  <title id="title">Postwerk architecture</title>
+  <desc id="desc">Senders deliver finished mails over SMTP to the ingress. The ingress stores each mail, then replies 250. Delivery fetches due mails from the store and sends one copy to each target: a provider such as Mailjet, a capture tool such as Mailpit, or any SMTP server. Provider status polls the provider's API and writes the result to the store. The reporter reads the event log and reports to stdout, OpenTelemetry, Sentry protocol and webhooks. The query API and UI read from the store and answer over HTTP.</desc>
+  <style>
+    svg { --ink: #18212b; --muted: #5a6573; --accent: #0e6f68; }
+    @media (prefers-color-scheme: dark) { svg { --ink: #e5eaf0; --muted: #9aa6b3; --accent: #4cc2b3; } }
+    text { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; fill: var(--ink); }
+    .h { font-weight: 600; }
+    .s { font-size: 11.5px; fill: var(--muted); }
+    .l { font-size: 11.5px; }
+    .c { text-anchor: middle; }
+    .box { fill: none; stroke: var(--ink); stroke-width: 1.4; }
+    .opt { stroke-dasharray: 5 4; }
+    .pw { fill: none; stroke: var(--accent); stroke-width: 2.2; }
+    .pwt { fill: var(--accent); font-weight: 700; font-size: 14px; }
+    .ar { stroke: var(--ink); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+    .head { fill: var(--ink); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <!-- Senders -->
+  <rect class="box" x="20" y="80" width="180" height="52" rx="8"/>
+  <text class="h c" x="110" y="104">Application</text>
+  <text class="s c" x="110" y="121">e.g. notifications</text>
+  <rect class="box" x="20" y="160" width="180" height="52" rx="8"/>
+  <text class="h c" x="110" y="184">Auth service</text>
+  <text class="s c" x="110" y="201">invites, password reset</text>
+  <rect class="box opt" x="20" y="240" width="180" height="52" rx="8"/>
+  <text class="h c" x="110" y="264">Any other sender</text>
+  <text class="s c" x="110" y="281">same path</text>
+  <text class="s c" x="110" y="318">finished mails over SMTP,</text>
+  <text class="s c" x="110" y="334">login per sender</text>
+  <rect class="box" x="20" y="372" width="180" height="52" rx="8"/>
+  <text class="h c" x="110" y="396">Admin, scripts</text>
+  <text class="s c" x="110" y="413">"did mail X get through?"</text>
+
+  <line class="ar" x1="200" y1="106" x2="278" y2="120"/>
+  <line class="ar" x1="200" y1="186" x2="278" y2="132"/>
+  <line class="ar opt" x1="200" y1="266" x2="278" y2="144"/>
+  <line class="ar" x1="280" y1="398" x2="202" y2="398"/>
+  <text class="l c" x="241" y="390">HTTP</text>
+
+  <!-- Postwerk -->
+  <rect class="pw" x="250" y="40" width="450" height="410" rx="14"/>
+  <text class="pwt" x="272" y="68">Postwerk · one container</text>
+
+  <rect class="box" x="280" y="100" width="160" height="56" rx="8"/>
+  <text class="h c" x="360" y="124">Ingress</text>
+  <text class="s c" x="360" y="141">SMTP, AUTH, limits</text>
+
+  <rect class="box" x="280" y="228" width="160" height="72" rx="8"/>
+  <text class="h c" x="360" y="254">Store</text>
+  <text class="s c" x="360" y="271">mails, deliveries, event log</text>
+  <text class="s c" x="360" y="287">SQLite, one file</text>
+
+  <rect class="box" x="280" y="370" width="160" height="56" rx="8"/>
+  <text class="h c" x="360" y="394">Query API + UI</text>
+  <text class="s c" x="360" y="411">status, history, health</text>
+
+  <rect class="box" x="520" y="100" width="150" height="56" rx="8"/>
+  <text class="h c" x="595" y="124">Delivery</text>
+  <text class="s c" x="595" y="141">per target, retry</text>
+
+  <rect class="box" x="520" y="236" width="150" height="56" rx="8"/>
+  <text class="h c" x="595" y="260">Provider status</text>
+  <text class="s c" x="595" y="277">what happened next</text>
+
+  <rect class="box" x="520" y="370" width="150" height="56" rx="8"/>
+  <text class="h c" x="595" y="394">Reporter</text>
+  <text class="s c" x="595" y="411">cursor per sink</text>
+
+  <line class="ar" x1="360" y1="156" x2="360" y2="226"/>
+  <text class="l" x="368" y="188">stores,</text>
+  <text class="l" x="368" y="202">then 250</text>
+
+  <line class="ar" x1="440" y1="240" x2="518" y2="152"/>
+  <text class="l" x="450" y="186">fetches due</text>
+
+  <line class="ar" x1="518" y1="264" x2="442" y2="264"/>
+  <text class="l c" x="480" y="256">writes</text>
+
+  <line class="ar" x1="440" y1="292" x2="518" y2="384"/>
+  <text class="l" x="488" y="322">reads</text>
+  <text class="l" x="488" y="336">events</text>
+
+  <line class="ar" x1="360" y1="300" x2="360" y2="368"/>
+  <text class="l" x="368" y="338">reads</text>
+
+  <!-- Targets -->
+  <text class="h" x="755" y="58">Targets · a list</text>
+  <rect class="box" x="755" y="72" width="185" height="50" rx="8"/>
+  <text class="h c" x="847" y="93">Provider</text>
+  <text class="s c" x="847" y="110">e.g. Mailjet SMTP</text>
+  <rect class="box opt" x="755" y="136" width="185" height="50" rx="8"/>
+  <text class="h c" x="847" y="157">Capture tool</text>
+  <text class="s c" x="847" y="174">e.g. Mailpit, for tests</text>
+  <rect class="box opt" x="755" y="200" width="185" height="50" rx="8"/>
+  <text class="h c" x="847" y="221">Any SMTP server</text>
+  <text class="s c" x="847" y="238">each tracked on its own</text>
+
+  <line class="ar" x1="670" y1="118" x2="753" y2="97"/>
+  <line class="ar opt" x1="670" y1="128" x2="753" y2="161"/>
+  <line class="ar opt" x1="670" y1="138" x2="753" y2="225"/>
+  <text class="l c" x="712" y="90">one copy each</text>
+
+  <rect class="box" x="755" y="272" width="185" height="50" rx="8"/>
+  <text class="h c" x="847" y="293">Provider API</text>
+  <text class="s c" x="847" y="310">message status</text>
+  <line class="ar" x1="753" y1="297" x2="672" y2="270"/>
+  <text class="l c" x="712" y="304">polled</text>
+
+  <rect class="box" x="755" y="370" width="185" height="56" rx="8"/>
+  <text class="h c" x="847" y="394">Sinks</text>
+  <text class="s c" x="847" y="411">stdout · OTel · Sentry · webhook</text>
+  <line class="ar" x1="670" y1="398" x2="753" y2="398"/>
+
+  <!-- Legend -->
+  <text class="s" x="20" y="478">Arrows show where data goes: ingress and provider status write to the store; delivery, reporter and query read from it. Dashed: optional.</text>
+</svg>
