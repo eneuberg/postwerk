@@ -393,6 +393,7 @@ type MailRecord struct {
 	MessageID       string
 	Ref             string
 	Size            int
+	Params          Params
 	HasRaw          bool
 	RawPurgedAt     time.Time // zero while the message is stored
 	PseudonymizedAt time.Time // zero while addresses are plain
@@ -408,11 +409,14 @@ func (s *Store) Mail(ctx context.Context, id string) (MailRecord, error) {
 	var received int64
 	var messageID, ref sql.NullString
 	var purged, pseudo sql.NullInt64
-	var rawLen sql.NullInt64
+	var rawLen, declared sql.NullInt64
+	var body sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, received_at, sender, envelope_from, message_id, ref, size, length(raw), raw_purged_at, pseudonymized_at
+		SELECT id, received_at, sender, envelope_from, message_id, ref, size, length(raw), raw_purged_at, pseudonymized_at,
+			body, smtputf8, declared_size
 		FROM mails WHERE id = ?`, id).
-		Scan(&m.ID, &received, &m.Sender, &m.EnvelopeFrom, &messageID, &ref, &m.Size, &rawLen, &purged, &pseudo)
+		Scan(&m.ID, &received, &m.Sender, &m.EnvelopeFrom, &messageID, &ref, &m.Size, &rawLen, &purged, &pseudo,
+			&body, &m.Params.SMTPUTF8, &declared)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
 	}
@@ -421,6 +425,7 @@ func (s *Store) Mail(ctx context.Context, id string) (MailRecord, error) {
 	}
 	m.ReceivedAt = time.UnixMilli(received)
 	m.MessageID, m.Ref = messageID.String, ref.String
+	m.Params.Body, m.Params.DeclaredSize = body.String, declared.Int64
 	m.HasRaw, m.SealedRawBytes = rawLen.Valid, int(rawLen.Int64)
 	if purged.Valid {
 		m.RawPurgedAt = time.UnixMilli(purged.Int64)

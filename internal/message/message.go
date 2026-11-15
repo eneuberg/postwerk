@@ -239,3 +239,40 @@ func printable(s string) bool {
 	}
 	return true
 }
+
+// Has8Bit reports whether msg contains a byte outside 7-bit ASCII anywhere.
+// Such a message needs a target that offers 8BITMIME.
+func Has8Bit(msg []byte) bool { return !isASCII(msg) }
+
+// HeaderHas8Bit reports whether the header section of msg (everything before
+// the first empty line) contains a byte outside 7-bit ASCII: UTF-8 in header
+// fields, which needs SMTPUTF8 (RFC 6532).
+func HeaderHas8Bit(msg []byte) bool {
+	pos := 0
+	for pos < len(msg) {
+		lineEnd := bytes.IndexByte(msg[pos:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(msg)
+		} else {
+			lineEnd += pos + 1
+		}
+		line := msg[pos:lineEnd]
+		if isEmptyLine(line) {
+			return false
+		}
+		if !isASCII(line) {
+			return true
+		}
+		pos = lineEnd
+	}
+	return false
+}
+
+func isASCII(b []byte) bool {
+	for _, c := range b {
+		if c >= 0x80 {
+			return false
+		}
+	}
+	return true
+}

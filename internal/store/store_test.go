@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -37,9 +39,10 @@ func newMail(id string, at time.Time, targets ...string) NewMail {
 func TestOpenPragmasAndPermissions(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, Options{})
+	files, _ := fs.Glob(migrationFS, "migrations/*.sql")
 	for name, want := range map[string]string{
 		"journal_mode": "wal", "synchronous": "2", "foreign_keys": "1",
-		"secure_delete": "1", "temp_store": "2", "user_version": "2",
+		"secure_delete": "1", "temp_store": "2", "user_version": strconv.Itoa(len(files)),
 	} {
 		var got string
 		if err := s.db.QueryRow("PRAGMA " + name).Scan(&got); err != nil {
@@ -290,5 +293,35 @@ func TestClosedStoreFails(t *testing.T) {
 	}
 	if err := s.Ping(ctx); err == nil {
 		t.Fatal("ping on closed store succeeded")
+	}
+}
+
+func TestParamsStored(t *testing.T) {
+	s := open(t, t.TempDir(), Options{})
+	now := time.Now()
+	m := newMail("pw_params", now, "t")
+	m.Params = Params{Body: Body8BitMIME, SMTPUTF8: true, DeclaredSize: 1234}
+	if err := s.Accept(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.Mail(ctx, "pw_params")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Params != m.Params {
+		t.Fatalf("stored params = %+v", rec.Params)
+	}
+	c, err := s.Claim(ctx, "t", now)
+	if err != nil || c == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if c.Params != m.Params {
+		t.Fatalf("claimed params = %+v", c.Params)
+	}
+
+	bad := newMail("pw_badbody", now, "t")
+	bad.Params.Body = "BINARYMIME"
+	if err := s.Accept(ctx, bad); err == nil {
+		t.Fatal("BODY=BINARYMIME was stored")
 	}
 }

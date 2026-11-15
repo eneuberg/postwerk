@@ -66,8 +66,11 @@ const (
 	KindDeliveryUnknown    = "delivery.unknown"
 	KindDeliverySkipped    = "delivery.skipped"
 	KindDeliveryNotAllowed = "delivery.not_allowed"
-	KindTargetAuthFailed   = "target.auth_failed"
-	KindTargetUnreachable  = "target.unreachable"
+	// KindDeliveryUnsupported: the mail needs an SMTP extension
+	// (SMTPUTF8, 8BITMIME) that the target does not offer; nothing was sent.
+	KindDeliveryUnsupported = "delivery.unsupported"
+	KindTargetAuthFailed    = "target.auth_failed"
+	KindTargetUnreachable   = "target.unreachable"
 	// KindRawExpired: the stored message was removed by retention while the
 	// delivery still needed it; the delivery is failed and cannot be resent.
 	KindRawExpired = "retention.raw_expired"
@@ -288,9 +291,28 @@ type NewMail struct {
 	Ref          string
 	// Raw is the sealed message (internal/seal); Size is the length of the
 	// message before sealing.
-	Raw        []byte
-	Size       int
+	Raw  []byte
+	Size int
+	// Params are the MAIL parameters the sender declared.
+	Params     Params
 	Deliveries []NewDelivery
+}
+
+// Body values of the MAIL BODY= parameter that Postwerk accepts.
+const (
+	Body7Bit     = "7BIT"
+	Body8BitMIME = "8BITMIME"
+)
+
+// Params are the MAIL parameters a sender declared (RFC 6152, RFC 6531,
+// RFC 1870). They are stored as given, so delivery can pass them on.
+type Params struct {
+	// Body is Body7Bit, Body8BitMIME or empty when BODY= was not given.
+	Body string
+	// SMTPUTF8 is set when the sender gave the SMTPUTF8 parameter.
+	SMTPUTF8 bool
+	// DeclaredSize is the SIZE= value, 0 when not given.
+	DeclaredSize int64
 }
 
 // NewDelivery is the initial state of one delivery.
@@ -313,11 +335,18 @@ func (s *Store) Accept(ctx context.Context, m NewMail) error {
 	if s.opts.PurgeRawOnHandoff && !slices.ContainsFunc(m.Deliveries, func(d NewDelivery) bool { return d.Status == Queued }) {
 		raw, purgedAt = nil, at
 	}
+	switch m.Params.Body {
+	case "", Body7Bit, Body8BitMIME:
+	default:
+		return fmt.Errorf("store: accept %s: invalid BODY value", m.ID)
+	}
 	err := s.eventTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO mails (id, received_at, sender, envelope_from, message_id, ref, size, raw, raw_purged_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, at, m.Sender, m.EnvelopeFrom, nullStr(m.MessageID), nullStr(m.Ref), m.Size, raw, purgedAt)
+			INSERT INTO mails (id, received_at, sender, envelope_from, message_id, ref, size, raw, raw_purged_at,
+				body, smtputf8, declared_size)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, at, m.Sender, m.EnvelopeFrom, nullStr(m.MessageID), nullStr(m.Ref), m.Size, raw, purgedAt,
+			nullStr(m.Params.Body), m.Params.SMTPUTF8, nullInt64(m.Params.DeclaredSize))
 		if err != nil {
 			return fmt.Errorf("insert mail: %w", err)
 		}
@@ -368,6 +397,7 @@ type Claimed struct {
 	ReceivedAt   time.Time
 	EnvelopeFrom string
 	Recipients   []string
+	Params       Params
 	// Raw is the sealed message. It is nil if retention has removed it; the
 	// worker must then fail the delivery (KindRawExpired) without sending.
 	Raw []byte
@@ -400,12 +430,15 @@ func (s *Store) Claim(ctx context.Context, target string, now time.Time) (*Claim
 		}
 		var received int64
 		var raw []byte
+		var body sql.NullString
+		var declared sql.NullInt64
 		if err := tx.QueryRowContext(ctx,
-			`SELECT received_at, envelope_from, raw FROM mails WHERE id = ?`, mailID).
-			Scan(&received, &claimed.EnvelopeFrom, &raw); err != nil {
+			`SELECT received_at, envelope_from, raw, body, smtputf8, declared_size FROM mails WHERE id = ?`, mailID).
+			Scan(&received, &claimed.EnvelopeFrom, &raw, &body, &claimed.Params.SMTPUTF8, &declared); err != nil {
 			return fmt.Errorf("load mail: %w", err)
 		}
 		claimed.Raw = raw
+		claimed.Params.Body, claimed.Params.DeclaredSize = body.String, declared.Int64
 		claimed.ReceivedAt = time.UnixMilli(received)
 		rows, err := tx.QueryContext(ctx,
 			`SELECT address FROM recipients WHERE mail_id = ? ORDER BY position`, mailID)
@@ -701,6 +734,13 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullInt64(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 func nullInt(n int) any {

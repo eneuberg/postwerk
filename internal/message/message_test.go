@@ -155,3 +155,26 @@ func TestWrite(t *testing.T) {
 		t.Fatal("header injection accepted")
 	}
 }
+
+func TestEightBit(t *testing.T) {
+	tests := []struct {
+		msg           string
+		any8, header8 bool
+	}{
+		{"Subject: hi\r\n\r\nbody\r\n", false, false},
+		{"Subject: hi\r\n\r\nGrüße\r\n", true, false},
+		{"Subject: Grüße\r\n\r\nbody\r\n", true, true},
+		{"Subject: hi\n\nGrüße\n", true, false},
+		{"Subject: hi\r\n Grüße folded\r\n\r\nbody", true, true},
+		{"no header end Grüße", true, true},
+		{"", false, false},
+	}
+	for _, tt := range tests {
+		if got := Has8Bit([]byte(tt.msg)); got != tt.any8 {
+			t.Errorf("Has8Bit(%q) = %v", tt.msg, got)
+		}
+		if got := HeaderHas8Bit([]byte(tt.msg)); got != tt.header8 {
+			t.Errorf("HeaderHas8Bit(%q) = %v", tt.msg, got)
+		}
+	}
+}
