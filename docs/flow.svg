@@ -1,99 +1,263 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" width="760" height="240" role="img" aria-labelledby="t d">
-  <title id="t">Postwerk mail flow</title>
-  <desc id="d">Applications hand a mail to Postwerk over SMTP. Postwerk stores it, logs the step, and delivers one copy to each target, here Mailjet and Mailpit.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-labelledby="t d">
+  <title id="t">Postwerk mail flow, reports and audit lookup</title>
+  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup (query API and UI) is planned.</desc>
   <style>
     .card   { fill: #f6f8fa; stroke: #d0d7de; }
     .box    { fill: #ffffff; stroke: #8c959f; stroke-width: 1.2; }
     .core   { fill: #ffffff; stroke: #0e6f68; stroke-width: 2; }
     .edge   { fill: none; stroke: #8c959f; stroke-width: 1.4; }
+    .plan   { stroke-dasharray: 5 4; }
     .txt    { fill: #18212b; font: 500 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .title  { fill: #18212b; font: 600 16px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .muted  { fill: #5a6573; font: 400 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .small  { fill: #5a6573; font: 500 10px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .log    { fill: #18212b; font: 400 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .note   { fill: #18212b; font: 500 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .tick   { fill: none; stroke: #0e6f68; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon   { fill: none; stroke: #18212b; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     .rule   { stroke: #d0d7de; stroke-width: 1; }
     .disk   { fill: #e6f2f1; stroke: #0e6f68; stroke-width: 1.4; }
+    .pill   { fill: #f6f8fa; stroke: #8c959f; stroke-width: 1; stroke-dasharray: 3 2; }
     .mail   { fill: #0e6f68; }
+    .evt    { fill: #8c959f; }
     .hl     { fill: none; stroke: #0e6f68; stroke-width: 2; opacity: 0; }
+    .scan   { fill: #0e6f68; fill-opacity: 0.08; stroke: #0e6f68; stroke-width: 1.4; opacity: 0; }
+    .bad    { fill: #cf222e; }
+    .badln  { fill: none; stroke: #cf222e; stroke-width: 2; stroke-linecap: round; }
+    .badtxt { fill: #cf222e; }
+    .badbox { fill: none; stroke: #cf222e; stroke-width: 2; }
 
     @media (prefers-color-scheme: dark) {
       .card  { fill: #161b22; stroke: #30363d; }
       .box   { fill: #0d1117; stroke: #6e7681; }
       .core  { fill: #0d1117; stroke: #4cc2b3; }
       .edge  { stroke: #6e7681; }
-      .txt, .title, .log { fill: #e5eaf0; }
-      .muted { fill: #9aa6b3; }
+      .txt, .title, .log, .note { fill: #e5eaf0; }
+      .muted, .small { fill: #9aa6b3; }
       .tick  { stroke: #4cc2b3; }
+      .icon  { stroke: #e5eaf0; }
       .rule  { stroke: #30363d; }
       .disk  { fill: #12302d; stroke: #4cc2b3; }
+      .pill  { fill: #161b22; stroke: #6e7681; }
       .mail  { fill: #4cc2b3; }
+      .evt   { fill: #6e7681; }
       .hl    { stroke: #4cc2b3; }
+      .scan  { fill: #4cc2b3; stroke: #4cc2b3; }
+      .bad   { fill: #ff7b72; }
+      .badln { stroke: #ff7b72; }
+      .badtxt { fill: #ff7b72; }
+      .badbox { stroke: #ff7b72; }
     }
 
-    /* one mail per 5 s loop */
-    .in    { opacity: 0; animation: in 5s linear infinite; }
-    .outA  { opacity: 0; animation: outA 5s linear infinite; }
-    .outB  { opacity: 0; animation: outB 5s linear infinite; }
-    .store { animation: store 5s linear infinite; }
-    .row1  { animation: row1 5s linear infinite; }
-    .row2  { animation: row2 5s linear infinite; }
-    .hlA, .hlB { animation: hit 5s linear infinite; }
+    /* 10 s loop. Round 1 (0-37 %): a mail is delivered to both targets, every
+       event goes out as a quiet report. Round 2 (38-100 %): Mailjet answers 550,
+       the error event raises an alert, a lookup reads the history. */
+    .in1, .in2, .outA, .outB, .rep1, .rep2, .rep3, .reply, .alarm, .ask, .answer { opacity: 0; }
+    .in1    { animation: in1 10s linear infinite; }
+    .in2    { animation: in2 10s linear infinite; }
+    .outA   { animation: outA 10s linear infinite; }
+    .outB   { animation: outB 10s linear infinite; }
+    .store  { animation: store 10s linear infinite; }
+    .row1   { animation: row1 10s linear infinite; }
+    .row2   { animation: row2 10s linear infinite; }
+    .row2x  { opacity: 0; animation: row2x 10s linear infinite; }
+    .row3   { animation: row3 10s linear infinite; }
+    .hlA    { animation: hitA 10s linear infinite; }
+    .hlB    { animation: hitB 10s linear infinite; }
+    .rep1   { animation: rep1 10s linear infinite; }
+    .rep2   { animation: rep2 10s linear infinite; }
+    .rep3   { animation: rep3 10s linear infinite; }
+    .reply  { animation: reply 10s linear infinite; }
+    .errA   { opacity: 0; animation: errA 10s linear infinite; }
+    .alarm  { animation: alarm 10s linear infinite; }
+    .alert  { opacity: 0; animation: alert 10s linear infinite; }
+    .bell   { transform-box: fill-box; transform-origin: 50% 0; animation: ring 10s linear infinite; }
+    .ask    { animation: ask 10s linear infinite; }
+    .askq   { opacity: 0; animation: askq 10s linear infinite; }
+    .scan   { animation: scan 10s linear infinite; }
+    .answer { animation: answer 10s linear infinite; }
+    .hlQ    { animation: hitQ 10s linear infinite; }
 
-    @keyframes in {
-      0%   { transform: translate(162px, 120px); opacity: 0; }
-      3%   { transform: translate(166px, 120px); opacity: 1; }
-      24%  { transform: translate(288px, 120px); opacity: 1; }
-      27%  { transform: translate(296px, 120px); opacity: 0; }
-      100% { transform: translate(296px, 120px); opacity: 0; }
+    @keyframes in1 {
+      0%   { transform: translate(162px, 60.9px); opacity: 0; }
+      2%   { transform: translate(166px, 62.8px); opacity: 1; }
+      10%  { transform: translate(282px, 116.3px); opacity: 1; }
+      12%, 100% { transform: translate(288px, 119.1px); opacity: 0; }
+    }
+    @keyframes in2 {
+      0%, 38% { transform: translate(162px, 120px); opacity: 0; }
+      40%  { transform: translate(166px, 120px); opacity: 1; }
+      48%  { transform: translate(282px, 120px); opacity: 1; }
+      50%, 100% { transform: translate(288px, 120px); opacity: 0; }
     }
     @keyframes store {
-      0%, 25%  { opacity: 0.55; }
-      30%, 40% { opacity: 1; }
-      48%, 100% { opacity: 0.55; }
+      0%, 11%  { opacity: 0.55; }
+      13%, 19% { opacity: 1; }
+      23%, 50% { opacity: 0.55; }
+      51%, 57% { opacity: 1; }
+      61%, 100% { opacity: 0.55; }
     }
     @keyframes row1 {
-      0%, 28%  { opacity: 0.18; }
-      33%, 90% { opacity: 1; }
-      97%, 100% { opacity: 0.18; }
+      0%, 11%  { opacity: 0.18; }
+      13%, 35% { opacity: 1; }
+      37%, 50% { opacity: 0.18; }
+      52%, 96% { opacity: 1; }
+      99%, 100% { opacity: 0.18; }
     }
     @keyframes row2 {
-      0%, 69%  { opacity: 0.18; }
-      74%, 90% { opacity: 1; }
-      97%, 100% { opacity: 0.18; }
+      0%, 26%  { opacity: 0.18; }
+      28%, 35% { opacity: 1; }
+      37%, 67% { opacity: 0.18; }
+      69%, 97% { opacity: 0; }
+      100%     { opacity: 0.18; }
+    }
+    @keyframes row2x {
+      0%, 69%  { opacity: 0; }
+      71%, 96% { opacity: 1; }
+      99%, 100% { opacity: 0; }
+    }
+    @keyframes row3 {
+      0%, 26%  { opacity: 0.18; }
+      28%, 35% { opacity: 1; }
+      37%, 65% { opacity: 0.18; }
+      67%, 96% { opacity: 1; }
+      99%, 100% { opacity: 0.18; }
     }
     @keyframes outA {
-      0%, 43% { transform: translate(472px, 120px); opacity: 0; }
-      46%  { transform: translate(478px, 117.7px); opacity: 1; }
-      68%  { transform: translate(606px, 81.1px); opacity: 1; }
-      71%  { transform: translate(612px, 79.4px); opacity: 0; }
-      100% { transform: translate(612px, 79.4px); opacity: 0; }
+      0%, 16% { transform: translate(472px, 120px); opacity: 0; }
+      17%  { transform: translate(478px, 117.7px); opacity: 1; }
+      26%  { transform: translate(606px, 81.1px); opacity: 1; }
+      27%  { transform: translate(612px, 79.4px); opacity: 0; }
+      28%, 55% { transform: translate(472px, 120px); opacity: 0; }
+      56%  { transform: translate(478px, 117.7px); opacity: 1; }
+      64%  { transform: translate(606px, 81.1px); opacity: 1; }
+      65%, 100% { transform: translate(612px, 79.4px); opacity: 0; }
     }
     @keyframes outB {
-      0%, 43% { transform: translate(472px, 120px); opacity: 0; }
-      46%  { transform: translate(478px, 122.3px); opacity: 1; }
-      68%  { transform: translate(606px, 158.9px); opacity: 1; }
-      71%  { transform: translate(612px, 160.6px); opacity: 0; }
-      100% { transform: translate(612px, 160.6px); opacity: 0; }
+      0%, 16% { transform: translate(472px, 120px); opacity: 0; }
+      17%  { transform: translate(478px, 122.3px); opacity: 1; }
+      26%  { transform: translate(606px, 158.9px); opacity: 1; }
+      27%  { transform: translate(612px, 160.6px); opacity: 0; }
+      28%, 55% { transform: translate(472px, 120px); opacity: 0; }
+      56%  { transform: translate(478px, 122.3px); opacity: 1; }
+      64%  { transform: translate(606px, 158.9px); opacity: 1; }
+      65%, 100% { transform: translate(612px, 160.6px); opacity: 0; }
     }
-    @keyframes hit {
-      0%, 68%  { opacity: 0; }
-      72%, 86% { opacity: 1; }
-      94%, 100% { opacity: 0; }
+    @keyframes hitA {
+      0%, 26%  { opacity: 0; }
+      28%, 33% { opacity: 1; }
+      36%, 100% { opacity: 0; }
+    }
+    @keyframes hitB {
+      0%, 26%  { opacity: 0; }
+      28%, 33% { opacity: 1; }
+      36%, 64% { opacity: 0; }
+      66%, 71% { opacity: 1; }
+      74%, 100% { opacity: 0; }
+    }
+    /* quiet reports: one small dot per event, no alert */
+    @keyframes rep1 {
+      0%, 13% { transform: translate(474px, 192px); opacity: 0; }
+      14%  { transform: translate(477px, 195px); opacity: 1; }
+      21%  { transform: translate(563px, 283px); opacity: 1; }
+      22%, 100% { transform: translate(566px, 286px); opacity: 0; }
+    }
+    @keyframes rep2 {
+      0%, 28% { transform: translate(474px, 192px); opacity: 0; }
+      29%  { transform: translate(477px, 195px); opacity: 1; }
+      36%  { transform: translate(563px, 283px); opacity: 1; }
+      37%, 100% { transform: translate(566px, 286px); opacity: 0; }
+    }
+    @keyframes rep3 {
+      0%, 52% { transform: translate(474px, 192px); opacity: 0; }
+      53%  { transform: translate(477px, 195px); opacity: 1; }
+      60%  { transform: translate(563px, 283px); opacity: 1; }
+      61%, 100% { transform: translate(566px, 286px); opacity: 0; }
+    }
+    /* Mailjet answers with an error */
+    @keyframes reply {
+      0%, 65% { transform: translate(606px, 81.1px); opacity: 0; }
+      66%  { transform: translate(600px, 82.8px); opacity: 1; }
+      69%  { transform: translate(484px, 116.3px); opacity: 1; }
+      70%, 100% { transform: translate(478px, 117.7px); opacity: 0; }
+    }
+    @keyframes errA {
+      0%, 64%  { opacity: 0; }
+      66%, 92% { opacity: 1; }
+      96%, 100% { opacity: 0; }
+    }
+    /* the error event goes out and raises an alert */
+    @keyframes alarm {
+      0%, 71% { transform: translate(474px, 192px); opacity: 0; }
+      72%  { transform: translate(477px, 195px); opacity: 1; }
+      78%  { transform: translate(563px, 283px); opacity: 1; }
+      79%, 100% { transform: translate(566px, 286px); opacity: 0; }
+    }
+    @keyframes alert {
+      0%, 78.5% { opacity: 0; }
+      80%, 94% { opacity: 1; }
+      97%, 100% { opacity: 0; }
+    }
+    @keyframes ring {
+      0%, 79% { transform: rotate(0deg); }
+      80.5% { transform: rotate(14deg); }
+      82%   { transform: rotate(-12deg); }
+      83.5% { transform: rotate(9deg); }
+      85%   { transform: rotate(-6deg); }
+      86.5%, 100% { transform: rotate(0deg); }
+    }
+    /* someone asks what happened; Postwerk answers from the event log */
+    @keyframes askq {
+      0%, 80%  { opacity: 0; }
+      82%, 96% { opacity: 1; }
+      99%, 100% { opacity: 0; }
+    }
+    @keyframes ask {
+      0%, 81% { transform: translate(192px, 288px); opacity: 0; }
+      82%  { transform: translate(195px, 285px); opacity: 1; }
+      86%  { transform: translate(283px, 195px); opacity: 1; }
+      87%, 100% { transform: translate(286px, 192px); opacity: 0; }
+    }
+    @keyframes scan {
+      0%, 86%  { opacity: 0; }
+      88%, 92% { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes answer {
+      0%, 89% { transform: translate(286px, 192px); opacity: 0; }
+      90%  { transform: translate(283px, 195px); opacity: 1; }
+      95%  { transform: translate(195px, 285px); opacity: 1; }
+      96%, 100% { transform: translate(192px, 288px); opacity: 0; }
+    }
+    @keyframes hitQ {
+      0%, 95%  { opacity: 0; }
+      97%      { opacity: 1; }
+      100%     { opacity: 0; }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .in, .outA, .outB, .store, .row1, .row2, .hlA, .hlB { animation: none; }
+      .in1, .in2, .outA, .outB, .store, .row1, .row2, .row2x, .row3, .hlA, .hlB, .rep1, .rep2, .rep3,
+      .reply, .errA, .alarm, .alert, .bell, .ask, .askq, .scan, .answer, .hlQ { animation: none; }
+      /* static picture of round 2: Mailjet failed, monitoring alerted, lookup asked */
+      .row2 { opacity: 0; }
+      .row2x, .errA, .alert, .askq { opacity: 1; }
     }
   </style>
 
-  <rect class="card" x="0.5" y="0.5" width="759" height="239" rx="12"/>
+  <rect class="card" x="0.5" y="0.5" width="759" height="339" rx="12"/>
 
   <!-- edges -->
   <path class="edge" d="M160 60 L290 120 M160 120 L290 120 M160 180 L290 120"/>
   <path class="edge" d="M470 120 L610 80 M470 120 L610 160"/>
+  <path class="edge" d="M470 190 L570 292"/>
+  <path class="edge plan" d="M190 292 L290 190"/>
   <text class="muted" x="214" y="111" text-anchor="middle">SMTP</text>
   <text class="muted" x="566" y="118" text-anchor="middle">one copy</text>
   <text class="muted" x="566" y="132" text-anchor="middle">per target</text>
+  <text class="muted" x="522" y="262" text-anchor="end">reports (push)</text>
+  <text class="muted" x="534" y="276" text-anchor="end">every event</text>
+  <text class="muted" x="236" y="262">lookup (pull)</text>
+  <text class="muted" x="224" y="276">from the log</text>
 
   <!-- applications -->
   <rect class="box" x="20" y="42" width="140" height="36" rx="7"/>
@@ -105,7 +269,7 @@
   <text class="muted" x="90" y="28" text-anchor="middle">applications</text>
 
   <!-- Postwerk -->
-  <rect class="core" x="290" y="40" width="180" height="160" rx="10"/>
+  <rect class="core" x="290" y="40" width="180" height="168" rx="10"/>
   <text class="title" x="380" y="66" text-anchor="middle">Postwerk</text>
   <g class="store">
     <path class="disk" d="M308 86 v16 a12 4 0 0 0 24 0 v-16"/>
@@ -114,6 +278,7 @@
   </g>
   <line class="rule" x1="304" y1="118" x2="456" y2="118"/>
   <text class="muted" x="306" y="134">event log</text>
+  <rect class="scan" x="300" y="142" width="160" height="58" rx="5"/>
   <g class="row1">
     <path class="tick" d="M307 150 l3 3 l6 -7"/>
     <text class="log" x="322" y="154">accepted</text>
@@ -121,8 +286,14 @@
   <g class="row2">
     <path class="tick" d="M307 170 l3 3 l6 -7"/>
     <text class="log" x="322" y="174">mailjet  handed off</text>
-    <path class="tick" d="M307 188 l3 3 l6 -7"/>
-    <text class="log" x="322" y="192">mailpit  handed off</text>
+  </g>
+  <g class="row2x">
+    <path class="badln" d="M308 165 l7 7 m0 -7 l-7 7"/>
+    <text class="log badtxt" x="322" y="174">mailjet  failed 550</text>
+  </g>
+  <g class="row3">
+    <path class="tick" d="M307 190 l3 3 l6 -7"/>
+    <text class="log" x="322" y="194">mailpit  handed off</text>
   </g>
 
   <!-- targets -->
@@ -130,14 +301,51 @@
   <rect class="hl hlA" x="610" y="58" width="130" height="44" rx="7"/>
   <text class="txt" x="675" y="77" text-anchor="middle">Mailjet</text>
   <text class="muted" x="675" y="93" text-anchor="middle">provider</text>
+  <g class="errA">
+    <rect class="badbox" x="610" y="58" width="130" height="44" rx="7"/>
+    <text class="note badtxt" x="675" y="118" text-anchor="middle">replies 550</text>
+  </g>
   <rect class="box" x="610" y="138" width="130" height="44" rx="7"/>
   <rect class="hl hlB" x="610" y="138" width="130" height="44" rx="7"/>
   <text class="txt" x="675" y="157" text-anchor="middle">Mailpit</text>
   <text class="muted" x="675" y="173" text-anchor="middle">capture, optional</text>
   <text class="muted" x="675" y="28" text-anchor="middle">targets</text>
 
-  <!-- mails -->
-  <circle class="mail in" cx="0" cy="0" r="5"/>
+  <!-- monitoring: Postwerk pushes every event, errors raise an alert -->
+  <rect class="box" x="570" y="264" width="170" height="56" rx="7"/>
+  <g class="alert">
+    <rect class="badbox" x="570" y="264" width="170" height="56" rx="7"/>
+    <text class="note badtxt" x="740" y="252" text-anchor="end">alert: mailjet failed</text>
+    <circle class="bad" cx="599" cy="281" r="3"/>
+  </g>
+  <g class="bell">
+    <path class="icon" d="M592 297 h16 l-2 -3 v-6 c0 -4 -2 -6.5 -6 -6.5 c-4 0 -6 2.5 -6 6.5 v6 z"/>
+    <path class="icon" d="M598 300 a2 2 0 0 0 4 0"/>
+  </g>
+  <text class="txt" x="616" y="289">monitoring (alerts)</text>
+  <text class="muted" x="616" y="305">e.g. GlitchTip</text>
+
+  <!-- audit / lookup (planned) -->
+  <rect class="box" x="20" y="264" width="170" height="56" rx="7"/>
+  <rect class="hl hlQ" x="20" y="264" width="170" height="56" rx="7"/>
+  <circle class="icon" cx="40" cy="288" r="6"/>
+  <path class="icon" d="M44.5 292.5 l5 5"/>
+  <text class="txt" x="60" y="289">audit / lookup</text>
+  <text class="muted" x="60" y="305">query API, UI</text>
+  <rect class="pill" x="136" y="257" width="46" height="15" rx="7.5"/>
+  <text class="small" x="159" y="268" text-anchor="middle">planned</text>
+  <text class="note askq" x="20" y="252">what happened to mail X?</text>
+
+  <!-- moving dots -->
+  <circle class="mail in1" cx="0" cy="0" r="5"/>
+  <circle class="mail in2" cx="0" cy="0" r="5"/>
   <circle class="mail outA" cx="0" cy="0" r="5"/>
   <circle class="mail outB" cx="0" cy="0" r="5"/>
+  <circle class="evt rep1" cx="0" cy="0" r="3"/>
+  <circle class="evt rep2" cx="0" cy="0" r="3"/>
+  <circle class="evt rep3" cx="0" cy="0" r="3"/>
+  <circle class="bad reply" cx="0" cy="0" r="4"/>
+  <circle class="bad alarm" cx="0" cy="0" r="4.5"/>
+  <circle class="mail ask" cx="0" cy="0" r="3.5"/>
+  <circle class="mail answer" cx="0" cy="0" r="3.5"/>
 </svg>
