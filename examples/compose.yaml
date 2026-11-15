@@ -1,0 +1,83 @@
+# Local example: Postwerk with Mailpit as its only target.
+#
+#   docker build -t postwerk:dev .
+#   docker compose -f examples/compose.yaml up
+#
+# Send a test mail to localhost:2525 with user "example-app" and password
+# "change-me-local-only" (AUTH PLAIN), then open http://localhost:8025 to see
+# it in Mailpit. Events are printed as JSON lines in the postwerk log.
+#
+# This setup is for a local machine only: passwords cross the network in
+# cleartext, Mailpit keeps full message content, and the key files next to
+# this file are public examples (never use them in production). Postwerk
+# logs a warning at start because the mounted files are readable by others;
+# in production mount secrets with mode 0400 (see docs/configuration.md).
+
+services:
+  postwerk:
+    image: postwerk:dev
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTWERK_SMTP_LISTEN: ":2525"
+      # Inside a container, listen on all interfaces so the health checks can
+      # be reached; keep the port off the internet.
+      POSTWERK_HTTP_LISTEN: ":8080"
+      POSTWERK_DATA: /data/postwerk.db
+      POSTWERK_SENDERS_FILE: /run/secrets/senders
+      # Raw messages are encrypted at rest; addresses become keyed hashes
+      # after POSTWERK_PSEUDONYMIZE_AFTER. Separate keys, separate files.
+      # EXAMPLE KEYS ONLY: create your own with `postwerk gen-key`.
+      POSTWERK_STORE_KEY_FILE: /run/secrets/store-key
+      POSTWERK_HASH_KEY_FILE: /run/secrets/hash-key
+      # Retention: these are the recommended defaults, written out so they
+      # are easy to find. Durations: Go syntax (30m, 72h) or days (7d).
+      POSTWERK_RAW_KEEP_AFTER_HANDOFF: "0"     # recommended: delete at hand-off
+      POSTWERK_RAW_KEEP_AFTER_FAILURE: 72h     # recommended: time for a resend
+      POSTWERK_RAW_MAX_AGE: 7d                 # recommended: hard cap
+      POSTWERK_PSEUDONYMIZE_AFTER: 30d         # recommended
+      POSTWERK_RECORD_RETENTION: 90d           # recommended
+      POSTWERK_EVENT_RETENTION: 90d            # recommended
+      POSTWERK_SECURE_DELETE: "on"             # recommended
+      # LOCAL ONLY: accept AUTH without TLS. In any shared network, set
+      # POSTWERK_SMTP_TLS_CERT_FILE and POSTWERK_SMTP_TLS_KEY_FILE instead.
+      POSTWERK_SMTP_ALLOW_INSECURE_AUTH: "true"
+      POSTWERK_INSTANCE: local
+      POSTWERK_TARGETS: mailpit
+      # smtp+plain:// is cleartext and must be chosen explicitly; it cannot
+      # carry credentials. Use smtps:// or smtp:// (STARTTLS) for real targets.
+      POSTWERK_TARGET_MAILPIT_URL: smtp+plain://mailpit:1025
+      POSTWERK_TARGET_MAILPIT_ON_UNKNOWN: retry # a duplicate does no harm in a capture tool
+    secrets:
+      - senders
+      - store-key
+      - hash-key
+    # Longer than POSTWERK_SHUTDOWN_TIMEOUT (100s), so a send in progress
+    # can finish before the container is killed.
+    stop_grace_period: 120s
+    volumes:
+      # A named volume starts with the image's /data, owned by uid 65532.
+      - postwerk-data:/data
+    ports:
+      - "127.0.0.1:2525:2525"
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    command: ["--max-age", "1d"]
+    ports:
+      - "127.0.0.1:8025:8025"
+
+secrets:
+  senders:
+    file: ./senders
+  store-key:
+    file: ./store-key.example # EXAMPLE ONLY, never use in production
+  hash-key:
+    file: ./hash-key.example # EXAMPLE ONLY, never use in production
+
+volumes:
+  postwerk-data:

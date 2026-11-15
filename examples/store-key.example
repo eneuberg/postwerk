@@ -1,0 +1,9 @@
+# EXAMPLE ONLY - NEVER USE IN PRODUCTION. This key is public in the Postwerk
+# repository, so it protects nothing.
+#
+# Store key file (POSTWERK_STORE_KEY_FILE): encrypts stored messages at rest.
+# One key per line, <key-id>:<base64 of 32 bytes>; the first key line is the
+# active key, later lines are old keys kept for reading. Create your own with
+#   docker run --rm postwerk:dev gen-key
+# and use a different key than in the hash key file.
+20261115fa2q:ZjG30xiiKur5zKyi59nuvrmbcY4n+bIayHBoMKDaeEs=

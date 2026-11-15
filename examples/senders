@@ -1,0 +1,6 @@
+# Senders file for the local compose example. One line per sending
+# application: name:hash. The hash below is for the password
+# "change-me-local-only"; never use it anywhere else.
+# Create your own with:
+#   printf '%s' 'your-password' | docker run --rm -i postwerk:dev hash-password
+example-app:pbkdf2-sha256$600000$lvPOsqrr8g0XTIG8l5HnMw$4tEcWZH7y4soDvpuUwo1FDwLnWJ+jZaaGf8dvzQz8QM
