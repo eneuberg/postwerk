@@ -79,7 +79,9 @@ Senders can keep a mail away from named targets with `X-Postwerk-Skip: <target>[
 with credentials out of a capture tool. Unknown target names in the header are ignored and logged.
 
 Envelope parameters: Postwerk stores and re-issues the envelope, so it keeps what the sender declared in `MAIL`
-(`BODY=`, `SMTPUTF8`, `SIZE=`) and passes it on to every target that offers the extension. A mail that needs
+(`BODY=`, `SMTPUTF8`, `SIZE=`) and passes it on to every target that offers the extension (`SIZE=` with the exact
+size of the message as Postwerk sends it). A message larger than a target's `SIZE` is not sent there
+(`delivery.too_large`). A mail that needs
 `SMTPUTF8` (a non-ASCII address or header) or `8BITMIME` (8-bit content) is never sent to a target that lacks it; that
 delivery fails with `delivery.unsupported`. `DSN` and `REQUIRETLS` are not offered on ingress.
 
@@ -151,6 +153,7 @@ waits only seconds before hand-off.
 | `535` (authentication failed) | our credentials are wrong or rotated | **retry and raise an error at once**; the delivery stays queued |
 | other `5xx` | permanent | `failed` |
 | target lacks `SMTPUTF8` or `8BITMIME` that the mail needs (seen in `EHLO`) | permanent | `failed`, event `delivery.unsupported`, nothing sent |
+| message larger than the target's `SIZE` (seen in `EHLO`) | permanent | `failed`, event `delivery.too_large`, nothing sent |
 | no reply after the message was sent (timeout, crash) | unclear | `unknown`, see section 6 |
 | retry window over | | `failed` |
 
@@ -238,6 +241,7 @@ Kinds written today:
 | `delivery.skipped` | info | excluded by `X-Postwerk-Skip` |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
 | `delivery.unsupported` | error (warn if optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; not sent |
+| `delivery.too_large` | error (warn if optional) | the message is larger than the `SIZE` the target offers; not sent |
 | `target.auth_failed` | error (warn if optional) | the target replied `535` |
 | `target.unreachable` | warn | no reply before the message was sent: connection, TLS or protocol error |
 
@@ -307,7 +311,7 @@ serves the `check` policy in section 6.
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), meant for a local machine or a network that encrypts traffic between
   nodes. Without a certificate and without that setting, Postwerk does not start.
 - TLS towards targets by default; cleartext only with `smtp+plain://` and never with credentials (section 3).
-- Limits: message size (default 25 MiB), recipients per message (default 50), line length, read and write timeouts.
+- Limits: message size (default 15 MiB, the `SIZE` Mailjet offers), recipients per message (default 50), line length, read and write timeouts.
 - The client only ever sees fixed reply texts; internal errors are logged, never sent.
 - The HTTP listener is separate from ingress, defaults to `127.0.0.1:8080` and is meant for an internal network only.
 - The container image is built from `scratch` (binary and CA certificates only, no shell) and runs as uid 65532 with a

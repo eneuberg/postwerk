@@ -28,7 +28,7 @@ its default is listed in [configuration.md](configuration.md).
 | I2 | Sender passwords are stored as salted PBKDF2-SHA256 hashes; unknown users cost the same time as known ones. | F |
 | I3 | `AUTH` over cleartext only if explicitly allowed; otherwise the server needs a TLS certificate (STARTTLS). | F |
 | I4 | A connection is closed after 3 failed `AUTH` attempts. | F |
-| I5 | Limits: message size, recipients per message, line length, read/write timeouts, concurrent connections (`POSTWERK_MAX_CONNECTIONS`, default 100; a connection over the limit gets a fixed `421` and is closed). | F |
+| I5 | Limits: message size (`POSTWERK_MAX_MESSAGE_BYTES`, default 15 MiB, the `SIZE` Mailjet offers), recipients per message, line length, read/write timeouts, concurrent connections (`POSTWERK_MAX_CONNECTIONS`, default 100; a connection over the limit gets a fixed `421` and is closed). | F |
 | I6 | `250` is sent only after the mail and its deliveries are committed with `synchronous=FULL`. The reply names the id: `250 2.0.0 queued as pw_…`. | F |
 | I7 | If storing fails, reply `451` (temporary) and keep nothing half-written. Internal error texts never reach the client. | F |
 | I8 | `X-Postwerk-*` headers set by the sender are read (`Ref`, `Skip`) and removed before storage. *(safe default, proposed; scope gap 7)* | F |
@@ -93,6 +93,7 @@ its default is listed in [configuration.md](configuration.md).
 | D15 | The unit of tracking is (mail, target, recipient); its status (`queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`) is the only stored status. Scheduling and attempts stay per (mail, target). Every result and every result event is per recipient. | F |
 | D16 | RFC 5321 relay behaviour: `DATA` goes to the recipients the target accepted; `5xx` at `RCPT` fails that recipient, `4xx` (and `552`) keeps it queued and only queued recipients go into the next attempt; all refused → no `DATA`. An unclear outcome after `DATA` applies only to the recipients of that attempt. | F |
 | D17 | The status of a delivery and of a mail is derived when reading, never stored: `queued` while any recipient is queued, `unknown` while any is unknown, `handed_off` if all were handed off, `failed` if none, `partial` if some were handed off and the others failed. | F |
+| D18 | `SIZE=` is sent with the exact size of the outgoing message to targets that offer `SIZE`. A message larger than a target's `SIZE` is not sent there: `failed` with `delivery.too_large` (`error`, `warn` for optional targets). | F |
 
 ## Status, audit, reporting
 

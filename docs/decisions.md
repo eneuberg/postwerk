@@ -137,7 +137,8 @@ tracing rely on Postwerk's own event log and, once built, its status lookup and 
 
 Postwerk is store-and-forward: it ends the sender's SMTP transaction and starts its own towards each target. Whatever
 the sender declared in `MAIL` would be lost unless Postwerk keeps it. It stores `BODY=`, `SMTPUTF8` and `SIZE=` with
-the mail and passes them to every target that offers the extension. A mail that needs an extension the target does not
+the mail and passes them to every target that offers the extension; `SIZE=` carries the exact size of the message as
+Postwerk sends it, which is more accurate than the sender's estimate. A mail that needs an extension the target does not
 offer fails there with `delivery.unsupported` instead of being sent without it: a target that never agreed to UTF-8 or
 8-bit data may mangle it, and a quietly broken address or subject is worse than a visible failure.
 
@@ -174,3 +175,13 @@ summarizes. Retention follows the recipients too: the message is kept while any 
 
 The recipient allow-list stays all or nothing per target (D8 in requirements.md): a partial copy to a test target
 would list people in `To` and `Cc` who never got it.
+
+## D25 15 MiB default message size
+
+`POSTWERK_MAX_MESSAGE_BYTES` defaults to 15728640 bytes, the `SIZE` Mailjet's relay offers (checked 2026-11-15), instead
+of 25 MiB. Postwerk answers `250` once a mail is stored; a mail it accepts but no target can take would fail only
+later, after the sender believes it sent it. With the provider's limit as the default, the sender gets the `552` at
+once. The limit also bounds memory per mail (D27). The only gap is Postwerk's own headers (about 50 to 100 bytes): a
+message within those bytes of the limit fails at the target with `delivery.too_large`, visibly, instead of being sent
+and bounced. Towards each target, Postwerk checks the `SIZE` it offers before sending and passes the exact size as
+`SIZE=`.

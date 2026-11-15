@@ -152,7 +152,7 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
-| `POSTWERK_MAX_MESSAGE_BYTES` | `26214400` (25 MiB) | 1024 to 1073741824 | Larger messages get `552`. |
+| `POSTWERK_MAX_MESSAGE_BYTES` | `15728640` (15 MiB, **recommended**) | 1024 to 1073741824 | Larger messages get `552`. Offered as `SIZE` in `EHLO`. The default is the `SIZE` Mailjet's relay offers, so a mail Postwerk accepts also fits there. Postwerk adds its own headers (about 50 bytes, about 100 for Mailjet targets), so a message within those bytes of a target's limit fails there with `delivery.too_large`. Raise it only together with every target's limit. |
 | `POSTWERK_MAX_RECIPIENTS` | `50` | 1 to 1000 | More recipients per message get `452`. |
 | `POSTWERK_MAX_CONNECTIONS` | `100` | 1 to 10000 | Concurrent SMTP connections. A connection over the limit gets `421 4.7.0 Too many connections, try again later` and is closed. |
 
@@ -164,9 +164,11 @@ target unchanged. Internationalized addresses (UTF-8, RFC 6531) are accepted onl
 
 **SMTP extensions.** Ingress offers `8BITMIME`, `SMTPUTF8`, `SIZE`, `PIPELINING`, `CHUNKING` and
 `ENHANCEDSTATUSCODES`, never `DSN` or `REQUIRETLS` (Postwerk could not keep their promise towards every target). The
-declared `BODY=`, `SMTPUTF8` and `SIZE=` are stored and passed on to each target that offers them. A mail that needs
-`SMTPUTF8` or `8BITMIME` is never sent to a target without it: that delivery fails with `delivery.unsupported`
-(details in [architecture.md](architecture.md#delivery-worker)). Not configurable.
+declared `BODY=`, `SMTPUTF8` and `SIZE=` are stored; `SMTPUTF8` and `BODY=8BITMIME` are passed on to each target that
+offers them, and `SIZE=` is sent with the exact size of the message as it leaves Postwerk. A mail that needs `SMTPUTF8`
+or `8BITMIME` is never sent to a target without it: that delivery fails with `delivery.unsupported`. A message larger
+than the `SIZE` a target offers is not sent there: `delivery.too_large` (details in
+[architecture.md](architecture.md#delivery-worker)). Not configurable.
 
 ## Shutdown
 

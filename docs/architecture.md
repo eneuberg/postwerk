@@ -117,6 +117,7 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `delivery.skipped` | info | the sender named the target in `X-Postwerk-Skip`; one per recipient |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list; the whole target is skipped, one event per recipient |
 | `delivery.unsupported` | error (warn: optional) | the mail (or this recipient's address) needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
+| `delivery.too_large` | error (warn: optional) | the message as Postwerk would send it is larger than the `SIZE` the target offers; nothing was sent |
 | `target.auth_failed` | error (warn: optional) | the target answered `535`; queued again |
 | `target.unreachable` | warn | no reply before the message was sent (connection, TLS or protocol error) |
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
@@ -195,6 +196,11 @@ orchestrator's grace period must be longer than the deadline (120 s).
 | declared `SMTPUTF8`, all ASCII | `SMTPUTF8` passed on | sent without it (nothing is lost) |
 | any byte outside 7-bit ASCII in the message | `BODY=8BITMIME` | `failed`, `delivery.unsupported`, nothing sent |
 | 7-bit message | `BODY=8BITMIME` (set by the SMTP library for every target that offers it; 7-bit content is valid 8BITMIME) | sent without `BODY=` |
+
+**Size.** The worker computes the exact size it will send (its own headers plus the stored message, without the
+sender's `X-MJ-CustomID` for Mailjet targets) and sends it as `SIZE=` to a target that offers `SIZE`. If the target
+names a limit and the message is larger, the delivery fails with `delivery.too_large` before `AUTH` and `MAIL`; like
+`delivery.unsupported`, this is final.
 
 Many clients declare `SMTPUTF8` whenever a server offers it (Go's `net/smtp` does), which is why a pure ASCII mail
 does not need it. `delivery.unsupported` is final: the target's capabilities do not change between attempts.
