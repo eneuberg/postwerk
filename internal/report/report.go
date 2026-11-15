@@ -163,6 +163,7 @@ type line struct {
 	Kind     string     `json:"kind"`
 	MailID   string     `json:"mail_id,omitempty"`
 	Target   string     `json:"target,omitempty"`
+	Rcpt     *int       `json:"recipient,omitempty"` // position, never the address
 	Attempt  int        `json:"attempt,omitempty"`
 	SMTP     *smtpReply `json:"smtp,omitempty"`
 	Sender   string     `json:"sender,omitempty"`
@@ -173,7 +174,7 @@ type line struct {
 func (s *Stdout) Export(_ context.Context, e store.Event) error {
 	l := line{
 		Seq: e.Seq, Time: e.Time.UTC().Format("2006-01-02T15:04:05.000Z"), Level: string(e.Level), Kind: e.Kind,
-		MailID: e.MailID, Target: e.Target, Attempt: e.Attempt, Sender: e.Sender, Instance: s.instance,
+		MailID: e.MailID, Target: e.Target, Rcpt: e.Recipient, Attempt: e.Attempt, Sender: e.Sender, Instance: s.instance,
 	}
 	if e.Code != 0 || e.Text != "" {
 		l.SMTP = &smtpReply{Code: e.Code, Text: e.Text}

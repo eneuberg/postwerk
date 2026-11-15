@@ -17,21 +17,22 @@ const batch = 200
 // measured back from the run's time.
 type RetainPolicy struct {
 	// RawKeepAfterHandoff: keep the stored message this long after the last
-	// delivery became handed_off or skipped, when all deliveries are.
+	// recipient became handed_off or skipped, when all recipients of all
+	// deliveries are.
 	RawKeepAfterHandoff time.Duration
-	// RawKeepAfterFailure: keep it this long after the last delivery became
+	// RawKeepAfterFailure: keep it this long after the last recipient became
 	// final, when one of them is failed or unknown.
 	RawKeepAfterFailure time.Duration
 	// RawMaxAge: never keep it longer than this after the mail was received.
 	RawMaxAge time.Duration
 	// Pseudonymize, if not nil, replaces each address by its keyed hash
-	// PseudonymizeAfter after the mail was received. Mails with a delivery
+	// PseudonymizeAfter after the mail was received. Mails with a recipient
 	// that may still be sent (queued, sending, unknown) or a stored message
 	// are left alone until that is over.
 	Pseudonymize      func(addr string) string
 	PseudonymizeAfter time.Duration
 	// RecordRetention deletes mails, recipients and deliveries. Mails with a
-	// delivery that may still be sent are kept.
+	// recipient that may still be sent are kept.
 	RecordRetention time.Duration
 	// EventRetention deletes events older than this.
 	EventRetention time.Duration
@@ -43,7 +44,7 @@ type RetainPolicy struct {
 // RetainCounts is what one retention run did.
 type RetainCounts struct {
 	RawPurged     int // stored messages removed
-	RawExpired    int // deliveries failed because their message was removed
+	RawExpired    int // recipients failed because their message was removed
 	Pseudonymized int // mails whose addresses were replaced by hashes
 	Records       int // mails deleted with their recipients and deliveries
 	Events        int // events deleted
@@ -125,8 +126,9 @@ func (s *Store) repeat(ctx context.Context, fn func(tx *sql.Tx) (int, error)) er
 	}
 }
 
-// purgeHandedOff removes the message of mails whose deliveries are all
-// handed_off or skipped, RawKeepAfterHandoff after the last of them.
+// purgeHandedOff removes the message of mails whose recipients are all
+// handed_off or skipped at every target, RawKeepAfterHandoff after the last
+// of them.
 func (s *Store) purgeHandedOff(ctx context.Context, p RetainPolicy, now time.Time, c *RetainCounts) error {
 	cutoff := ms(now.Add(-p.RawKeepAfterHandoff))
 	return s.repeat(ctx, func(tx *sql.Tx) (int, error) {
@@ -135,10 +137,10 @@ func (s *Store) purgeHandedOff(ctx context.Context, p RetainPolicy, now time.Tim
 			WHERE id IN (
 				SELECT m.id FROM mails m
 				WHERE m.raw IS NOT NULL
-				  AND EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id)
-				  AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id
+				  AND EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id)
+				  AND NOT EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id
 				                  AND d.status NOT IN ('handed_off', 'skipped'))
-				  AND (SELECT MAX(d.updated_at) FROM deliveries d WHERE d.mail_id = m.id) <= ?
+				  AND (SELECT MAX(d.updated_at) FROM delivery_recipients d WHERE d.mail_id = m.id) <= ?
 				LIMIT ?)`, ms(now), cutoff, batch)
 		if err != nil {
 			return 0, fmt.Errorf("purge handed off: %w", err)
@@ -149,37 +151,37 @@ func (s *Store) purgeHandedOff(ctx context.Context, p RetainPolicy, now time.Tim
 	})
 }
 
-// purgeAfterFailure removes the message of mails whose deliveries are all
+// purgeAfterFailure removes the message of mails whose recipients are all
 // final (none queued or sending) with at least one failed or unknown,
-// RawKeepAfterFailure after the last change. Unknown deliveries become failed:
-// without the message they can no longer be resent.
+// RawKeepAfterFailure after the last change. Unknown recipients become
+// failed: without the message they can no longer be resent.
 func (s *Store) purgeAfterFailure(ctx context.Context, p RetainPolicy, now time.Time, c *RetainCounts) error {
 	cutoff := ms(now.Add(-p.RawKeepAfterFailure))
 	return s.purgeEach(ctx, p, now, c, `
 		SELECT m.id FROM mails m
 		WHERE m.raw IS NOT NULL
-		  AND EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id AND d.status IN ('failed', 'unknown'))
-		  AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id AND d.status IN ('queued', 'sending'))
-		  AND (SELECT MAX(d.updated_at) FROM deliveries d WHERE d.mail_id = m.id) <= ?
+		  AND EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id AND d.status IN ('failed', 'unknown'))
+		  AND NOT EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id AND d.status IN ('queued', 'sending'))
+		  AND (SELECT MAX(d.updated_at) FROM delivery_recipients d WHERE d.mail_id = m.id) <= ?
 		ORDER BY m.id LIMIT ?`, cutoff,
 		"stored message removed "+p.RawKeepAfterFailure.String()+" after the failure (POSTWERK_RAW_KEEP_AFTER_FAILURE); resend is no longer possible")
 }
 
 // purgeMaxAge removes the message of every mail older than RawMaxAge, in any
-// state except while a delivery is being sent (the next run takes it).
-// Queued and unknown deliveries become failed.
+// state except while a recipient is being sent (the next run takes it).
+// Queued and unknown recipients become failed.
 func (s *Store) purgeMaxAge(ctx context.Context, p RetainPolicy, now time.Time, c *RetainCounts) error {
 	cutoff := ms(now.Add(-p.RawMaxAge))
 	return s.purgeEach(ctx, p, now, c, `
 		SELECT m.id FROM mails m
 		WHERE m.raw IS NOT NULL AND m.received_at <= ?
-		  AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id AND d.status = 'sending')
+		  AND NOT EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id AND d.status = 'sending')
 		ORDER BY m.id LIMIT ?`, cutoff,
 		"stored message removed at its maximum age (POSTWERK_RAW_MAX_AGE); the delivery can no longer be sent")
 }
 
 // purgeEach removes the message of each mail that query selects, and fails
-// its queued and unknown deliveries with a retention.raw_expired event.
+// its queued and unknown recipients, each with a retention.raw_expired event.
 func (s *Store) purgeEach(ctx context.Context, p RetainPolicy, now time.Time, c *RetainCounts,
 	query string, cutoff int64, text string) error {
 	return s.repeat(ctx, func(tx *sql.Tx) (int, error) {
@@ -187,29 +189,52 @@ func (s *Store) purgeEach(ctx context.Context, p RetainPolicy, now time.Time, c 
 		if err != nil {
 			return 0, fmt.Errorf("purge: %w", err)
 		}
+		type rcpt struct {
+			target string
+			pos    int
+		}
 		for _, id := range ids {
-			targets, err := queryStrings(ctx, tx, `
-				SELECT target FROM deliveries WHERE mail_id = ? AND status IN ('queued', 'unknown')
-				ORDER BY target`, id)
+			rows, err := tx.QueryContext(ctx, `
+				SELECT target, position FROM delivery_recipients WHERE mail_id = ? AND status IN ('queued', 'unknown')
+				ORDER BY target, position`, id)
 			if err != nil {
 				return 0, fmt.Errorf("purge %s: %w", id, err)
 			}
-			for _, t := range targets {
+			var expired []rcpt
+			for rows.Next() {
+				var r rcpt
+				if err := rows.Scan(&r.target, &r.pos); err != nil {
+					rows.Close()
+					return 0, fmt.Errorf("purge %s: %w", id, err)
+				}
+				expired = append(expired, r)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return 0, fmt.Errorf("purge %s: %w", id, err)
+			}
+			for _, r := range expired {
 				if _, err := tx.ExecContext(ctx, `
-					UPDATE deliveries SET status = 'failed', next_attempt_at = NULL, updated_at = ?
-					WHERE mail_id = ? AND target = ?`, ms(now), id, t); err != nil {
-					return 0, fmt.Errorf("purge %s: fail delivery: %w", id, err)
+					UPDATE delivery_recipients SET status = 'failed', updated_at = ?
+					WHERE mail_id = ? AND target = ? AND position = ?`, ms(now), id, r.target, r.pos); err != nil {
+					return 0, fmt.Errorf("purge %s: fail recipient: %w", id, err)
 				}
 				level := Error
-				if p.Optional[t] {
+				if p.Optional[r.target] {
 					level = Warn
 				}
 				if err := insertEvent(ctx, tx, Event{
-					Time: now, MailID: id, Target: t, Kind: KindRawExpired, Level: level, Text: text,
+					Time: now, MailID: id, Target: r.target, Recipient: Position(r.pos), Kind: KindRawExpired,
+					Level: level, Text: text,
 				}); err != nil {
 					return 0, err
 				}
 				c.RawExpired++
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE deliveries SET next_attempt_at = NULL, updated_at = ? WHERE mail_id = ? AND next_attempt_at IS NOT NULL`,
+				ms(now), id); err != nil {
+				return 0, fmt.Errorf("purge %s: unschedule: %w", id, err)
 			}
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE mails SET raw = NULL, raw_purged_at = ? WHERE id = ?`, ms(now), id); err != nil {
@@ -232,7 +257,7 @@ func (s *Store) pseudonymize(ctx context.Context, p RetainPolicy, now time.Time,
 		ids, err := queryStrings(ctx, tx, `
 			SELECT m.id FROM mails m
 			WHERE m.pseudonymized_at IS NULL AND m.received_at <= ? AND m.raw IS NULL
-			  AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id
+			  AND NOT EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id
 			                  AND d.status IN ('queued', 'sending', 'unknown'))
 			ORDER BY m.id LIMIT ?`, cutoff, batch)
 		if err != nil {
@@ -296,7 +321,7 @@ func (s *Store) deleteRecords(ctx context.Context, p RetainPolicy, now time.Time
 			DELETE FROM mails WHERE id IN (
 				SELECT m.id FROM mails m
 				WHERE m.received_at < ?
-				  AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.mail_id = m.id
+				  AND NOT EXISTS (SELECT 1 FROM delivery_recipients d WHERE d.mail_id = m.id
 				                  AND d.status IN ('queued', 'sending', 'unknown'))
 				LIMIT ?)`, cutoff, batch)
 		if err != nil {

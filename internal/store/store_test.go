@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -170,8 +171,10 @@ func TestAcceptSkippedAndEvents(t *testing.T) {
 		t.Fatalf("deliveries = %+v", ds)
 	}
 	evs, _ := s.EventsAfter(ctx, 0, 10)
-	if len(evs) != 2 || evs[1].Kind != KindDeliveryNotAllowed || evs[1].Level != Warn || evs[1].Target != "b" ||
-		evs[1].Sender != "app" || evs[1].Text != "rcpt <redacted> not allowed" {
+	// One event per recipient of the skipped delivery.
+	if len(evs) != 3 || evs[1].Kind != KindDeliveryNotAllowed || evs[1].Level != Warn || evs[1].Target != "b" ||
+		evs[1].Sender != "app" || evs[1].Text != "rcpt <redacted> not allowed" || *evs[1].Recipient != 0 ||
+		*evs[2].Recipient != 1 {
 		t.Fatalf("events = %+v", evs)
 	}
 }
@@ -194,23 +197,41 @@ func TestClaimFinishCycle(t *testing.T) {
 		t.Fatal(c, err)
 	}
 	if c.MailID != "pw_1" || c.Attempt != 1 || c.EnvelopeFrom != "from@example.test" ||
-		len(c.Recipients) != 2 || c.Recipients[0] != "a@example.test" || string(c.Raw) != "Subject: x\r\n\r\nbody\r\n" ||
-		!c.ReceivedAt.Equal(t0) {
+		len(c.Recipients) != 2 || c.Recipients[0] != (Recipient{0, "a@example.test"}) ||
+		string(c.Raw) != "Subject: x\r\n\r\nbody\r\n" || !c.ReceivedAt.Equal(t0) {
 		t.Fatalf("claimed = %+v", c)
 	}
+	if ds, _ := s.Deliveries(ctx, "pw_1"); ds[0].Status != Sending {
+		t.Fatalf("delivery = %+v", ds[0])
+	}
 
-	if err := s.MarkDataSent(ctx, "pw_1", "a", t0.Add(2*time.Second)); err != nil {
+	// Recipient 1 is refused at RCPT with a 4xx; recipient 0 gets the
+	// message.
+	if err := s.MarkDataSent(ctx, "pw_1", "a", t0.Add(2*time.Second), 1, []RecipientResult{{
+		Position: 1, Status: Queued, Code: 452, Text: "4.2.2 mailbox <b@example.test> full", Kind: KindDeliveryRetry, Level: Warn,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	st, _ := s.Sending(ctx, "a")
-	if len(st) != 1 || !st[0].DataSent || st[0].Attempt != 1 {
+	if len(st) != 1 || !st[0].DataSent || st[0].Attempt != 1 || len(st[0].Positions) != 1 || st[0].Positions[0] != 0 {
 		t.Fatalf("sending = %+v", st)
+	}
+
+	// A result that leaves a recipient in sending is refused as a whole.
+	if err := s.Finish(ctx, Result{MailID: "pw_1", Target: "a", At: t0, Attempt: 1}); err == nil {
+		t.Fatal("finish with a recipient left in sending accepted")
+	}
+	// So is one without a next attempt while a recipient is queued.
+	if err := s.Finish(ctx, Result{MailID: "pw_1", Target: "a", At: t0, Attempt: 1,
+		Recipients: []RecipientResult{{Position: 0, Status: HandedOff, Kind: KindDeliveryHandedOff, Level: Info}}}); err == nil {
+		t.Fatal("finish without a next attempt accepted")
 	}
 
 	next := t0.Add(time.Minute)
 	if err := s.Finish(ctx, Result{
-		MailID: "pw_1", Target: "a", At: t0.Add(3 * time.Second), Attempt: 1, Status: Queued, NextAttempt: next,
-		Code: 451, Text: "4.3.0 try later <a@example.test>", Kind: KindDeliveryRetry, Level: Warn,
+		MailID: "pw_1", Target: "a", At: t0.Add(3 * time.Second), Attempt: 1, NextAttempt: next,
+		Code: 250, Text: "2.0.0 ok <a@example.test>",
+		Recipients: []RecipientResult{{Position: 0, Status: HandedOff, Code: 250, Text: "2.0.0 ok", Kind: KindDeliveryHandedOff, Level: Info}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,26 +239,30 @@ func TestClaimFinishCycle(t *testing.T) {
 		t.Fatalf("next due = %v %v", due, ok)
 	}
 	ds, _ := s.Deliveries(ctx, "pw_1")
-	if ds[0].Status != Queued || !ds[0].NextAttempt.Equal(next) || ds[0].LastCode != 451 ||
-		ds[0].LastText != "4.3.0 try later <redacted>" || ds[0].Attempts != 1 {
-		t.Fatalf("delivery = %+v", ds[0])
+	d := ds[0]
+	if d.Status != Queued || !d.NextAttempt.Equal(next) || d.LastCode != 250 || d.LastText != "2.0.0 ok <redacted>" ||
+		d.Attempts != 1 || len(d.Recipients) != 2 || d.Recipients[0].Status != HandedOff ||
+		d.Recipients[1] != (RecipientState{1, Queued, 452, "4.2.2 mailbox <redacted> full"}) {
+		t.Fatalf("delivery = %+v", d)
 	}
 
-	// Finish of a delivery that is not sending is refused.
-	if err := s.Finish(ctx, Result{MailID: "pw_1", Target: "a", At: t0, Status: Failed, Kind: KindDeliveryFailed, Level: Error}); err == nil {
-		t.Fatal("finish of a queued delivery accepted")
+	// Finish of recipients that are not sending is refused.
+	if err := s.Finish(ctx, Result{MailID: "pw_1", Target: "a", At: t0, Recipients: []RecipientResult{
+		{Position: 1, Status: Failed, Kind: KindDeliveryFailed, Level: Error}}}); err == nil {
+		t.Fatal("finish of a queued recipient accepted")
 	}
-	if err := s.MarkDataSent(ctx, "pw_1", "a", t0); err == nil {
-		t.Fatal("data sent on a queued delivery accepted")
+	if err := s.MarkDataSent(ctx, "pw_1", "a", t0, 1, nil); err == nil {
+		t.Fatal("data sent without a recipient in sending accepted")
 	}
 
-	// Second attempt resets data_sent_at.
+	// The second attempt takes only the queued recipient and resets
+	// data_sent_at.
 	c, _ = s.Claim(ctx, "a", t0.Add(time.Second))
 	if c == nil || c.MailID != "pw_2" {
 		t.Fatalf("claimed = %+v", c)
 	}
 	c, _ = s.Claim(ctx, "a", next)
-	if c == nil || c.MailID != "pw_1" || c.Attempt != 2 {
+	if c == nil || c.MailID != "pw_1" || c.Attempt != 2 || len(c.Recipients) != 1 || c.Recipients[0].Position != 1 {
 		t.Fatalf("claimed = %+v", c)
 	}
 	st, _ = s.Sending(ctx, "a")
@@ -252,21 +277,102 @@ func TestClaimFinishCycle(t *testing.T) {
 		t.Fatalf("pending = %v", pending)
 	}
 
+	// The second recipient fails: the delivery is partial (derived).
+	if err := s.Finish(ctx, Result{MailID: "pw_1", Target: "a", At: next, Attempt: 2, Code: 550,
+		Recipients: []RecipientResult{{Position: 1, Status: Failed, Code: 550, Kind: KindDeliveryFailed, Level: Error}}}); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := s.Deliveries(ctx, "pw_1"); ds[0].Status != Partial || !ds[0].NextAttempt.IsZero() {
+		t.Fatalf("delivery = %+v", ds[0])
+	}
+
 	evs, _ := s.EventsAfter(ctx, 0, 100)
 	var kinds []string
 	for _, e := range evs {
-		kinds = append(kinds, e.Kind+"/"+e.Target)
+		k := e.Kind + "/" + e.Target
+		if e.Recipient != nil {
+			k += "/" + strconv.Itoa(*e.Recipient)
+		}
+		kinds = append(kinds, k)
 	}
-	want := "mail.accepted/ mail.accepted/ delivery.attempt/a delivery.retry/a delivery.attempt/a delivery.attempt/a"
+	want := "mail.accepted/ mail.accepted/ delivery.attempt/a delivery.retry/a/1 delivery.handed_off/a/0 " +
+		"delivery.attempt/a delivery.attempt/a delivery.failed/a/1"
 	if strings.Join(kinds, " ") != want {
 		t.Fatalf("events:\n%s\nwant\n%s", strings.Join(kinds, " "), want)
 	}
-	if evs[3].Code != 451 || evs[3].Attempt != 1 || strings.Contains(evs[3].Text, "@") {
+	if evs[3].Code != 452 || evs[3].Attempt != 1 || strings.Contains(evs[3].Text, "@") {
 		t.Fatalf("retry event = %+v", evs[3])
 	}
-	more, _ := s.EventsAfter(ctx, evs[3].Seq, 100)
-	if len(more) != 2 {
-		t.Fatalf("events after %d = %d", evs[3].Seq, len(more))
+}
+
+func TestSummarize(t *testing.T) {
+	tests := []struct {
+		in   []Status
+		want Status
+	}{
+		{nil, ""},
+		{[]Status{HandedOff, HandedOff}, HandedOff},
+		{[]Status{HandedOff, Failed}, Partial},
+		{[]Status{Failed, Failed}, Failed},
+		{[]Status{HandedOff, Queued, Failed}, Queued},
+		{[]Status{Queued, Sending}, Sending},
+		{[]Status{HandedOff, Unknown, Failed}, Unknown},
+		{[]Status{Skipped, Skipped}, Skipped},
+		{[]Status{Skipped, HandedOff}, HandedOff},
+	}
+	for _, tt := range tests {
+		if got := Summarize(tt.in); got != tt.want {
+			t.Errorf("Summarize(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestMigrationFromVersion3(t *testing.T) {
+	// A database written before per-recipient status: every recipient
+	// takes its delivery's status, nothing else changes.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pw.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"0001_init.sql", "0002_retention.sql", "0003_envelope.sql"} {
+		body, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("PRAGMA user_version = " + strconv.Itoa(i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO mails (id, received_at, sender, envelope_from, size) VALUES ('pw_1', 1, 'app', 'f@x.test', 1)`,
+		`INSERT INTO recipients VALUES ('pw_1', 0, 'a@x.test'), ('pw_1', 1, 'b@x.test')`,
+		`INSERT INTO deliveries (mail_id, target, status, attempts, next_attempt_at, updated_at, last_code)
+			VALUES ('pw_1', 'q', 'queued', 1, 5, 2, 451), ('pw_1', 'h', 'handed_off', 1, NULL, 3, 250)`,
+		`INSERT INTO events (time, mail_id, kind, level) VALUES (1, 'pw_1', 'mail.accepted', 'info')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(q, err)
+		}
+	}
+	db.Close()
+
+	s := open(t, dir, Options{})
+	ds, err := s.Deliveries(ctx, "pw_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 2 || ds[0].Target != "h" || ds[0].Status != HandedOff || len(ds[0].Recipients) != 2 ||
+		ds[1].Status != Queued || ds[1].Recipients[1] != (RecipientState{1, Queued, 451, ""}) || ds[1].NextAttempt.UnixMilli() != 5 {
+		t.Fatalf("deliveries after migration = %+v", ds)
+	}
+	c, err := s.Claim(ctx, "q", time.UnixMilli(10))
+	if err != nil || c == nil || len(c.Recipients) != 2 || c.Attempt != 2 {
+		t.Fatalf("claim after migration = %+v %v", c, err)
 	}
 }
 

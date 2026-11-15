@@ -17,26 +17,38 @@ func finish(t *testing.T, s *Store, id, target string, at time.Time, status Stat
 	if err != nil || c == nil || c.MailID != id {
 		t.Fatalf("claim %s/%s = %+v, %v", id, target, c, err)
 	}
-	if err := s.Finish(ctx, Result{MailID: id, Target: target, At: at, Attempt: c.Attempt, Status: status,
-		Kind: KindDeliveryHandedOff, Level: Info}); err != nil {
+	r := Result{MailID: id, Target: target, At: at, Attempt: c.Attempt}
+	for _, rc := range c.Recipients {
+		r.Recipients = append(r.Recipients, RecipientResult{Position: rc.Position, Status: status,
+			Kind: KindDeliveryHandedOff, Level: Info})
+	}
+	if status == Queued {
+		r.NextAttempt = at
+	}
+	if err := s.Finish(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// set puts a delivery into a state directly, as a finished attempt would.
+// set puts every recipient of a delivery into a state directly, as a
+// finished attempt would.
 func set(t *testing.T, s *Store, id, target string, status Status, at time.Time) {
 	t.Helper()
 	var next any
 	if status == Queued {
 		next = ms(at)
 	}
-	res, err := s.db.Exec(`UPDATE deliveries SET status = ?, next_attempt_at = ?, updated_at = ? WHERE mail_id = ? AND target = ?`,
-		string(status), next, ms(at), id, target)
+	res, err := s.db.Exec(`UPDATE delivery_recipients SET status = ?, updated_at = ? WHERE mail_id = ? AND target = ?`,
+		string(status), ms(at), id, target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	if n, _ := res.RowsAffected(); n == 0 {
 		t.Fatalf("no delivery %s/%s", id, target)
+	}
+	if _, err := s.db.Exec(`UPDATE deliveries SET next_attempt_at = ?, updated_at = ? WHERE mail_id = ? AND target = ?`,
+		next, ms(at), id, target); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -199,20 +211,20 @@ func TestRetainAfterFailureAndMaxAge(t *testing.T) {
 
 	p := basePolicy()
 	p.Optional = map[string]bool{"opt": true}
-	// 72 h after the failures: pw_f and pw_u are purged; pw_u's unknown
-	// delivery fails. pw_q is still queued, pw_s still sending.
+	// 72 h after the failures: pw_f and pw_u are purged; the two unknown
+	// recipients of pw_u fail. pw_q is still queued, pw_s still sending.
 	cnt, err := s.Retain(ctx, p, t0.Add(72*time.Hour))
-	if err != nil || cnt.RawPurged != 2 || cnt.RawExpired != 1 {
+	if err != nil || cnt.RawPurged != 2 || cnt.RawExpired != 2 {
 		t.Fatalf("after failure: %+v %v", cnt, err)
 	}
 	ds, _ := s.Deliveries(ctx, "pw_u")
 	if ds[0].Status != Failed || ds[0].NextAttempt != (time.Time{}) {
 		t.Fatalf("pw_u = %+v", ds)
 	}
-	// 7 days: pw_q is purged and both queued deliveries fail; pw_s is in
-	// sending and waits for the next run.
+	// 7 days: pw_q is purged and its four queued recipients (two per
+	// target) fail; pw_s is in sending and waits for the next run.
 	cnt, err = s.Retain(ctx, p, t0.Add(7*24*time.Hour))
-	if err != nil || cnt.RawPurged != 1 || cnt.RawExpired != 2 {
+	if err != nil || cnt.RawPurged != 1 || cnt.RawExpired != 4 {
 		t.Fatalf("max age: %+v %v", cnt, err)
 	}
 	if !mail(t, s, "pw_s").HasRaw {
@@ -362,7 +374,7 @@ func TestRetainBatches(t *testing.T) {
 	}
 	p := basePolicy()
 	cnt, err := s.Retain(ctx, p, t0.Add(7*24*time.Hour))
-	if err != nil || cnt.RawPurged != n || cnt.RawExpired != n {
+	if err != nil || cnt.RawPurged != n || cnt.RawExpired != 2*n { // two recipients each
 		t.Fatalf("counts = %+v %v", cnt, err)
 	}
 	cnt, err = s.Retain(ctx, p, t0.Add(91*24*time.Hour))

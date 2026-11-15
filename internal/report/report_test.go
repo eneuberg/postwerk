@@ -74,7 +74,8 @@ func TestStdoutLine(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["kind"] != "delivery.skipped" || m["target"] != "t" || m["smtp"].(map[string]any)["text"] != "skipped" {
+	if m["kind"] != "delivery.skipped" || m["target"] != "t" || m["recipient"] != float64(0) ||
+		m["smtp"].(map[string]any)["text"] != "skipped" {
 		t.Fatalf("second line = %s", lines[1])
 	}
 	if strings.Contains(buf.String(), "@") {

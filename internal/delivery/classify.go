@@ -131,6 +131,11 @@ func decide(o Outcome, text string, p policy, now time.Time, attempt int) decisi
 	return decision{status: store.Failed, kind: store.KindDeliveryFailed, level: problem, text: "internal: unknown outcome"}
 }
 
+// result is the decision for one recipient.
+func (d decision) result(pos, code int) store.RecipientResult {
+	return store.RecipientResult{Position: pos, Status: d.status, Code: code, Text: d.text, Kind: d.kind, Level: d.level}
+}
+
 func join(a, b string) string {
 	if b == "" {
 		return a

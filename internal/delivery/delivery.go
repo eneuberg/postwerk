@@ -260,7 +260,7 @@ func (w *worker) policy(received time.Time) policy {
 	}
 }
 
-// recoverSending handles deliveries left in sending by a crash (D6): before
+// recoverSending handles recipients left in sending by a crash (D6): before
 // data_sent_at they are queued again, after it they are an unclear outcome.
 func (w *worker) recoverSending(ctx context.Context) error {
 	stuck, err := w.opts.Store.Sending(ctx, w.target.Name)
@@ -269,19 +269,23 @@ func (w *worker) recoverSending(ctx context.Context) error {
 	}
 	for _, st := range stuck {
 		now := w.opts.Now()
-		r := store.Result{MailID: st.MailID, Target: w.target.Name, At: now, Attempt: st.Attempt}
+		var d decision
 		if !st.DataSent {
-			r.Status, r.NextAttempt = store.Queued, now
-			r.Kind, r.Level = store.KindDeliveryRetry, store.Warn
-			r.Text = "interrupted before the message was sent, queued again"
+			d = decision{status: store.Queued, next: now, kind: store.KindDeliveryRetry, level: store.Warn,
+				text: "interrupted before the message was sent, queued again"}
 		} else {
-			d := decide(Unclear, "interrupted after the message was sent", w.policy(st.ReceivedAt), now, st.Attempt)
-			r.Status, r.NextAttempt, r.Kind, r.Level, r.Text = d.status, d.next, d.kind, d.level, d.text
+			d = decide(Unclear, "interrupted after the message was sent", w.policy(st.ReceivedAt), now, st.Attempt)
 		}
+		r := store.Result{MailID: st.MailID, Target: w.target.Name, At: now, Attempt: st.Attempt, Text: d.text}
+		for _, p := range st.Positions {
+			r.Recipients = append(r.Recipients, d.result(p, 0))
+		}
+		r.NextAttempt = d.next
 		if err := w.opts.Store.Finish(ctx, r); err != nil {
 			return err
 		}
-		w.log.Warn("recovered interrupted delivery", "mail_id", st.MailID, "status", string(r.Status))
+		w.log.Warn("recovered interrupted delivery", "mail_id", st.MailID, "status", string(d.status),
+			"recipients", len(st.Positions))
 	}
 	return nil
 }
@@ -289,53 +293,105 @@ func (w *worker) recoverSending(ctx context.Context) error {
 // process runs one attempt and stores its result. It reports false if the
 // result could not be stored.
 func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
-	problem := store.Error
-	if w.target.Optional {
-		problem = store.Warn
-	}
 	if c.Raw == nil {
 		// Retention removed the message between scheduling and this claim.
-		return w.finish(ctx, store.Result{
-			MailID: c.MailID, Target: c.Target, At: w.opts.Now(), Attempt: c.Attempt, Status: store.Failed,
-			Kind: store.KindRawExpired, Level: problem,
-			Text: "stored message was removed by retention; the delivery can no longer be sent",
-		})
+		return w.finish(ctx, w.all(c, decision{status: store.Failed, kind: store.KindRawExpired, level: w.problem(),
+			text: "stored message was removed by retention; the delivery can no longer be sent"}, 0))
 	}
 	raw, err := w.opts.Sealer.Open(c.MailID, c.Raw)
 	if err != nil {
 		// Never send what cannot be authenticated. The error names the key id
 		// at most, never content.
 		w.log.Error("stored message cannot be decrypted, delivery failed", "mail_id", c.MailID, "err", err)
-		return w.finish(ctx, store.Result{
-			MailID: c.MailID, Target: c.Target, At: w.opts.Now(), Attempt: c.Attempt, Status: store.Failed,
-			Kind: store.KindDecryptFailed, Level: store.Error, Text: err.Error(),
-		})
+		return w.finish(ctx, w.all(c, decision{status: store.Failed, kind: store.KindDecryptFailed, level: store.Error,
+			text: err.Error()}, 0))
 	}
 	res := w.send(ctx, c, raw)
+	if res.storeErr != nil {
+		// The message was not sent and nothing of this attempt was
+		// recorded. Queue every recipient again; if the store is broken this
+		// fails too and recovery handles the rows after a restart.
+		w.log.Error("store failed during send, message not sent", "mail_id", c.MailID, "err", res.storeErr)
+		now := w.opts.Now()
+		w.finish(ctx, w.all(c, decision{status: store.Queued, next: now.Add(w.opts.Backoff(c.Attempt)),
+			kind: store.KindDeliveryRetry, level: store.Warn, text: "internal storage error before sending"}, 0))
+		return false // the store is in trouble; the caller slows down
+	}
+
 	now := w.opts.Now()
 	r := store.Result{MailID: c.MailID, Target: c.Target, At: now, Attempt: c.Attempt}
-	if storeErr := res.storeErr; storeErr != nil {
-		// The message was not sent. Queue it again; if the store is broken
-		// this fails too and recovery handles the row after a restart.
-		w.log.Error("store failed during send, message not sent", "mail_id", c.MailID, "err", storeErr)
-		r.Status, r.NextAttempt = store.Queued, now.Add(w.opts.Backoff(c.Attempt))
-		r.Kind, r.Level, r.Text = store.KindDeliveryRetry, store.Warn, "internal storage error before sending"
-	} else if res.refused != "" {
-		// The target lacks something the mail needs; nothing was sent and
-		// a later attempt would not change that.
-		r.Status, r.Kind, r.Level, r.Text = store.Failed, res.refused, problem, res.reason
-	} else {
-		o, code, text := Classify(res.err, res.dataSent)
-		if o == HandedOff && res.err == nil {
-			text = res.reply // often holds the target's own queue id
+	next := func(d decision) {
+		if d.status == store.Queued && (r.NextAttempt.IsZero() || d.next.Before(r.NextAttempt)) {
+			r.NextAttempt = d.next
 		}
-		d := decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
+	}
+	answered := make(map[int]bool, len(res.rejected))
+	for _, rj := range res.rejected {
+		answered[rj.result.Position] = true
+		next(rj.decision)
+		if !res.recorded {
+			r.Recipients = append(r.Recipients, rj.result)
+		}
+	}
+	// The recipients the target accepted, or that the attempt never got
+	// to, share the outcome of the attempt.
+	var d decision
+	switch {
+	case res.refused != "":
+		d = decision{status: store.Failed, kind: res.refused, level: w.problem(), text: res.reason}
+		r.Text = res.reason
+	case res.err == nil && res.dataSent:
+		d = decide(HandedOff, res.reply, w.policy(c.ReceivedAt), now, c.Attempt)
+		r.Code, r.Text = 250, res.reply
+	case res.err == nil:
+		// Every recipient was refused at RCPT; the last refusal stands
+		// for the attempt.
+		if n := len(res.rejected); n > 0 {
+			r.Code, r.Text = res.rejected[n-1].result.Code, res.rejected[n-1].result.Text
+		}
+	default:
+		o, code, text := Classify(res.err, res.dataSent)
+		d = decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
 		if o == Temporary && code == 0 && d.status == store.Queued {
 			d.kind = store.KindTargetUnreachable
 		}
-		r.Status, r.NextAttempt, r.Code, r.Kind, r.Level, r.Text = d.status, d.next, code, d.kind, d.level, d.text
+		r.Code, r.Text = code, d.text
+		if code != 0 {
+			r.Text = text
+		}
 	}
-	return w.finish(ctx, r) && res.storeErr == nil
+	for _, rc := range c.Recipients {
+		if answered[rc.Position] {
+			continue
+		}
+		if d.status == "" {
+			// Cannot happen: without an error every recipient was
+			// answered. Keep the recipient rather than lose it.
+			d = decision{status: store.Queued, next: now.Add(w.opts.Backoff(c.Attempt)), kind: store.KindDeliveryRetry,
+				level: store.Warn, text: "internal: recipient without an outcome, queued again"}
+		}
+		r.Recipients = append(r.Recipients, d.result(rc.Position, r.Code))
+		next(d)
+	}
+	return w.finish(ctx, r)
+}
+
+// problem is the level of a failure at this target.
+func (w *worker) problem() store.Level {
+	if w.target.Optional {
+		return store.Warn
+	}
+	return store.Error
+}
+
+// all applies one decision to every recipient of the claim.
+func (w *worker) all(c *store.Claimed, d decision, code int) store.Result {
+	r := store.Result{MailID: c.MailID, Target: c.Target, At: w.opts.Now(), Attempt: c.Attempt,
+		NextAttempt: d.next, Code: code, Text: d.text}
+	for _, rc := range c.Recipients {
+		r.Recipients = append(r.Recipients, d.result(rc.Position, code))
+	}
+	return r
 }
 
 // finish stores the result of an attempt and reports whether that worked.
@@ -347,14 +403,36 @@ func (w *worker) finish(ctx context.Context, r store.Result) bool {
 	return true
 }
 
+// rejection is a recipient the target refused at RCPT, or that Postwerk did
+// not offer to the target.
+type rejection struct {
+	result   store.RecipientResult
+	decision decision
+}
+
 // sendResult is the raw result of one attempt.
 type sendResult struct {
 	dataSent bool   // data_sent_at was recorded
 	reply    string // the target's text after the message, on success
-	err      error  // from the network or the target
-	storeErr error  // recording data_sent_at failed; nothing was sent
+	err      error  // from the network or the target, for every recipient not in rejected
+	storeErr error  // recording data_sent_at failed; nothing was sent or recorded
 	refused  string // event kind: the mail was not sent because the target cannot take it
 	reason   string // why, for the event
+	rejected []rejection
+	recorded bool // rejected was stored with data_sent_at
+}
+
+// rcptRejection turns a target's reply to RCPT into a result for that
+// recipient alone. A 552 at RCPT means "too many recipients" and is
+// temporary (RFC 5321 section 4.5.3.1.10); a 5xx otherwise is permanent for
+// that recipient, a 4xx is retried with the next attempt.
+func (w *worker) rcptRejection(c *store.Claimed, pos int, se *smtp.SMTPError, now time.Time) rejection {
+	o, code, text := Classify(se, false)
+	if code == 552 {
+		o = Temporary
+	}
+	d := decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
+	return rejection{result: d.result(pos, code), decision: d}
 }
 
 // send makes one attempt with the decrypted message raw.
@@ -365,7 +443,7 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 	}
 	defer client.Close()
 
-	opts, reason := mailOptions(client, c, raw)
+	opts, reason, utf8Only := mailOptions(client, c, raw)
 	if reason != "" {
 		_ = client.Quit()
 		return sendResult{refused: store.KindDeliveryUnsupported, reason: reason}
@@ -378,35 +456,65 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 	if err := client.Mail(c.EnvelopeFrom, opts); err != nil {
 		return sendResult{err: err}
 	}
-	for _, rcpt := range c.Recipients {
-		if err := client.Rcpt(rcpt, nil); err != nil {
-			return sendResult{err: err}
+	var res sendResult
+	accepted := 0
+	for _, rc := range c.Recipients {
+		if utf8Only[rc.Position] {
+			d := decision{status: store.Failed, kind: store.KindDeliveryUnsupported, level: w.problem(),
+				text: "the recipient address needs SMTPUTF8, which the target does not offer; not sent to it"}
+			res.rejected = append(res.rejected, rejection{result: d.result(rc.Position, 0), decision: d})
+			continue
 		}
+		if err := client.Rcpt(rc.Address, nil); err != nil {
+			var se *smtp.SMTPError
+			if !errors.As(err, &se) {
+				res.err = err // the connection broke: the rest shares this outcome
+				return res
+			}
+			res.rejected = append(res.rejected, w.rcptRejection(c, rc.Position, se, w.opts.Now()))
+			continue
+		}
+		accepted++
+	}
+	if accepted == 0 {
+		_ = client.Reset()
+		_ = client.Quit()
+		return res
 	}
 	wc, err := client.Data()
 	if err != nil {
-		return sendResult{err: err}
+		res.err = err
+		return res
 	}
 	// The target has answered 354 and waits for the message. From the
 	// first byte on, a broken connection leaves it open whether the target
-	// has it (D5).
-	if err := w.opts.Store.MarkDataSent(ctx, c.MailID, c.Target, w.opts.Now()); err != nil {
+	// has it (D5). The recipients it refused are recorded now, so a crash
+	// cannot make their clear answer unclear.
+	rejected := make([]store.RecipientResult, len(res.rejected))
+	for i, rj := range res.rejected {
+		rejected[i] = rj.result
+	}
+	if err := w.opts.Store.MarkDataSent(ctx, c.MailID, c.Target, w.opts.Now(), c.Attempt, rejected); err != nil {
 		return sendResult{storeErr: err}
 	}
+	res.recorded, res.dataSent = true, true
 	if w.target.Status == config.StatusMailjet {
 		// Tracking must be unambiguous: only Postwerk's own X-MJ-CustomID
 		// reaches Mailjet.
 		raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
 	}
 	if err := message.Write(wc, w.headers(c.MailID), raw); err != nil {
-		return sendResult{dataSent: true, err: err}
+		res.err = err
+		return res
 	}
 	resp, err := wc.CloseWithResponse()
 	if err != nil {
-		return sendResult{dataSent: true, err: err}
+		res.err = err
+		return res
 	}
 	_ = client.Quit()
-	return sendResult{dataSent: true, reply: resp.StatusText}
+	res.reply = resp.StatusText
+	return res
 }
 
 // mailOptions returns the MAIL parameters for this target, passing on what
@@ -419,33 +527,43 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 //     header section really holds non-ASCII characters. Many clients (Go's
 //     net/smtp, for one) declare SMTPUTF8 whenever it is offered; for a pure
 //     ASCII mail the parameter changes nothing, so it is dropped where the
-//     target lacks it.
+//     target lacks it. When only some recipient addresses need it, those
+//     recipients are returned in utf8Only and fail alone; the others are
+//     sent without it.
 //   - 8BITMIME is needed when the message holds any byte outside 7-bit
 //     ASCII, declared or not. The SMTP library sends BODY=8BITMIME to every
 //     target that offers it; a 7-bit message is valid 8BITMIME as well.
-func mailOptions(client *smtp.Client, c *store.Claimed, raw []byte) (*smtp.MailOptions, string) {
-	opts := &smtp.MailOptions{}
+func mailOptions(client *smtp.Client, c *store.Claimed, raw []byte) (opts *smtp.MailOptions, reason string,
+	utf8Only map[int]bool) {
+	opts = &smtp.MailOptions{}
 	if c.Params.SMTPUTF8 {
 		hasUTF8, _ := client.Extension("SMTPUTF8")
 		switch {
 		case hasUTF8:
 			opts.UTF8 = true
-		case !asciiEnvelope(c) || message.HeaderHas8Bit(raw):
-			return nil, "the mail needs SMTPUTF8 (non-ASCII address or header), which the target does not offer; not sent"
+		case !isASCII(c.EnvelopeFrom) || message.HeaderHas8Bit(raw):
+			return nil, "the mail needs SMTPUTF8 (non-ASCII sender address or header), which the target does not offer; not sent", nil
+		default:
+			for _, rc := range c.Recipients {
+				if !isASCII(rc.Address) {
+					if utf8Only == nil {
+						utf8Only = make(map[int]bool)
+					}
+					utf8Only[rc.Position] = true
+				}
+			}
 		}
 	}
 	if has8Bit, _ := client.Extension("8BITMIME"); !has8Bit && message.Has8Bit(raw) {
-		return nil, "the message has 8-bit content and needs 8BITMIME, which the target does not offer; not sent"
+		return nil, "the message has 8-bit content and needs 8BITMIME, which the target does not offer; not sent", nil
 	}
-	return opts, ""
+	return opts, "", utf8Only
 }
 
-func asciiEnvelope(c *store.Claimed) bool {
-	for _, a := range append([]string{c.EnvelopeFrom}, c.Recipients...) {
-		for i := 0; i < len(a); i++ {
-			if a[i] >= 0x80 {
-				return false
-			}
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
 		}
 	}
 	return true

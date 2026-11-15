@@ -100,7 +100,8 @@ func TestRetentionLeavesOnlyHashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts.RawPurged != 1 || counts.RawExpired != 1 || counts.Pseudonymized != 1 || counts.Records != 0 {
+	// Both recipients of the unknown delivery fail.
+	if counts.RawPurged != 1 || counts.RawExpired != 2 || counts.Pseudonymized != 1 || counts.Records != 0 {
 		t.Fatalf("counts = %+v", counts)
 	}
 	if d := h.delivery(mailID, "dropping"); d.Status != store.Failed {
@@ -142,7 +143,7 @@ func TestRetentionLeavesOnlyHashes(t *testing.T) {
 	evs, _ := h.store.EventsAfter(ctx, 0, 1000)
 	for _, e := range evs {
 		if e.Kind == store.KindRetentionPurged {
-			purged = e.Text == "raw_purged=1 raw_expired=1 pseudonymized=1 records_deleted=0 events_deleted=0"
+			purged = e.Text == "raw_purged=1 raw_expired=2 pseudonymized=1 records_deleted=0 events_deleted=0"
 		}
 	}
 	if !purged {

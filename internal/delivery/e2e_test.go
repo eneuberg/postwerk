@@ -52,8 +52,11 @@ type received struct {
 
 // behavior scripts a fake target. It may change while a test runs.
 type behavior struct {
-	authFail bool    // reply 535 to every AUTH
-	rcptErr  error   // reply to every RCPT
+	authFail bool  // reply 535 to every AUTH
+	rcptErr  error // reply to every RCPT
+	// rcptErrs scripts RCPT per address: one reply per RCPT, in order; a
+	// nil entry or an empty list accepts.
+	rcptErrs map[string][]error
 	dataErrs []error // replies after DATA, one per message; nil entry or empty list: 250
 	drop     int     // number of messages after which the connection is dropped without reply
 	hold     chan struct{}
@@ -198,6 +201,9 @@ func (s *fakeSession) Mail(from string, opts *smtp.MailOptions) error {
 func (s *fakeSession) Rcpt(to string, _ *smtp.RcptOptions) error {
 	s.f.mu.Lock()
 	err := s.f.b.rcptErr
+	if list := s.f.b.rcptErrs[to]; err == nil && len(list) > 0 {
+		err, s.f.b.rcptErrs[to] = list[0], list[1:]
+	}
 	s.f.mu.Unlock()
 	if err != nil {
 		return err
@@ -590,14 +596,15 @@ func TestHappyPath(t *testing.T) {
 		}
 	}
 
-	want := []string{"mail.accepted", "delivery.attempt", "delivery.handed_off"}
+	// One result event per recipient.
+	want := []string{"mail.accepted", "delivery.attempt", "delivery.handed_off", "delivery.handed_off"}
 	for _, tg := range []string{"mailjet", "capture"} {
 		if got := kinds(h.eventsOf(mailID), tg); strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Fatalf("%s events = %q", tg, got)
 		}
 	}
 	testutil.Eventually(t, timeout, "events on stdout", func() bool {
-		return strings.Count(h.events.String(), `"kind":"delivery.handed_off"`) == 2
+		return strings.Count(h.events.String(), `"kind":"delivery.handed_off"`) == 4
 	})
 	if !strings.Contains(h.events.String(), `"sender":"app","instance":"test"`) {
 		t.Fatalf("stdout events: %s", h.events.String())
@@ -842,7 +849,7 @@ func TestRecovery(t *testing.T) {
 			if c1 == nil || c2 == nil {
 				t.Fatal("claim failed")
 			}
-			if err := st.MarkDataSent(ctx, "pw_before", "t", now); err != nil {
+			if err := st.MarkDataSent(ctx, "pw_before", "t", now, 1, nil); err != nil {
 				t.Fatal(err)
 			}
 			afterID, beforeID := "pw_before", "pw_after" // pw_before is claimed first and got data_sent_at
