@@ -17,7 +17,7 @@ internal/seal         AES-256-GCM sealing of the stored message, keyed by the ke
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
 internal/store        SQLite: open, migrate, all reads and writes, retention steps; the only package that speaks SQL (S1–S12)
 internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I1–I9)
-internal/delivery     one worker per target: claim, open the seal, send, classify, schedule, recover (D1–D11)
+internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop and sinks (A2, A3)
 internal/httpapi      health endpoints now; query API and UI later (H1)
@@ -34,10 +34,10 @@ makes the data flow visible: everything meets in the store.
 ## Data flow
 
 ```
-sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients + deliveries + events ──▶ store
+sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients + deliveries (+ status per recipient) + events ──▶ store
                                                                                         │
      target ◀──SMTP── delivery worker (per target) ◀── claim due, open(raw) ────────────┤
-                            └── tx: new status + event (+ raw removed at last hand-off) ▶│
+                            └── tx: status + event per recipient (+ raw removed at last hand-off) ▶│
                                                                                         │
                   retention (start, every 10 min) ── tx batches: purge raw, ───────────▶│
                                                      pseudonymize, delete rows/events,  │
@@ -56,14 +56,15 @@ One `*sql.DB` with a single open connection. All access is serialized; at transa
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
 
-Tables (version 3):
+Tables (version 4):
 
 | Table | Holds | Notes |
 |---|---|---|
 | `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at`, the declared MAIL parameters `body`, `smtputf8`, `declared_size` | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
-| `deliveries` | mail id, target, status, attempts, next attempt, `data_sent_at`, last code and redacted text, provider fields, updated time | primary key (mail id, target); index on (target, status, next attempt) |
-| `events` | seq, time, mail id, target, kind, level, attempt, code, redacted text, sender login | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
+| `deliveries` | mail id, target, attempts, next attempt, `data_sent_at`, last code and redacted text of the attempt, updated time | what one SMTP transaction shares; primary key (mail id, target); next attempt is set while a recipient is queued; partial index on (target, next attempt) |
+| `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth |
+| `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
 | `cursors` | sink name, last seq | one row per sink |
 | `event_retention` | one row: `cutoff` (Unix ms) | events older than the cutoff may be deleted; triggers refuse lowering it, deleting the row or inserting another (S10) |
 
@@ -74,7 +75,9 @@ addresses, `events.time`), and replaces the delete trigger on `events` by one th
 cutoff (a missing row counts as cutoff 0). The update trigger stays. Databases written by builds before version 2
 stored the raw message without a blob header; they are not supported (there was no release). `0003_envelope.sql` adds
 the MAIL parameters as the sender declared them: `body` (`7BIT`, `8BITMIME` or NULL), `smtputf8` (0 or 1) and
-`declared_size` (NULL if not given).
+`declared_size` (NULL if not given). `0004_recipient_status.sql` adds `delivery_recipients`, fills it with each
+delivery's status for every recipient, drops `deliveries.status` (and the unused provider columns; provider status will
+be kept per recipient) and adds `events.recipient`.
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -83,26 +86,44 @@ binary knows is refused. Besides the pragmas above, the store sets `secure_delet
 WAL, `synchronous=FULL`, foreign keys and the configured `secure_delete` are really in effect. The database file is created with mode
 `0600`.
 
-Statuses: `queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`. Event kinds:
+**Status.** The unit of tracking is the triple (mail, target, recipient). Its status is stored in
+`delivery_recipients` and is the only stored status: `queued`, `sending`, `handed_off`, `failed`, `unknown`,
+`skipped` (later, provider statuses such as delivered or bounced per recipient, which matches Mailjet's one message
+per recipient). Scheduling and attempts stay per (mail, target), because one SMTP transaction carries several
+recipients. The status of a delivery, or of a mail over all its targets, is a summary computed when reading
+(`store.Summarize`), never stored:
+
+| Recipients | Summary |
+|---|---|
+| any `sending` | `sending` |
+| any `queued` | `queued` |
+| any `unknown` | `unknown` |
+| all `skipped` | `skipped` |
+| all others `handed_off` | `handed_off` |
+| none `handed_off` | `failed` |
+| some `handed_off`, the others `failed` | `partial` |
+
+Event kinds. Every result is an event per recipient: it carries the recipient's position, never its address.
+`mail.accepted`, `delivery.attempt` and `retention.purged` carry none.
 
 | Kind | Level | Written when |
 |---|---|---|
 | `mail.accepted` | info | a mail is stored |
-| `delivery.attempt` | info | a worker claims a delivery |
-| `delivery.retry` | warn | a temporary failure; queued again |
-| `delivery.handed_off` | info | the target answered `250` after the message |
-| `delivery.failed` | error (warn: optional target) | a permanent failure, or the retry window is over |
-| `delivery.unknown` | error (warn: optional) | no reply after the message was sent, policy `hold` or `check` |
-| `delivery.skipped` | info | the sender named the target in `X-Postwerk-Skip` |
-| `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
-| `delivery.unsupported` | error (warn: optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
+| `delivery.attempt` | info | a worker claims a delivery (one per attempt, no recipient) |
+| `delivery.retry` | warn | a temporary failure for this recipient (`4xx` at `RCPT` or for the attempt); queued again |
+| `delivery.handed_off` | info | the target answered `250` after the message; one per recipient of the attempt |
+| `delivery.failed` | error (warn: optional target) | a permanent failure for this recipient (`5xx` at `RCPT` or after the message), or the retry window is over |
+| `delivery.unknown` | error (warn: optional) | no reply after the message was sent, policy `hold` or `check`; for the recipients of that attempt |
+| `delivery.skipped` | info | the sender named the target in `X-Postwerk-Skip`; one per recipient |
+| `delivery.not_allowed` | warn | a recipient is outside the target's allow-list; the whole target is skipped, one event per recipient |
+| `delivery.unsupported` | error (warn: optional) | the mail (or this recipient's address) needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
 | `target.auth_failed` | error (warn: optional) | the target answered `535`; queued again |
 | `target.unreachable` | warn | no reply before the message was sent (connection, TLS or protocol error) |
-| `retention.raw_expired` | error (warn: optional) | the stored message was removed while the delivery was `queued` or `unknown`; it is now `failed` |
+| `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
 | `retention.purged` | info | a retention run changed something; text holds counts only (`raw_purged=… raw_expired=… pseudonymized=… records_deleted=… events_deleted=…`) |
 | `store.decrypt_failed` | error | the stored message could not be decrypted (unknown key id, failed authentication); the delivery is `failed`, nothing was sent |
 
-The overall state of a mail is derived from its deliveries; it is not stored twice.
+The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.
 
 Times are stored as Unix milliseconds (UTC).
 
@@ -110,24 +131,34 @@ Times are stored as Unix milliseconds (UTC).
 
 ```
 loop:
-  claim the next due delivery of this target  (tx: status=sending, attempts+1, event delivery.attempt)
-  connect (TLS per scheme), EHLO, check extensions, AUTH, MAIL (+ parameters), RCPT…, DATA
-  target answers 354 → record data_sent_at     (tx)
+  claim the next due delivery of this target  (tx: queued recipients → sending, attempts+1, event delivery.attempt)
+  connect (TLS per scheme), EHLO, check extensions, AUTH, MAIL (+ parameters)
+  RCPT per recipient; collect the refused ones (none accepted → no DATA)
+  DATA; target answers 354 → record data_sent_at and the refused recipients   (tx)
   own headers + stored message, final dot
-  read the reply → classify → next state       (tx: status + event)
+  read the reply → classify → next status per recipient   (tx: status + event per recipient, next attempt)
   nothing due → wait for signal, the next due time, or the poll interval
 ```
 
-Classification, in order:
+Classification. RFC 5321 relay behaviour: the target answers each `RCPT`, `DATA` goes to the accepted recipients,
+and every result is per recipient.
 
-| Outcome | Before `data_sent_at` | After `data_sent_at` |
-|---|---|---|
-| reply `250` after DATA | — | `handed_off` |
-| reply `535` | queued, backoff, event `target.auth_failed` (error) | same |
-| reply `4xx` | queued, backoff | queued, backoff (the server answered, so the outcome is clear) |
-| reply `5xx` | `failed` | `failed` |
-| no reply (network error, timeout, crash) | queued, backoff | unclear: `hold` → `unknown`; `retry` → queued |
-| retry window over | `failed` | `failed` |
+| Outcome | Applies to | Before `data_sent_at` | After `data_sent_at` |
+|---|---|---|---|
+| reply `250` after the message | the accepted recipients of the attempt | — | `handed_off` |
+| `5xx` to `RCPT` | that recipient | `failed` | — |
+| `4xx` to `RCPT`, or `552` (too many recipients, RFC 5321 4.5.3.1.10) | that recipient | queued, backoff; only queued recipients go into the next attempt | — |
+| reply `535` | every recipient of the attempt | queued, backoff, event `target.auth_failed` (error) | same |
+| reply `4xx` to `MAIL`, `DATA` or after the message | the recipients of the attempt not refused at `RCPT` | queued, backoff | queued, backoff (the server answered, so the outcome is clear) |
+| reply `5xx` to `MAIL`, `DATA` or after the message | the same | `failed` | `failed` |
+| no reply (network error, timeout, crash) | the same | queued, backoff | unclear: `hold` → `unknown`; `retry` → queued |
+| every recipient refused at `RCPT` | — | no `DATA`; each recipient has its own result | — |
+| retry window over | the recipients that would be queued | `failed` | `failed` |
+
+The derived status of the delivery follows from the recipients (table above): `queued` while any recipient is queued,
+`handed_off` if all were handed off, `partial` if some were handed off and the others failed, `failed` if none was
+handed off. The recipients refused at `RCPT` are written in the same transaction as `data_sent_at`, so a crash during
+the message makes the outcome unclear only for the recipients that were accepted.
 
 `data_sent_at` is written after the target's `354` reply to `DATA` and before the first byte of the message. A failure
 of the `DATA` command itself is therefore still "before": the target cannot have accepted a message it never received.
@@ -138,7 +169,7 @@ A reply code outside 2xx/4xx/5xx counts as "no reply". `check` behaves like `hol
 whole window is used. Levels: `failed`, `unknown` and `target.auth_failed` are `error`, or `warn` for an optional
 target; retries are `warn`.
 
-Recovery at start (D6): deliveries left in `sending` move to `queued` (no `data_sent_at`) or through the target's
+Recovery at start (D6): recipients left in `sending` move to `queued` (no `data_sent_at`) or through the target's
 `ON_UNKNOWN` policy (with `data_sent_at`). `cmd/postwerk` runs this for every target (`Manager.Recover`) before the
 first retention run, so that retention sees the recovered state and a mail past `RAW_MAX_AGE` is expired, not sent;
 each worker repeats it when it starts, in case the first try failed. Deliveries for targets that are no longer
@@ -195,18 +226,21 @@ Keys come from files only (`internal/keys`), read once at start. A `Key` prints 
 start, and then every 10 minutes. The steps run
 in order, each in transactions of at most 200 rows so ingress and workers never wait long for the single connection:
 
-1. Remove the message of mails whose deliveries are all `handed_off`/`skipped`, `RAW_KEEP_AFTER_HANDOFF` after the last
+All steps look at the recipient statuses: the message stays while any recipient of any target is `queued`,
+`sending` or `unknown` (within the limits below).
+
+1. Remove the message of mails whose recipients are all `handed_off`/`skipped`, `RAW_KEEP_AFTER_HANDOFF` after the last
    change. With the default 0 this already happened in `Finish` (or at `Accept`, when every delivery is skipped).
-2. Remove the message of mails whose deliveries are all final with one `failed`/`unknown`, `RAW_KEEP_AFTER_FAILURE`
+2. Remove the message of mails whose recipients are all final with one `failed`/`unknown`, `RAW_KEEP_AFTER_FAILURE`
    after the last change; `unknown` becomes `failed` with `retention.raw_expired`.
-3. Remove the message of mails older than `RAW_MAX_AGE`, skipping mails with a delivery in `sending`; `queued` and
-   `unknown` become `failed` with `retention.raw_expired`.
+3. Remove the message of mails older than `RAW_MAX_AGE`, skipping mails with a recipient in `sending`; `queued` and
+   `unknown` recipients become `failed`, each with `retention.raw_expired`.
 4. Replace recipient addresses and the envelope sender by keyed hashes (`addrhash.Hasher.Hash`) for mails older than
-   `PSEUDONYMIZE_AFTER` that have no message and no delivery that may still be sent.
-5. Delete mails older than `RECORD_RETENTION` with no delivery in `queued`, `sending` or `unknown`; recipients and
-   deliveries go with them (`ON DELETE CASCADE`). Events stay.
+   `PSEUDONYMIZE_AFTER` that have no message and no recipient that may still be sent.
+5. Delete mails older than `RECORD_RETENTION` with no recipient in `queued`, `sending` or `unknown`; recipients,
+   deliveries and their recipient statuses go with them (`ON DELETE CASCADE`). Events stay.
 6. Raise the event cutoff to `now − EVENT_RETENTION` (never lower) and delete events below it.
-7. One `retention.purged` event with the counts, if anything changed; then `PRAGMA wal_checkpoint(TRUNCATE)`.
+7. One `retention.purged` event with the counts (`raw_expired` counts recipients), if anything changed; then `PRAGMA wal_checkpoint(TRUNCATE)`.
 
 Lookups by address (`store.MailIDsByAddress`) take the normalized query and its hashes under every key
 (`addrhash.Hasher.Lookup`), so they find plain and pseudonymized rows alike. The query API (H2) and erasure requests

@@ -48,20 +48,20 @@ to an identifiable person, directly or through other data the operator holds. Pe
 | `mail_id`, `position` | no, alone | |
 | `address` | **yes** | Every `RCPT TO` address, including Bcc recipients. Plain until the pseudonymization age (30 d), then a keyed hash with a key id. Removed with the mail record. |
 
-**`deliveries`**
+**`deliveries`** and **`delivery_recipients`** (one status per mail, target and recipient)
 
 | Column | Personal | Note |
 |---|---|---|
-| `mail_id`, `target`, `status`, `attempts`, `next_attempt_at`, `data_sent_at`, `last_code`, `updated_at` | no, alone | |
+| `mail_id`, `target`, `position`, `status`, `attempts`, `next_attempt_at`, `data_sent_at`, `last_code`, `updated_at` | no, alone | The position links to `recipients`; it is not an address. |
 | `last_text` | no, after redaction | The target's reply text. Replies such as `550 5.1.1 <user@example.com>: Recipient address rejected` are stored as `550 5.1.1 <redacted>: Recipient address rejected`. |
-| `provider_id` | indirectly | *(planned adapter)* The provider's message id. It links to the provider's record, which holds the address and often the content. |
-| `provider_status` | no, if mapped | *(planned adapter)* Should be stored as a fixed status word only (change 16). |
+| provider id | indirectly | *(planned adapter, per recipient)* The provider's message id. It links to the provider's record, which holds the address and often the content. |
+| provider status | no, if mapped | *(planned adapter, per recipient)* Should be stored as a fixed status word only (change 16). |
 
 **`events`**
 
 | Column | Personal | Note |
 |---|---|---|
-| `seq`, `time`, `mail_id`, `target`, `kind`, `level`, `attempt`, `code` | no, alone | |
+| `seq`, `time`, `mail_id`, `target`, `recipient`, `kind`, `level`, `attempt`, `code` | no, alone | `recipient` is the position in the envelope (0, 1, …), never the address. Together with the `recipients` table it points to a person until pseudonymization or deletion of the record. |
 | `text` | no, after redaction | Same redaction as `last_text`. |
 | `sender` | no, unless a login is named after a person | |
 

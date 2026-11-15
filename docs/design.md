@@ -69,8 +69,10 @@ TLS is the default towards every target. `smtp://` fails if the target does not 
 back to cleartext. Cleartext needs the explicit scheme `smtp+plain://`, which is meant for a local capture tool such as
 `smtp+plain://mailpit:1025` and refuses credentials.
 
-The recipient allow-list is an envelope check and stays content-blind. A mail that does not pass it gets the delivery
-status `skipped` for that target and a `delivery.not_allowed` warning. It protects a test setup with a real provider
+The recipient allow-list is an envelope check and stays content-blind. It is all or nothing per target, on purpose:
+if one recipient is outside the list, every recipient of that target is `skipped` with a `delivery.not_allowed`
+warning, and the mail is not sent there at all. Sending to the allowed part only would deliver a mail whose `To` and
+`Cc` lines name people who never got it, which is exactly the confusion a test setup must avoid. It protects a test setup with a real provider
 from mailing real people by accident.
 
 Senders can keep a mail away from named targets with `X-Postwerk-Skip: <target>[, <target>]`, for example to keep mails
@@ -87,7 +89,9 @@ with `STATUS=mailjet` also `X-MJ-CustomID: <mail id>`. No other header is added 
 
 ## 4. Lifecycle
 
-A mail has one record and one delivery per target. The mail is `accepted` once stored. Each delivery moves on its own:
+A mail has one record and one delivery per target. The unit of tracking is the triple **(mail, target, recipient)**:
+each recipient of each delivery has its own status, and that status is the single source of truth. The mail is
+`accepted` once stored. Each recipient moves on its own:
 
 ```
 queued ──▶ sending ──250──▶ handed_off ──(provider status, planned)──▶ delivered
@@ -99,17 +103,29 @@ queued ──▶ sending ──250──▶ handed_off ──(provider status, p
 skipped: excluded by X-Postwerk-Skip, or a recipient is outside the target's allow-list
 ```
 
-Built statuses: `queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`. The provider statuses and closing an
-`unknown` delivery by hand are planned.
+Built statuses: `queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`, per (mail, target, recipient). The
+provider statuses (per recipient, matching Mailjet's one message per recipient) and closing an `unknown` delivery by
+hand are planned.
+
+Scheduling and attempts stay per (mail, target): one SMTP transaction carries several recipients. But every result,
+every retry decision and every event is per recipient. As in any SMTP relay (RFC 5321), the target answers each
+`RCPT` on its own: the message goes to the accepted recipients, a recipient refused with `5xx` fails alone, a recipient
+refused with `4xx` stays queued and only such recipients go into the next attempt. Events name the recipient by its
+position in the envelope, never by its address.
+
+The status of a delivery, and of a mail, is a **summary computed when reading**, never stored: `queued` while any
+recipient is queued, `unknown` while any is unknown, `handed_off` when all were handed off, `failed` when none was,
+and `partial` when some were handed off and the others failed. `partial` exists only as such a summary, for logs and
+the later API.
 
 - `accepted`: stored, `250` sent to the sender. The raw message is kept, encrypted, until it is no longer needed for
   delivery (section 7).
 - `handed_off`: the target replied `250`. Without a provider status adapter this is the last state.
 - `failed`, `unknown` and `target.auth_failed` raise an event with level `error` (`warn` for optional targets).
-- On start, each worker recovers its deliveries left in `sending`: back to `queued` if the message was not sent yet,
-  through `ON_UNKNOWN` if it was.
-- The mail's overall state is derived from its required targets: `done` when all are `handed_off` or later and none
-  failed, `problem` as soon as one failed or is unknown, `pending` otherwise. It is not stored separately.
+- On start, each worker recovers its recipients left in `sending`: back to `queued` if the message was not sent yet,
+  through `ON_UNKNOWN` if it was. An unclear outcome only ever applies to the recipients of that attempt.
+- The mail's overall state is derived from the recipients of its required targets: `done` when all are `handed_off`
+  or later, `problem` as soon as one failed or is unknown, `pending` otherwise. It is not stored separately.
 
 ### What `250` means
 
@@ -128,6 +144,8 @@ waits only seconds before hand-off.
 | Target reply | Meaning | Postwerk does |
 |---|---|---|
 | `250` after the message | accepted | `handed_off` |
+| `5xx` to one `RCPT` | permanent for that recipient | that recipient `failed`; the others go on |
+| `4xx` to one `RCPT` (and `552`, which RFC 5321 counts as "too many recipients") | temporary for that recipient | that recipient stays queued; only queued recipients go into the next attempt |
 | `4xx` | temporary | retry with backoff |
 | network error, TLS error, timeout before the message was sent | temporary | retry with backoff, event `target.unreachable` |
 | `535` (authentication failed) | our credentials are wrong or rotated | **retry and raise an error at once**; the delivery stays queued |
@@ -167,7 +185,8 @@ One SQLite file with these tables (exact columns and migrations: [architecture.m
 |---|---|
 | `mails` | id, received time, sender login, envelope sender, `Message-ID`, `ref`, size, and the raw message, encrypted at rest |
 | `recipients` | one row per envelope recipient; kept apart so addresses can be pseudonymized or erased without touching anything else |
-| `deliveries` | one row per mail and target: status, attempts, next attempt, `data_sent_at`, last reply code and redacted text |
+| `deliveries` | one row per mail and target: what one SMTP transaction shares (attempts, next attempt, `data_sent_at`, last reply code and redacted text) |
+| `delivery_recipients` | one row per mail, target and recipient: its status (the single source of truth), last reply code and redacted text |
 | `events` | the append-only event log (section 8) |
 | `cursors` | one export position per sink |
 
@@ -176,8 +195,8 @@ One SQLite file with these tables (exact columns and migrations: [architecture.m
   with addresses replaced by `<redacted>`.
 - The raw message is encrypted with AES-256-GCM before it is written. The key comes from a key file
   ([privacy-and-security.md](privacy-and-security.md#62-encryption-of-the-raw-message-at-rest)).
-- Retention, with recommended defaults that operators can change: raw message removed when every delivery is handed
-  off or skipped, kept 72 h after a failure, never older than 7 days; recipient addresses replaced by a keyed hash
+- Retention, with recommended defaults that operators can change: raw message removed when every recipient of every
+  delivery is handed off or skipped, kept 72 h after a failure, never older than 7 days; recipient addresses replaced by a keyed hash
   after 30 days (lookups hash the query the same way); mail records and events removed after 90 days. Reasons for each
   period: [privacy-and-security.md section 3](privacy-and-security.md#3-lifecycle-and-retention).
 
@@ -186,7 +205,9 @@ created with mode `0600`. The store must sit on a local disk, not on a network f
 
 ## 8. Event model
 
-Every state change is one event, written in the same transaction as the change. All sinks receive the same shape:
+Every state change is one event, written in the same transaction as the change. A result (retry, hand-off, failure,
+unknown, skip) is one event per recipient and carries `"recipient"`, the position of the recipient in the envelope
+(0, 1, …), never the address. All sinks receive the same shape:
 
 ```json
 {
@@ -196,6 +217,7 @@ Every state change is one event, written in the same transaction as the change. 
   "kind": "target.auth_failed",
   "mail_id": "pw_01JCX4…",
   "target": "mailjet",
+  "recipient": 0,
   "attempt": 3,
   "smtp": { "code": 535, "text": "5.7.8 authentication failed" },
   "sender": "auth-service",
@@ -208,7 +230,7 @@ Kinds written today:
 | Kind | Level | When |
 |---|---|---|
 | `mail.accepted` | info | stored, `250` sent |
-| `delivery.attempt` | info | a worker starts sending to a target |
+| `delivery.attempt` | info | a worker starts sending to a target (one per attempt) |
 | `delivery.retry` | warn | temporary failure, next attempt scheduled |
 | `delivery.handed_off` | info | the target replied `250` |
 | `delivery.failed` | error (warn if optional) | permanent failure or retry window over |

@@ -150,3 +150,27 @@ is valid 8BITMIME, so this is harmless, and a declared `BODY=7BIT` is therefore 
 `DSN` and `REQUIRETLS` are not offered: Postwerk cannot promise delivery status notifications or TLS on every hop for
 every target, and offering an extension it cannot honour would be a silent lie. Mailjet's relay (checked
 2026-11-15) offers `8BITMIME`, `SMTPUTF8`, `SIZE 15728640` and no `DSN`.
+
+## D24 One status per (mail, target, recipient); delivery and mail status are derived
+
+A target answers every `RCPT` on its own, and a provider such as Mailjet keeps one message per recipient (its Send API
+returns one message id per recipient, a `/v3/REST/message` entry has one contact). Tracking a delivery as a whole
+would have to merge different answers into one status, and a 4xx for one recipient would hold back or resend the mail
+for all others. So the unit of tracking is the triple (mail, target, recipient), and its status is the single source
+of truth. Scheduling and attempts stay per (mail, target), because one SMTP transaction carries several recipients;
+every result, every retry decision and every event is per recipient. Events name the recipient by its position in the
+envelope, never by its address, so they stay free of personal data.
+
+Postwerk behaves like an RFC 5321 relay: `DATA` goes to the accepted recipients, a `5xx` at `RCPT` fails one
+recipient, a `4xx` keeps it queued, and only queued recipients go into the next attempt, so nobody gets the mail
+twice because somebody else was deferred. A `552` at `RCPT` counts as temporary, as RFC 5321 section 4.5.3.1.10
+asks, because servers use it for "too many recipients". An unclear outcome after `DATA` applies only to the recipients
+of that attempt; refusals at `RCPT` are stored with `data_sent_at`, so a crash cannot make them unclear.
+
+The status of a delivery or a mail is computed when reading: `queued` while any recipient is queued, `unknown` while
+any is unknown, `handed_off`, `failed`, or `partial` when some were handed off and the others failed. `partial` is a
+summary for logs and the later API, never a stored state: a stored summary could disagree with the rows it
+summarizes. Retention follows the recipients too: the message is kept while any recipient may still be sent.
+
+The recipient allow-list stays all or nothing per target (D8 in requirements.md): a partial copy to a test target
+would list people in `To` and `Cc` who never got it.

@@ -41,14 +41,14 @@ its default is listed in [configuration.md](configuration.md).
 | ID | Requirement | Phase |
 |---|---|---|
 | S1 | One SQLite file, WAL, `synchronous=FULL`, foreign keys on, one connection (single writer). | F |
-| S2 | Tables `mails`, `recipients`, `deliveries`, `events`; schema versioned with `user_version`, migrations embedded. | F |
+| S2 | Tables `mails`, `recipients`, `deliveries`, `delivery_recipients`, `events`; schema versioned with `user_version`, migrations embedded. | F |
 | S3 | `events` is append-only, enforced by triggers: no update ever; a delete only for events older than the retention cutoff (S10). | F |
 | S4 | State change and its event are written in the same transaction. | F |
 | S5 | No message content and no recipient address in `events`. SMTP reply texts are stored with addresses redacted. | F |
 | S6 | Retention job: runs at start (before any delivery) and then every 10 minutes; each run that changed something writes one `retention.purged` event with counts only. | F |
-| S7 | Raw message removal: once every delivery is `handed_off` or `skipped`, after `POSTWERK_RAW_KEEP_AFTER_HANDOFF` (default 0: in the same transaction that makes the last delivery final); once every delivery is final with one `failed` or `unknown`, after `POSTWERK_RAW_KEEP_AFTER_FAILURE` (72 h); in any state after `POSTWERK_RAW_MAX_AGE` (7 d). A delivery still `queued` or `unknown` at removal becomes `failed` with `retention.raw_expired` (`error`, `warn` for optional targets). Every retry window must be shorter than the maximum age. | F |
+| S7 | Raw message removal: once every recipient of every delivery is `handed_off` or `skipped`, after `POSTWERK_RAW_KEEP_AFTER_HANDOFF` (default 0: in the same transaction that makes the last recipient final); once every recipient is final with one `failed` or `unknown`, after `POSTWERK_RAW_KEEP_AFTER_FAILURE` (72 h); in any state after `POSTWERK_RAW_MAX_AGE` (7 d). A recipient still `queued` or `unknown` at removal becomes `failed` with `retention.raw_expired` (`error`, `warn` for optional targets). Every retry window must be shorter than the maximum age. | F |
 | S8 | Pseudonymization: after `POSTWERK_PSEUDONYMIZE_AFTER` (30 d), recipient addresses and the envelope sender are replaced by keyed hashes (K1), once no delivery may still be sent. | F |
-| S9 | Record retention: `mails`, `recipients` and `deliveries` rows are deleted after `POSTWERK_RECORD_RETENTION` (90 d), except mails with a delivery still `queued`, `sending` or `unknown`. | F |
+| S9 | Record retention: `mails`, `recipients` and `deliveries` rows are deleted after `POSTWERK_RECORD_RETENTION` (90 d), except mails with a recipient still `queued`, `sending` or `unknown` at any target. | F |
 | S10 | Event retention: events older than `POSTWERK_EVENT_RETENTION` (90 d) are deleted. The cutoff lives in a single-row table, can only move forward (trigger), and the delete trigger on `events` allows nothing newer than it. | F |
 | S11 | Deleted content is overwritten (`POSTWERK_SECURE_DELETE`, default on), and every retention run checkpoints and truncates the WAL, so old page copies do not linger. | F |
 | S12 | Retention periods are validated together at start: keep periods ≤ maximum age ≤ pseudonymization age (if on) ≤ record retention; maximum age ≤ event retention. | F |
@@ -76,7 +76,7 @@ its default is listed in [configuration.md](configuration.md).
 
 | ID | Requirement | Phase |
 |---|---|---|
-| D1 | One delivery per mail and target, each with its own status, attempts and next attempt time. | F |
+| D1 | One delivery per mail and target, each with its own attempts and next attempt time; its status is derived from its recipients (D15). | F |
 | D2 | One worker per target; a slow or broken target never delays another. | F |
 | D3 | Retry policy as in design.md section 5: `4xx` and network errors retry; `535` retries and raises an error at once; other `5xx` fail. | F |
 | D4 | Backoff 30 s, 1 min, 2 min, 5 min, 10 min, 30 min, then hourly, until the retry window ends; then `failed`. | F |
@@ -90,12 +90,15 @@ its default is listed in [configuration.md](configuration.md).
 | D12 | Rate and connection limits per target. | L |
 | D13 | MAIL parameters are passed on where the target offers the extension: `SMTPUTF8` as declared; `BODY=8BITMIME` to every target that offers it (the SMTP library always declares it; 7-bit content is valid 8BITMIME). | F |
 | D14 | A mail that needs an extension the target does not offer is never sent without it: `SMTPUTF8` when declared and the envelope or header section holds non-ASCII; `8BITMIME` when the message holds any 8-bit byte. That delivery fails at once with `delivery.unsupported` (`error`, `warn` for optional targets). | F |
+| D15 | The unit of tracking is (mail, target, recipient); its status (`queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`) is the only stored status. Scheduling and attempts stay per (mail, target). Every result and every result event is per recipient. | F |
+| D16 | RFC 5321 relay behaviour: `DATA` goes to the recipients the target accepted; `5xx` at `RCPT` fails that recipient, `4xx` (and `552`) keeps it queued and only queued recipients go into the next attempt; all refused → no `DATA`. An unclear outcome after `DATA` applies only to the recipients of that attempt. | F |
+| D17 | The status of a delivery and of a mail is derived when reading, never stored: `queued` while any recipient is queued, `unknown` while any is unknown, `handed_off` if all were handed off, `failed` if none, `partial` if some were handed off and the others failed. | F |
 
 ## Status, audit, reporting
 
 | ID | Requirement | Phase |
 |---|---|---|
-| A1 | Every state change is an event with `seq`, time, mail id, target, kind, level. | F |
+| A1 | Every state change is an event with `seq`, time, mail id, target, kind, level; a result event also names the recipient's position, never its address. | F |
 | A2 | Reporter reads events by cursor per sink; a sink that fails retries later and catches up. | F |
 | A3 | stdout sink: one JSON line per event, always on. | F |
 | A4 | Sinks for OpenTelemetry, Sentry protocol, signed webhook. | L |
