@@ -1,0 +1,10 @@
+apiVersion: v2
+name: postwerk
+description: Postwerk, an outbound SMTP relay that stores, forwards and tracks every mail. Cluster-internal only.
+type: application
+version: 0.1.0
+appVersion: "dev"
+home: https://github.com/eneuberg/postwerk
+sources:
+  - https://github.com/eneuberg/postwerk
+keywords: [smtp, mail, relay]

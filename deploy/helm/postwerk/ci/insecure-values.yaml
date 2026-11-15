@@ -1,0 +1,10 @@
+# Used by CI: cleartext AUTH, no pseudonymization, NetworkPolicy off.
+tls:
+  enabled: false
+  allowInsecureAuth: true
+retention:
+  pseudonymizeAfter: "0"
+networkPolicy:
+  enabled: false
+persistence:
+  existingClaim: postwerk-data

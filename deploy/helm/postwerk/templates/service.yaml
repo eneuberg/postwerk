@@ -1,0 +1,27 @@
+{{- $fullname := include "postwerk.fullname" . -}}
+# ClusterIP only: Postwerk is never reachable from outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "postwerk.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "postwerk.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: smtp
+      port: 2525
+      targetPort: smtp
+      protocol: TCP
+    {{- if .Values.service.exposeHTTP }}
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    {{- end }}

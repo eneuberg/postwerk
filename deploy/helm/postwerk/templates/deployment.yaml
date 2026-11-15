@@ -1,0 +1,286 @@
+{{- include "postwerk.validate" . }}
+{{- $fullname := include "postwerk.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "postwerk.labels" . | nindent 4 }}
+spec:
+  # One SQLite file, one writer: never more than one replica, and the old
+  # pod is gone before the new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "postwerk.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "postwerk.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "postwerk.serviceAccountName" . }}
+      # Postwerk needs no access to the Kubernetes API.
+      automountServiceAccountToken: false
+      # Service links would add variables such as POSTWERK_PORT for a
+      # Service named "postwerk"; Postwerk refuses unknown POSTWERK_*
+      # variables, so they must stay off.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postwerk
+          image: {{ include "postwerk.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: smtp
+              containerPort: 2525
+              protocol: TCP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: POSTWERK_SMTP_LISTEN
+              value: ":2525"
+            # Probes come from the kubelet, outside the pod's loopback.
+            - name: POSTWERK_HTTP_LISTEN
+              value: ":8080"
+            - name: POSTWERK_DATA
+              value: /data/postwerk.db
+            {{- with .Values.hostname }}
+            - name: POSTWERK_HOSTNAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.instance }}
+            - name: POSTWERK_INSTANCE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: POSTWERK_SENDERS_FILE
+              value: /run/secrets/senders/senders
+            {{- if eq (toString .Values.storeEncryption) "off" }}
+            - name: POSTWERK_STORE_ENCRYPTION
+              value: "off"
+            {{- else }}
+            - name: POSTWERK_STORE_KEY_FILE
+              value: /run/secrets/store-key/store-key
+            {{- end }}
+            {{- if ne (toString .Values.retention.pseudonymizeAfter) "0" }}
+            - name: POSTWERK_HASH_KEY_FILE
+              value: /run/secrets/hash-key/hash-key
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: POSTWERK_SMTP_TLS_CERT_FILE
+              value: /run/secrets/tls/tls.crt
+            - name: POSTWERK_SMTP_TLS_KEY_FILE
+              value: /run/secrets/tls/tls.key
+            {{- else }}
+            - name: POSTWERK_SMTP_ALLOW_INSECURE_AUTH
+              value: "true"
+            {{- end }}
+            - name: POSTWERK_MAX_MESSAGE_BYTES
+              value: {{ .Values.limits.maxMessageBytes | int64 | quote }}
+            - name: POSTWERK_MAX_RECIPIENTS
+              value: {{ .Values.limits.maxRecipients | int64 | quote }}
+            - name: POSTWERK_MAX_CONNECTIONS
+              value: {{ .Values.limits.maxConnections | int64 | quote }}
+            - name: POSTWERK_MAX_INFLIGHT_BYTES
+              value: {{ .Values.limits.maxInflightBytes | int64 | quote }}
+            - name: POSTWERK_SHUTDOWN_TIMEOUT
+              value: {{ .Values.shutdownTimeout | quote }}
+            - name: POSTWERK_RETRY_WINDOW
+              value: {{ .Values.retryWindow | quote }}
+            - name: POSTWERK_RAW_KEEP_AFTER_HANDOFF
+              value: {{ .Values.retention.rawKeepAfterHandoff | toString | quote }}
+            - name: POSTWERK_RAW_KEEP_AFTER_FAILURE
+              value: {{ .Values.retention.rawKeepAfterFailure | toString | quote }}
+            - name: POSTWERK_RAW_MAX_AGE
+              value: {{ .Values.retention.rawMaxAge | toString | quote }}
+            - name: POSTWERK_PSEUDONYMIZE_AFTER
+              value: {{ .Values.retention.pseudonymizeAfter | toString | quote }}
+            - name: POSTWERK_RECORD_RETENTION
+              value: {{ .Values.retention.recordRetention | toString | quote }}
+            - name: POSTWERK_EVENT_RETENTION
+              value: {{ .Values.retention.eventRetention | toString | quote }}
+            - name: POSTWERK_SECURE_DELETE
+              value: {{ .Values.retention.secureDelete | toString | quote }}
+            - name: POSTWERK_TARGETS
+              value: {{ include "postwerk.targetNames" . | quote }}
+            {{- range .Values.targets }}
+            {{- $p := printf "POSTWERK_TARGET_%s_" (upper .name) }}
+            - name: {{ $p }}URL
+              value: {{ .url | quote }}
+            {{- if .credentialsSecret }}
+            - name: {{ $p }}CREDENTIALS_FILE
+              value: /run/secrets/target-{{ .name | replace "_" "-" }}/credentials
+            {{- end }}
+            {{- with .status }}
+            - name: {{ $p }}STATUS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .optional }}
+            - name: {{ $p }}OPTIONAL
+              value: "true"
+            {{- end }}
+            {{- with .retryWindow }}
+            - name: {{ $p }}RETRY_WINDOW
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .onUnknown }}
+            - name: {{ $p }}ON_UNKNOWN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .allowRecipients }}
+            - name: {{ $p }}ALLOW_RECIPIENTS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: senders
+              mountPath: /run/secrets/senders
+              readOnly: true
+            {{- if ne (toString .Values.storeEncryption) "off" }}
+            - name: store-key
+              mountPath: /run/secrets/store-key
+              readOnly: true
+            {{- end }}
+            {{- if ne (toString .Values.retention.pseudonymizeAfter) "0" }}
+            - name: hash-key
+              mountPath: /run/secrets/hash-key
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /run/secrets/tls
+              readOnly: true
+            {{- end }}
+            {{- range .Values.targets }}
+            {{- if .credentialsSecret }}
+            - name: target-{{ .name | replace "_" "-" }}
+              mountPath: /run/secrets/target-{{ .name | replace "_" "-" }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            # Start-up runs recovery and a retention pass before the
+            # listeners open; allow two minutes.
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" $fullname) }}
+        # Secrets as files, readable by the group 65532 (fsGroup) only.
+        - name: senders
+          secret:
+            secretName: {{ .Values.secrets.senders.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.senders.key }}
+                path: senders
+        {{- if ne (toString .Values.storeEncryption) "off" }}
+        - name: store-key
+          secret:
+            secretName: {{ .Values.secrets.storeKey.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.storeKey.key }}
+                path: store-key
+        {{- end }}
+        {{- if ne (toString .Values.retention.pseudonymizeAfter) "0" }}
+        - name: hash-key
+          secret:
+            secretName: {{ .Values.secrets.hashKey.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.hashKey.key }}
+                path: hash-key
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
+        {{- range .Values.targets }}
+        {{- if .credentialsSecret }}
+        - name: target-{{ .name | replace "_" "-" }}
+          secret:
+            secretName: {{ .credentialsSecret.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .credentialsSecret.key | default "credentials" }}
+                path: credentials
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

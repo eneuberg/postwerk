@@ -1,0 +1,32 @@
+{{- if and .Values.tls.enabled .Values.tls.certManager.enabled }}
+{{- $fullname := include "postwerk.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+# Server certificate for STARTTLS, issued by an internal CA through
+# cert-manager. Clients must trust that CA (docs/kubernetes.md).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "postwerk.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.tls.secretName }}
+  duration: {{ .Values.tls.certManager.duration }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages: [server auth, digital signature]
+  dnsNames:
+    {{- if .Values.tls.certManager.dnsNames }}
+    {{- toYaml .Values.tls.certManager.dnsNames | nindent 4 }}
+    {{- else }}
+    - {{ $fullname }}
+    - {{ $fullname }}.{{ $ns }}
+    - {{ $fullname }}.{{ $ns }}.svc
+    - {{ $fullname }}.{{ $ns }}.svc.{{ .Values.clusterDomain }}
+    {{- end }}
+  issuerRef:
+    {{- toYaml .Values.tls.certManager.issuerRef | nindent 4 }}
+{{- end }}

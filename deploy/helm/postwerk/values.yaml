@@ -1,0 +1,182 @@
+# Values for the Postwerk chart. Every value is documented in
+# docs/kubernetes.md; "recommended" marks a default from
+# docs/configuration.md that you should change only with a reason.
+#
+# Postwerk is a single instance with one SQLite file: the chart always runs
+# exactly one replica with the Recreate strategy. It never exposes Postwerk
+# outside the cluster: ClusterIP service only, no Ingress, no LoadBalancer,
+# no NodePort.
+
+image:
+  # There is no public image yet: build it (docker build -t <registry>/postwerk:<tag> .)
+  # and push it to a registry your cluster can pull from.
+  repository: postwerk
+  tag: dev
+  # Recommended: pin the image by digest (sha256:...); it wins over tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Overrides for the resource names (default: <release>-postwerk, or the
+# release name if it contains "postwerk").
+nameOverride: ""
+fullnameOverride: ""
+
+# POSTWERK_HOSTNAME: name in the SMTP greeting and in EHLO towards targets.
+# Empty: Postwerk's default ("postwerk").
+hostname: ""
+# POSTWERK_INSTANCE: added to every log line and event.
+instance: ""
+
+# Existing Secrets, referenced by name and key. The chart never creates
+# secrets; see docs/kubernetes.md for the kubectl commands.
+secrets:
+  # Senders file (postwerk hash-password). Required.
+  senders:
+    name: postwerk-senders
+    key: senders
+  # Store key file (postwerk gen-key). Required while storeEncryption is on.
+  storeKey:
+    name: postwerk-store-key
+    key: store-key
+  # Hash key file (postwerk gen-key, a different key). Required while
+  # retention.pseudonymizeAfter is not "0".
+  hashKey:
+    name: postwerk-hash-key
+    key: hash-key
+
+# STARTTLS on ingress. Recommended: on. Most SMTP clients (Go's net/smtp,
+# gomail, PHPMailer, nodemailer with requireTLS) refuse to send a password
+# without TLS to anything but localhost.
+tls:
+  enabled: true
+  # Secret of type kubernetes.io/tls with tls.crt and tls.key. With
+  # certManager.enabled the chart creates the Certificate that fills it.
+  secretName: postwerk-tls
+  certManager:
+    enabled: false
+    # An issuer for an internal CA, for example a cert-manager CA issuer.
+    issuerRef:
+      name: internal-ca
+      kind: ClusterIssuer
+      group: cert-manager.io
+    duration: 2160h    # 90 days
+    renewBefore: 360h  # 15 days
+    # Empty: the service names (<svc>, <svc>.<ns>, <svc>.<ns>.svc, <svc>.<ns>.svc.<clusterDomain>).
+    dnsNames: []
+  # Only with tls.enabled=false: accept AUTH over cleartext. Use it only if
+  # the cluster network encrypts traffic between nodes, and write down why.
+  allowInsecureAuth: false
+
+clusterDomain: cluster.local
+
+# Delivery targets: every accepted mail goes to each of them.
+targets:
+  - name: mailjet                 # [a-z0-9_]{1,32}
+    url: smtp://in-v3.mailjet.com:587
+    # Secret whose key holds "username:password" (one line).
+    credentialsSecret:
+      name: postwerk-target-mailjet
+      key: credentials
+    status: mailjet               # removes the sender's X-MJ-CustomID, adds Postwerk's
+    optional: false
+    retryWindow: ""               # empty: retryWindow below
+    onUnknown: ""                 # hold | retry | check; empty: Postwerk's default
+    allowRecipients: ""           # e.g. "*@example.test,qa-*@your-domain"
+
+retryWindow: 24h
+
+limits:
+  maxMessageBytes: 15728640       # recommended: 15 MiB, the SIZE Mailjet offers
+  maxRecipients: 50
+  maxConnections: 100
+  maxInflightBytes: 268435456     # recommended: 256 MiB memory budget for messages being received
+
+# Postwerk's own shutdown deadline; the grace period must be longer.
+shutdownTimeout: 100s
+terminationGracePeriodSeconds: 120
+
+# Encryption at rest. Recommended: "on".
+storeEncryption: "on"
+
+# Retention, all at the recommended defaults (docs/configuration.md).
+retention:
+  rawKeepAfterHandoff: "0"        # recommended: delete the message at hand-off
+  rawKeepAfterFailure: 72h        # recommended: time for a resend
+  rawMaxAge: 7d                   # recommended: hard cap
+  pseudonymizeAfter: 30d          # recommended; "0" turns pseudonymization off
+  recordRetention: 90d            # recommended
+  eventRetention: 90d             # recommended
+  secureDelete: "on"              # recommended
+
+# More POSTWERK_* variables, as a list of {name, value}. Unknown POSTWERK_*
+# names stop the start, so typos are caught.
+extraEnv: []
+
+service:
+  # Expose the HTTP port (8080, /healthz and /readyz) on the Service too, for
+  # monitoring. Probes do not need it.
+  exposeHTTP: false
+  annotations: {}
+
+persistence:
+  # The SQLite file lives here. Use a local, block-backed volume
+  # (ReadWriteOnce); never a network file system such as NFS.
+  existingClaim: ""
+  storageClassName: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+  annotations: {}
+
+# Recommended: plan the memory limit at about 3 × limits.maxInflightBytes
+# plus 50 MiB. Go sizes GOMAXPROCS from the CPU limit, and Postwerk runs at
+# most that many password checks at once.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+networkPolicy:
+  # Recommended: on. Default deny for everything not listed here.
+  enabled: true
+  # Who may connect to SMTP (2525): NetworkPolicy peers. By default, pods
+  # in the same namespace with the label postwerk-client=true.
+  smtpFrom:
+    - podSelector:
+        matchLabels:
+          postwerk-client: "true"
+  # Who may reach HTTP (8080), for example a monitoring namespace. Probes
+  # come from the kubelet on the pod's node, which NetworkPolicy always
+  # allows, so they need no entry.
+  httpFrom: []
+  egress:
+    # DNS for target host names.
+    dns:
+      enabled: true
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+    # Target ports. Provider IP addresses change, so the default allows these
+    # ports to any address; narrow targetCIDRs if your provider publishes ranges.
+    targetPorts: [587, 465]
+    targetCIDRs: [0.0.0.0/0]
+    # More egress rules, for example to an in-cluster capture tool.
+    extra: []
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

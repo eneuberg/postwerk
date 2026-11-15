@@ -1,0 +1,57 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "postwerk.fullname" . }}
+  labels:
+    {{- include "postwerk.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "postwerk.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # SMTP only from the configured senders.
+    {{- if $np.smtpFrom }}
+    - from:
+        {{- toYaml $np.smtpFrom | nindent 8 }}
+      ports:
+        - port: 2525
+          protocol: TCP
+    {{- end }}
+    # HTTP (health) only from the configured sources. Probes come from the
+    # kubelet on the pod's own node, which NetworkPolicy always allows.
+    {{- if $np.httpFrom }}
+    - from:
+        {{- toYaml $np.httpFrom | nindent 8 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+    {{- end }}
+  egress:
+    {{- if $np.egress.dns.enabled }}
+    - to:
+        {{- toYaml $np.egress.dns.to | nindent 8 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- if $np.egress.targetPorts }}
+    - to:
+        {{- range $np.egress.targetCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $np.egress.targetPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- with $np.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

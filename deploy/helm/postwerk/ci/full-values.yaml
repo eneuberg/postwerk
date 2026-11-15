@@ -1,0 +1,37 @@
+# Used by CI (helm lint/template, kubeconform): every optional part on.
+image:
+  repository: registry.example.test/postwerk
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+hostname: relay.example.test
+instance: prod
+tls:
+  certManager:
+    enabled: true
+targets:
+  - name: mailjet
+    url: smtp://in-v3.mailjet.com:587
+    credentialsSecret: {name: postwerk-target-mailjet, key: credentials}
+    status: mailjet
+  - name: capture_test
+    url: smtp+plain://mailpit.mailpit.svc:1025
+    optional: true
+    onUnknown: retry
+    retryWindow: 1h
+    allowRecipients: "*@example.test"
+extraEnv: []
+service:
+  exposeHTTP: true
+networkPolicy:
+  httpFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  egress:
+    extra:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: mailpit
+        ports:
+          - port: 1025
+            protocol: TCP

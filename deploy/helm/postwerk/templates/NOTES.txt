@@ -1,0 +1,20 @@
+Postwerk runs as one replica in {{ .Release.Namespace }}.
+
+SMTP for applications in the cluster (never exposed outside it):
+  host: {{ include "postwerk.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}
+  port: 2525, {{ if .Values.tls.enabled }}STARTTLS{{ else }}cleartext AUTH (tls disabled){{ end }}, AUTH PLAIN with a name from the senders file
+{{- if .Values.networkPolicy.enabled }}
+  Only pods matching networkPolicy.smtpFrom may connect
+  {{- if eq (toJson .Values.networkPolicy.smtpFrom) (toJson (list (dict "podSelector" (dict "matchLabels" (dict "postwerk-client" "true"))))) }}
+  (default: pods in this namespace with the label postwerk-client=true).
+  {{- end }}
+{{- end }}
+
+Health, from your machine only:
+  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "postwerk.fullname" . }} 8080:8080
+  curl http://127.0.0.1:8080/readyz
+
+Events (one JSON line each) are in the pod log:
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "postwerk.fullname" . }} -f
+
+See docs/kubernetes.md for secrets, TLS, wiring applications and backups.
