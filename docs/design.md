@@ -36,7 +36,8 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
 | Query API and UI | read-only JSON API and HTML pages, admin-only resend | planned | standard library, `html/template` |
 
-One process, one container, one data volume. [architecture.svg](architecture.svg) shows the full design, including the
+One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
+([kubernetes.md](kubernetes.md)). [architecture.svg](architecture.svg) shows the full design, including the
 planned parts (provider status, query API and UI, sinks other than stdout).
 
 ## 3. Targets

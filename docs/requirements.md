@@ -125,4 +125,6 @@ its default is listed in [configuration.md](configuration.md).
 | O2 | Static binary, no cgo. Container from `scratch` with CA certificates only, runs as a non-root user, works with a read-only root file system. | F |
 | O3 | Logs as JSON on stdout, never with message content or recipient addresses. | F |
 | O4 | Direct dependencies kept to the SMTP library, its SASL package and the SQLite driver for the foundation. Every new dependency needs a reason in decisions.md. | F |
-| O5 | CI: format check, vet, tests with the race detector, vulnerability scan, container build. | F |
+| O5 | CI: format check, vet, tests with the race detector, vulnerability scan, container build, Helm chart lint, render and schema check. | F |
+| O6 | Helm chart `deploy/helm/postwerk`: one replica with `Recreate`, ClusterIP Service only (no Ingress, `LoadBalancer` or `NodePort`), PVC, existing Secrets mounted as files (`0440`, `fsGroup` 65532), non-root uid/gid 65532, read-only root file system, all capabilities dropped, seccomp `RuntimeDefault`, no service account token, no service links, probes on `/healthz` and `/readyz`, grace period 120 s, resource requests and limits, every retention setting as a value with its recommended default. Guide: [kubernetes.md](kubernetes.md). | F |
+| O7 | NetworkPolicy on by default: SMTP only from configured peers, HTTP only from configured sources (probes come from the node), egress only DNS and the target ports 587/465 (any address by default, configurable CIDRs). Optional cert-manager `Certificate` for STARTTLS. | F |

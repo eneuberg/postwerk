@@ -287,6 +287,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **Deleted data.** SQLite `secure_delete` is on, so deleted content is overwritten
   ([SQLite docs](https://www.sqlite.org/pragma.html#pragma_secure_delete)). Old page copies can sit in the WAL file
   until a checkpoint, so the retention job checkpoints after a purge.
+- **Network.** In Kubernetes the chart's NetworkPolicy (on by default) lets only the sending pods reach SMTP and lets
+  Postwerk reach only DNS and the submission ports; the Service is ClusterIP only, never exposed outside the cluster
+  ([kubernetes.md](kubernetes.md)).
 - **Login hardening.** Every password check that is not a repeat of a successful login costs the strongest iteration
   count in the senders file, so the time of a failed login reveals neither which names exist nor which hashes are
   weaker. At most one check per CPU runs at once, so a burst of logins cannot starve delivery; a connection that has

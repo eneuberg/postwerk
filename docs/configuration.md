@@ -32,6 +32,10 @@ Security notes:
   a host. In a container, probes come from outside the loopback (the kubelet, Docker's health check from the
   host network), so containers set `POSTWERK_HTTP_LISTEN=:8080`, as [examples/compose.yaml](../examples/compose.yaml)
   does. Never publish this port to the internet; the later query API will share it.
+- **Kubernetes.** The Helm chart in `deploy/helm/postwerk` sets all of this (one replica, `Recreate`, ClusterIP only,
+  secrets as files, NetworkPolicy); see [kubernetes.md](kubernetes.md). Pods need `enableServiceLinks: false`:
+  service links add variables such as `POSTWERK_PORT` for a Service named `postwerk`, and unknown `POSTWERK_*`
+  variables stop the start.
 
 ## Senders
 
@@ -229,6 +233,8 @@ non-empty value stops the start.
 - [ ] **Grace period** longer than `POSTWERK_SHUTDOWN_TIMEOUT` (Kubernetes `terminationGracePeriodSeconds: 120`).
 - [ ] **No capture target in production.**
 - [ ] **HTTP listener** reachable only by the probes (`:8080` inside the container, never published).
+- [ ] **In Kubernetes:** the chart's NetworkPolicy on, SMTP only from the sending pods, no Ingress, `LoadBalancer` or
+      `NodePort`, a CNI that enforces NetworkPolicy ([kubernetes.md](kubernetes.md)).
 - [ ] **Retention** at the recommended values, or changes written down with their reason; backups no longer than
       `POSTWERK_RECORD_RETENTION`.
 - [ ] Start log checked: no warnings about file permissions, encryption or pseudonymization.

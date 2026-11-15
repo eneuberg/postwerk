@@ -221,3 +221,28 @@ larger than declared must grow its reservation or gets the `451`. Reserving at `
 keeps idle transactions from holding memory. The library sends `354` before the check, so the refused message still
 crosses the network, but it is discarded without being buffered. 256 MiB fits 17 messages at the maximum size and
 thousands of typical transactional mails.
+
+## D28 Helm chart defaults: one replica, cluster-internal, deny by default
+
+The chart encodes what the design needs, so a default install is a safe one:
+
+- **One replica, `Recreate`.** One SQLite file has one writer (D6). A rolling update would start a second pod on the
+  same volume; `Recreate` stops the old pod first, at the cost of a few seconds without SMTP, which senders retry.
+- **ClusterIP only.** Postwerk relays mail in the name of the organization; reachable from the internet it would be an
+  open door for anyone with one leaked sender password. The chart has no Ingress, `LoadBalancer` or `NodePort`
+  switch on purpose. People reach the health port through a VPN or `kubectl port-forward`.
+- **NetworkPolicy on.** SMTP only from the pods that send, HTTP only from named sources, egress only DNS and the
+  submission ports 587 and 465. The target ports are open to any address by default because providers change their
+  addresses without notice; a CIDR list is there for providers that publish ranges. Probes need no rule: Kubernetes
+  NetworkPolicy does not block traffic from a pod's own node. Without per-IP rules in Postwerk (D26), the policy is
+  the place that decides who may connect.
+- **Secrets as files from existing Secrets.** Keys never pass through Helm values (which end up in release secrets
+  and shell histories) or environment variables (D20). Mode `0440` with `fsGroup: 65532` makes them readable by
+  Postwerk only.
+- **No token, no service links.** Postwerk never calls the Kubernetes API, so the pod gets no service account token.
+  Service links are off because they inject `POSTWERK_*`-looking variables that Postwerk refuses (D19).
+- **Hardened pod.** Non-root uid 65532, read-only root file system, all capabilities dropped, seccomp
+  `RuntimeDefault`; the image has no shell to begin with.
+- **TLS by default, cert-manager optional.** STARTTLS from an internal CA, because common clients (Go's `net/smtp`)
+  refuse to send a password without it. Postwerk reads the certificate at start, so a renewal needs a restart; hot
+  reloading is an open point.
