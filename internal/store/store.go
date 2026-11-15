@@ -89,6 +89,12 @@ const (
 	// KindDecryptFailed: the stored message could not be decrypted; the
 	// delivery is failed and nothing was sent.
 	KindDecryptFailed = "store.decrypt_failed"
+
+	// Events of people using the UI (U13). They name the token in Actor and
+	// never carry a search query or an address.
+	KindUILogin       = "ui.login"
+	KindUILoginFailed = "ui.login_failed"
+	KindUISearch      = "ui.search"
 )
 
 // ErrNotSending is returned when a recipient that should be in "sending" is

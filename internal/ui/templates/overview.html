@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Overview</h1>
+  <p class="muted">Last 24 hours, since {{when .Data.Since}}.</p>
+</div>
+<section class="targets" aria-label="Targets">
+{{range .Data.Targets}}
+  <article class="card target">
+    <header class="target-head">
+      <h2><a href="/mails?target={{.Target}}">{{.Target}}</a></h2>
+      {{if not .Configured}}<span class="tag tag-warn" title="Deliveries for this target are in the store, but it is not configured: nobody works on its queue.">not configured</span>{{end}}
+    </header>
+    <dl class="figures">
+      <div><dt>Queued now</dt><dd>{{if .Queued}}<a href="/mails?target={{.Target}}&amp;state=queued">{{.Queued}}</a>{{else}}0{{end}}</dd></div>
+      <div><dt>Oldest queued</dt><dd>{{if .Queued}}{{ago .OldestQueuedAge}}{{else}}—{{end}}</dd></div>
+      <div><dt>Recipients, 24 h</dt><dd>{{.RecentTotal}}</dd></div>
+    </dl>
+    <ul class="counts" aria-label="Recipients of the last 24 hours by status">
+      {{range .Recent}}<li class="{{if not .Count}}zero{{end}}"><span class="st {{statusClass .Status}}">{{status .Status}}</span> <span class="num">{{.Count}}</span></li>{{end}}
+    </ul>
+  </article>
+{{else}}
+  <p class="muted">No targets.</p>
+{{end}}
+</section>
+
+<section class="card">
+  <h2>Recent problems</h2>
+  <p class="muted">Mails that are failed, unknown or partial, newest first. <a href="/mails?state=failed">All failed</a> · <a href="/mails?state=unknown">all unknown</a> · <a href="/mails?state=partial">all partial</a></p>
+  {{template "mailtable" .Data.Problems}}
+</section>
+{{end}}

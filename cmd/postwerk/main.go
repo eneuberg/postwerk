@@ -5,6 +5,7 @@
 //	postwerk [serve]        run the relay (configuration from POSTWERK_* variables)
 //	postwerk hash-password  read a password from stdin, print a senders-file hash
 //	postwerk gen-key        print a new key line for a store or hash key file
+//	postwerk gen-token NAME ROLE  print a new UI token and its tokens-file line
 //	postwerk version        print the version
 package main
 
@@ -31,10 +32,12 @@ import (
 	"github.com/eneuberg/postwerk/internal/httpapi"
 	"github.com/eneuberg/postwerk/internal/ingress"
 	"github.com/eneuberg/postwerk/internal/keys"
+	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/report"
 	"github.com/eneuberg/postwerk/internal/retention"
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
+	"github.com/eneuberg/postwerk/internal/ui"
 )
 
 // version is set at build time with -ldflags "-X main.version=…".
@@ -47,6 +50,9 @@ commands:
   hash-password  read one password from stdin and print the value for the senders file
   gen-key        print a new random key line (<key-id>:<base64>) for POSTWERK_STORE_KEY_FILE
                  or POSTWERK_HASH_KEY_FILE; use a separate key for each file
+  gen-token NAME ROLE
+                 print a new random UI token (first line, give it to the person) and its line
+                 for POSTWERK_UI_TOKENS_FILE (second line); ROLE is read or admin
   version        print the version
 `
 
@@ -58,6 +64,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cmd := "serve"
 	if len(args) > 0 {
 		cmd, args = args[0], args[1:]
+	}
+	if cmd == "gen-token" {
+		return genToken(args, stdout, stderr)
 	}
 	if len(args) > 0 {
 		fmt.Fprint(stderr, usage)
@@ -92,6 +101,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+}
+
+// genToken prints a new UI token and the matching tokens-file line (U4).
+func genToken(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	token := auth.GenerateToken()
+	line, err := auth.TokenLine(args[0], auth.Role(args[1]), token, auth.DefaultIterations)
+	if err != nil {
+		fmt.Fprintln(stderr, "postwerk:", err)
+		return 2
+	}
+	fmt.Fprintln(stdout, token)
+	fmt.Fprintln(stdout, line)
+	return 0
 }
 
 func serveCmd(stdout, stderr io.Writer) int {
@@ -177,9 +203,10 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // stop together (workers after their current send), then the final event
 // export, HTTP and the store. All of it shares one deadline,
 // cfg.ShutdownTimeout. listening, if not nil, is called with the bound
-// addresses once both listeners are open.
+// addresses once the listeners are open; adminAddr is nil when the admin
+// listener is off.
 func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOut io.Writer,
-	listening func(smtpAddr, httpAddr net.Addr)) error {
+	listening func(smtpAddr, httpAddr, adminAddr net.Addr)) error {
 	sealer, err := seal.New(cfg.StoreKeys)
 	if err != nil {
 		return err
@@ -239,6 +266,29 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		st.Close()
 		return fmt.Errorf("http listener: %w", err)
 	}
+	var adminSrv *http.Server
+	var adminL net.Listener
+	if cfg.Admin.Listen != "" {
+		var names []string
+		for _, t := range cfg.Targets {
+			names = append(names, t.Name)
+		}
+		q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
+		u, err := ui.New(ui.Options{
+			Query: q, Tokens: cfg.Admin.Tokens, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
+			Logger: logger,
+		})
+		if err == nil {
+			adminL, err = net.Listen("tcp", cfg.Admin.Listen)
+		}
+		if err != nil {
+			httpL.Close()
+			smtpL.Close()
+			st.Close()
+			return fmt.Errorf("admin listener: %w", err)
+		}
+		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
+	}
 
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
@@ -248,24 +298,35 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	go func() { ret.Run(runCtx); close(retDone) }()
 	mgr.Start(runCtx)
 
-	serveErr := make(chan error, 2)
+	serveErr := make(chan error, 3)
 	go func() { serveErr <- ing.Serve(smtpL) }()
 	go func() {
 		if err := httpSrv.Serve(httpL); !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
 	}()
+	var adminAddr net.Addr
+	adminLog := "off"
+	if adminSrv != nil {
+		adminAddr = adminL.Addr()
+		adminLog = adminAddr.String()
+		go func() {
+			if err := adminSrv.Serve(adminL); !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- err
+			}
+		}()
+	}
 
 	var names []string
 	for _, t := range cfg.Targets {
 		names = append(names, t.Name+"("+string(t.Scheme)+")")
 	}
 	logger.Info("postwerk started", "version", version, "smtp", smtpL.Addr().String(),
-		"http", httpL.Addr().String(), "targets", strings.Join(names, ","),
+		"http", httpL.Addr().String(), "admin", adminLog, "targets", strings.Join(names, ","),
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String())
 	if listening != nil {
-		listening(smtpL.Addr(), httpL.Addr())
+		listening(smtpL.Addr(), httpL.Addr(), adminAddr)
 	}
 
 	var runErr error
@@ -308,6 +369,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if err := httpSrv.Shutdown(sd); err != nil {
 		logger.Warn("http shutdown incomplete", "err", err)
 	}
+	if adminSrv != nil {
+		if err := adminSrv.Shutdown(sd); err != nil {
+			logger.Warn("admin listener shutdown incomplete", "err", err)
+		}
+	}
 	if err := st.Close(); err != nil {
 		logger.Warn("closing the store failed", "err", err)
 	}
@@ -327,12 +393,20 @@ func retainPolicy(cfg *config.Config) store.RetainPolicy {
 		Optional:            make(map[string]bool),
 	}
 	if cfg.PseudonymizeAfter > 0 && cfg.HashKeys != nil {
-		p.Pseudonymize = addrhash.New(cfg.HashKeys).Hash
+		p.Pseudonymize = hasher(cfg).Hash
 	}
 	for _, t := range cfg.Targets {
 		p.Optional[t.Name] = t.Optional
 	}
 	return p
+}
+
+// hasher returns the address hasher, or nil without a hash key file.
+func hasher(cfg *config.Config) *addrhash.Hasher {
+	if cfg.HashKeys == nil {
+		return nil
+	}
+	return addrhash.New(cfg.HashKeys)
 }
 
 // warnUnconfiguredTargets logs pending deliveries for targets that are no

@@ -99,61 +99,75 @@ func Hash(password string, iterations int) (string, error) {
 // ParseSenders reads a senders file. Errors name the line number but never
 // quote the line, which may hold a secret.
 func ParseSenders(r io.Reader) (*Senders, error) {
-	s := &Senders{
-		users:    make(map[string]hash),
-		cacheKey: make([]byte, 32),
-		cache:    make(map[string][]byte),
+	users := make(map[string]hash)
+	errs := scanLines(r, func(lineNo int, line string) error {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return fmt.Errorf("line %d: expected name:hash", lineNo)
+		}
+		if !ValidName(name) {
+			return fmt.Errorf("line %d: invalid sender name", lineNo)
+		}
+		if _, dup := users[name]; dup {
+			return fmt.Errorf("line %d: sender %q listed twice", lineNo, name)
+		}
+		h, err := parseHash(value)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		users[name] = h
+		return nil
+	})
+	if len(errs) == 0 && len(users) == 0 {
+		errs = append(errs, errors.New("no senders defined"))
 	}
-	_, _ = rand.Read(s.cacheKey)
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return newSenders(users), nil
+}
 
+// scanLines calls fn for every line that is not empty or a comment, with the
+// line trimmed, and collects the errors.
+func scanLines(r io.Reader, fn func(lineNo int, line string) error) []error {
 	var errs []error
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 4096), 64*1024)
 	lineNo := 0
-	maxIter := 0
 	for sc.Scan() {
 		lineNo++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		name, value, ok := strings.Cut(line, ":")
-		if !ok {
-			errs = append(errs, fmt.Errorf("line %d: expected name:hash", lineNo))
-			continue
+		if err := fn(lineNo, line); err != nil {
+			errs = append(errs, err)
 		}
-		if !ValidName(name) {
-			errs = append(errs, fmt.Errorf("line %d: invalid sender name", lineNo))
-			continue
-		}
-		if _, dup := s.users[name]; dup {
-			errs = append(errs, fmt.Errorf("line %d: sender %q listed twice", lineNo, name))
-			continue
-		}
-		h, err := parseHash(value)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("line %d: %w", lineNo, err))
-			continue
-		}
-		s.users[name] = h
-		maxIter = max(maxIter, h.iterations)
 	}
 	if err := sc.Err(); err != nil {
 		errs = append(errs, fmt.Errorf("read: %w", err))
 	}
-	if len(errs) == 0 && len(s.users) == 0 {
-		errs = append(errs, errors.New("no senders defined"))
-	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
+	return errs
+}
 
+// newSenders sets up the checks for users, which must not be empty.
+func newSenders(users map[string]hash) *Senders {
+	s := &Senders{
+		users:    users,
+		cacheKey: make([]byte, 32),
+		cache:    make(map[string][]byte),
+	}
+	_, _ = rand.Read(s.cacheKey)
+	maxIter := 0
+	for _, h := range users {
+		maxIter = max(maxIter, h.iterations)
+	}
 	// Checking against the dummy costs as much as the most expensive real
 	// hash. Its key is random, so no password matches it.
 	s.dummy = hash{iterations: maxIter, salt: make([]byte, saltLen), key: make([]byte, keyLen)}
 	_, _ = rand.Read(s.dummy.salt)
 	_, _ = rand.Read(s.dummy.key)
-	return s, nil
+	return s
 }
 
 func parseHash(v string) (hash, error) {

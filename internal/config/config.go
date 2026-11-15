@@ -32,8 +32,10 @@ const Prefix = "POSTWERK_"
 const (
 	DefaultSMTPListen = ":2525"
 	DefaultHTTPListen = "127.0.0.1:8080"
-	DefaultDataPath   = "/data/postwerk.db"
-	DefaultHostname   = "postwerk"
+	// DefaultAdminListen is loopback only, also inside containers (U1, U2).
+	DefaultAdminListen = "127.0.0.1:8081"
+	DefaultDataPath    = "/data/postwerk.db"
+	DefaultHostname    = "postwerk"
 	// DefaultMaxMessageBytes (recommended) is 15 MiB, the SIZE that
 	// Mailjet's relay offers, so a mail Postwerk accepts also fits there.
 	DefaultMaxMessageBytes = 15 << 20
@@ -187,9 +189,26 @@ type Config struct {
 	RecordRetention     time.Duration
 	EventRetention      time.Duration
 
+	// Admin is the admin listener with the UI (U1–U4).
+	Admin Admin
+
 	// SecretFiles maps each variable that names a secret file to its path,
 	// so the caller can check file permissions.
 	SecretFiles map[string]string
+}
+
+// Admin configures the admin listener.
+type Admin struct {
+	// Listen is the address; empty when the admin listener is off.
+	Listen string
+	// NonLoopback is set when Listen is not a loopback address, which needs
+	// POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true.
+	NonLoopback bool
+	// Hosts are extra host names the UI answers to besides the loopback
+	// names (lower case).
+	Hosts []string
+	// Tokens are the UI tokens; set while Listen is not empty.
+	Tokens *auth.Tokens
 }
 
 // Warnings returns problems that do not stop the start but must be logged.
@@ -203,6 +222,10 @@ func (c *Config) Warnings() []string {
 	}
 	if c.PseudonymizeAfter == 0 {
 		w = append(w, envPseudonymizeAfter+"=0: addresses stay in plain text until the records are deleted")
+	}
+	if c.Admin.NonLoopback {
+		w = append(w, envAdminListen+" is not a loopback address ("+envAdminAllowNonLoopback+"=true): "+
+			"publish the port on the host's loopback only and never expose it (docs/ui.md)")
 	}
 	return w
 }
@@ -229,6 +252,11 @@ const (
 	envInstance          = "POSTWERK_INSTANCE"
 	envTargets           = "POSTWERK_TARGETS"
 
+	envAdminListen           = "POSTWERK_ADMIN_LISTEN"
+	envAdminAllowNonLoopback = "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK"
+	envAdminHosts            = "POSTWERK_ADMIN_HOSTS"
+	envUITokensFile          = "POSTWERK_UI_TOKENS_FILE"
+
 	envStoreKeyFile        = "POSTWERK_STORE_KEY_FILE"
 	envStoreEncryption     = "POSTWERK_STORE_ENCRYPTION"
 	envHashKeyFile         = "POSTWERK_HASH_KEY_FILE"
@@ -253,6 +281,7 @@ var globalVars = []string{
 	envStoreKeyFile, envStoreEncryption, envHashKeyFile, envSecureDelete,
 	envRawKeepAfterHandoff, envRawKeepAfterFailure, envRawMaxAge, envPseudonymizeAfter,
 	envRecordRetention, envEventRetention,
+	envAdminListen, envAdminAllowNonLoopback, envAdminHosts, envUITokensFile,
 }
 
 var targetSuffixes = []string{
@@ -339,6 +368,7 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 
 	l.storeAndKeys(c)
 	l.retention(c)
+	l.admin(c)
 
 	for _, name := range laterPhase {
 		if l.env[name] != "" {
@@ -522,6 +552,81 @@ func (l *loader) senders() *auth.Senders {
 		return nil
 	}
 	return s
+}
+
+// admin reads the admin listener and the UI tokens (U1–U4). Unlike other
+// variables, an empty POSTWERK_ADMIN_LISTEN does not mean the default: it
+// turns the listener off, like "off".
+func (l *loader) admin(c *Config) {
+	allow := l.boolean(envAdminAllowNonLoopback)
+	listen, set := l.env[envAdminListen]
+	if !set {
+		listen = DefaultAdminListen
+	}
+	if listen == "" || listen == "off" {
+		for _, name := range []string{envUITokensFile, envAdminHosts, envAdminAllowNonLoopback} {
+			if l.env[name] != "" {
+				l.errorf("%s is set but the admin listener is off (%s=%s); remove one of them",
+					name, envAdminListen, listen)
+			}
+		}
+		return
+	}
+	c.Admin.Listen = l.listen(envAdminListen, listen)
+	if _, port, _ := net.SplitHostPort(c.Admin.Listen); port != "0" &&
+		(c.Admin.Listen == c.HTTPListen || c.Admin.Listen == c.SMTPListen) {
+		l.errorf("%s: must differ from %s and %s; the UI never shares the health or SMTP listener",
+			envAdminListen, envHTTPListen, envSMTPListen)
+	}
+	if host, _, err := net.SplitHostPort(c.Admin.Listen); err == nil && !loopbackHost(host) {
+		if allow {
+			c.Admin.NonLoopback = true
+		} else {
+			l.errorf("%s: must be a loopback address such as 127.0.0.1:8081, [::1]:8081 or localhost:8081; "+
+				"people reach it through kubectl port-forward or an SSH tunnel (docs/ui.md). "+
+				"Only inside a container whose port is published on the host's loopback, set %s=true",
+				envAdminListen, envAdminAllowNonLoopback)
+		}
+	}
+	if v := l.env[envAdminHosts]; v != "" {
+		for _, h := range strings.Split(v, ",") {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h == "" || len(h) > 253 || (!hostnameRe.MatchString(h) && net.ParseIP(h) == nil) {
+				l.errorf("%s: %q is not a host name or IP address (no port, no scheme)", envAdminHosts, h)
+				continue
+			}
+			c.Admin.Hosts = append(c.Admin.Hosts, h)
+		}
+	}
+	if l.env[envUITokensFile] == "" {
+		l.errorf("%s: required while the admin listener is on (one name:role:hash line per person; "+
+			"create one with 'postwerk gen-token <name> <read|admin>'), or set %s=off",
+			envUITokensFile, envAdminListen)
+		return
+	}
+	b, ok := l.file(envUITokensFile)
+	if !ok {
+		return
+	}
+	t, err := auth.ParseTokens(bytes.NewReader(b))
+	if err != nil {
+		for _, e := range unjoin(err) {
+			l.errorf("%s: %v", envUITokensFile, e)
+		}
+		return
+	}
+	c.Admin.Tokens = t
+}
+
+// loopbackHost reports whether a listen host is loopback only: localhost,
+// or an IP address in 127.0.0.0/8 or ::1. An empty host means every
+// interface.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // storeAndKeys reads the store and hash key files and the secure delete

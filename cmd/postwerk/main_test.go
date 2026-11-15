@@ -57,6 +57,32 @@ func TestHashPassword(t *testing.T) {
 	}
 }
 
+func TestGenToken(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"gen-token", "ops", "admin"}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("code %d: %s", code, errOut.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 || !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(lines[0]) ||
+		!strings.HasPrefix(lines[1], "ops:admin:pbkdf2-sha256$600000$") || strings.Contains(lines[1], lines[0]) {
+		t.Fatalf("output = %q", out.String())
+	}
+	ts, err := auth.ParseTokens(strings.NewReader(lines[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if role, ok := ts.Verify("ops", lines[0]); !ok || role != auth.RoleAdmin {
+		t.Fatal("printed token does not verify against its line")
+	}
+	for _, args := range [][]string{{"gen-token"}, {"gen-token", "ops"}, {"gen-token", "ops", "root"},
+		{"gen-token", "Bad Name", "read"}, {"gen-token", "ops", "read", "extra"}} {
+		out.Reset()
+		if code := run(args, nil, &out, &errOut); code != 2 || out.Len() != 0 {
+			t.Errorf("%q: code %d, out %q", args, code, out.String())
+		}
+	}
+}
+
 func TestGenKey(t *testing.T) {
 	seen := map[string]bool{}
 	for range 3 {
@@ -148,15 +174,22 @@ func TestServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tokenLine, err := auth.TokenLine("ops", auth.RoleAdmin, "ui-token", auth.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dbPath := filepath.Join(t.TempDir(), "pw.db")
 	files := map[string]string{
 		"/senders":   "app:" + h + "\n",
 		"/store-key": keys.Generate(time.Now()) + "\n",
 		"/hash-key":  keys.Generate(time.Now()) + "\n",
+		"/ui-tokens": tokenLine + "\n",
 	}
 	cfg, err := config.Load([]string{
 		"POSTWERK_SMTP_LISTEN=127.0.0.1:0",
 		"POSTWERK_HTTP_LISTEN=127.0.0.1:0",
+		"POSTWERK_ADMIN_LISTEN=127.0.0.1:0",
+		"POSTWERK_UI_TOKENS_FILE=/ui-tokens",
 		"POSTWERK_DATA=" + dbPath,
 		"POSTWERK_SENDERS_FILE=/senders",
 		"POSTWERK_STORE_KEY_FILE=/store-key",
@@ -174,12 +207,12 @@ func TestServe(t *testing.T) {
 	var out testutil.SafeBuffer
 	logger := testutil.Logger(&out)
 	ctx, cancel := context.WithCancel(context.Background())
-	addrs := make(chan [2]net.Addr, 1)
+	addrs := make(chan [3]net.Addr, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, cfg, logger, &out, func(s, h net.Addr) { addrs <- [2]net.Addr{s, h} })
+		done <- serve(ctx, cfg, logger, &out, func(s, h, a net.Addr) { addrs <- [3]net.Addr{s, h, a} })
 	}()
-	var a [2]net.Addr
+	var a [3]net.Addr
 	select {
 	case a = <-addrs:
 	case err := <-done:
@@ -194,6 +227,32 @@ func TestServe(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s = %d", path, resp.StatusCode)
+		}
+	}
+
+	// The UI answers on its own loopback listener, never on the health one.
+	if a[2] == nil || !strings.HasPrefix(a[2].String(), "127.0.0.1:") || a[2].String() == a[1].String() {
+		t.Fatalf("admin listener = %v", a[2])
+	}
+	for _, c := range []struct {
+		addr, path string
+		want       int
+	}{
+		{a[2].String(), "/login", 200},
+		{a[2].String(), "/", 303},
+		{a[1].String(), "/login", 404},
+	} {
+		resp, err := http.Get("http://" + c.addr + c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		got := resp.StatusCode
+		if resp.Request.URL.Path != c.path {
+			got = 303 // followed the redirect to the login page
+		}
+		if got != c.want || (c.addr == a[2].String() && resp.Header.Get("Content-Security-Policy") == "") {
+			t.Fatalf("GET %s%s = %d (%s), want %d", c.addr, c.path, got, resp.Request.URL.Path, c.want)
 		}
 	}
 
@@ -337,6 +396,7 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 		"POSTWERK_HASH_KEY_FILE=/hash-key",
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
 		"POSTWERK_SHUTDOWN_TIMEOUT=5s",
+		"POSTWERK_ADMIN_LISTEN=off",
 		"POSTWERK_TARGETS=capture",
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://" + tl.Addr().String(),
 	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
@@ -348,7 +408,7 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(runCtx, cfg, testutil.Logger(&out), &out, func(net.Addr, net.Addr) { close(started) })
+		done <- serve(runCtx, cfg, testutil.Logger(&out), &out, func(net.Addr, net.Addr, net.Addr) { close(started) })
 	}()
 	select {
 	case <-started:

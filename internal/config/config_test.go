@@ -31,6 +31,14 @@ func (f files) read(name string) ([]byte, error) {
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 }
 
+var tokenLine = sync.OnceValue(func() string {
+	line, err := auth.TokenLine("ops", auth.RoleAdmin, "ui-token", auth.MinIterations)
+	if err != nil {
+		panic(err)
+	}
+	return line
+})
+
 var senderHash = sync.OnceValue(func() string {
 	h, err := auth.Hash("pw", auth.MinIterations)
 	if err != nil {
@@ -46,6 +54,7 @@ func baseFiles(t *testing.T) files {
 		"/run/secrets/mailjet":   "apikey:apisecret:with-colon\nignored second line\n",
 		"/run/secrets/store-key": "# active key first\n" + storeKeyLine + "\n\n" + storeOldLine + "\n",
 		"/run/secrets/hash-key":  hashKeyLine + "\n",
+		"/run/secrets/ui-tokens": tokenLine() + "\n",
 	}
 }
 
@@ -56,6 +65,7 @@ func minimalEnv() []string {
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
 		"POSTWERK_STORE_KEY_FILE=/run/secrets/store-key",
 		"POSTWERK_HASH_KEY_FILE=/run/secrets/hash-key",
+		"POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens",
 		"POSTWERK_TARGETS=mailpit",
 		"POSTWERK_TARGET_MAILPIT_URL=smtp+plain://mailpit:1025",
 	}
@@ -86,10 +96,17 @@ func TestMinimalDefaults(t *testing.T) {
 	if len(c.Warnings()) != 0 {
 		t.Fatalf("warnings with defaults: %q", c.Warnings())
 	}
+	if c.Admin.Listen != "127.0.0.1:8081" || c.Admin.NonLoopback || c.Admin.Hosts != nil || c.Admin.Tokens == nil {
+		t.Fatalf("admin defaults wrong: %+v", c.Admin)
+	}
+	if role, ok := c.Admin.Tokens.Verify("ops", "ui-token"); !ok || role != auth.RoleAdmin {
+		t.Fatal("token from the file does not verify")
+	}
 	want := map[string]string{
 		"POSTWERK_SENDERS_FILE":   "/run/secrets/senders",
 		"POSTWERK_STORE_KEY_FILE": "/run/secrets/store-key",
 		"POSTWERK_HASH_KEY_FILE":  "/run/secrets/hash-key",
+		"POSTWERK_UI_TOKENS_FILE": "/run/secrets/ui-tokens",
 	}
 	if !reflect.DeepEqual(c.SecretFiles, want) {
 		t.Fatalf("secret files = %v", c.SecretFiles)
@@ -139,6 +156,9 @@ func TestFullConfig(t *testing.T) {
 		"POSTWERK_OTEL_ENDPOINT=",
 		"POSTWERK_SENTRY_DSN=",
 		"POSTWERK_WEBHOOK_URL=",
+		"POSTWERK_ADMIN_LISTEN=[::1]:9091",
+		"POSTWERK_ADMIN_HOSTS=relay.example.test",
+		"POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens",
 		"POSTWERK_TARGETS=mailjet, capture,tls_only",
 		"POSTWERK_TARGET_MAILJET_URL=smtp://in-v3.mailjet.com",
 		"POSTWERK_TARGET_MAILJET_CREDENTIALS_FILE=/run/secrets/mailjet",
@@ -159,7 +179,8 @@ func TestFullConfig(t *testing.T) {
 		c.Hostname != "relay.example.test" || c.MaxMessageBytes != 1<<20 || c.MaxRecipients != 10 ||
 		c.RetryWindow != 12*time.Hour || c.ShutdownTimeout != 40*time.Second || c.Instance != "prod-1" ||
 		c.TLSCertificate == nil || c.AllowInsecureAuth || c.MaxConnections != 7 ||
-		c.MaxInflightBytes != 2<<20 {
+		c.MaxInflightBytes != 2<<20 || c.Admin.Listen != "[::1]:9091" || c.Admin.Tokens == nil ||
+		!reflect.DeepEqual(c.Admin.Hosts, []string{"relay.example.test"}) {
 		t.Fatalf("globals wrong: %+v", c)
 	}
 	if c.SecureDelete || c.RawKeepAfterHandoff != time.Hour || c.RawKeepAfterFailure != 0 ||
@@ -277,6 +298,19 @@ func TestErrors(t *testing.T) {
 		{"bad pattern", []string{"POSTWERK_TARGET_MAILPIT_ALLOW_RECIPIENTS=[a@x"}, "invalid pattern"},
 		{"pattern without at", []string{"POSTWERK_TARGET_MAILPIT_ALLOW_RECIPIENTS=example.test"}, "has no @"},
 		{"empty pattern", []string{"POSTWERK_TARGET_MAILPIT_ALLOW_RECIPIENTS=*@x,,"}, "empty pattern"},
+		{"admin on all interfaces", []string{"POSTWERK_ADMIN_LISTEN=:8081"}, "POSTWERK_ADMIN_LISTEN: must be a loopback address"},
+		{"admin on a public address", []string{"POSTWERK_ADMIN_LISTEN=192.0.2.10:8081"}, "must be a loopback address"},
+		{"admin by host name", []string{"POSTWERK_ADMIN_LISTEN=postwerk.internal:8081"}, "must be a loopback address"},
+		{"admin on unspecified v6", []string{"POSTWERK_ADMIN_LISTEN=[::]:8081"}, "must be a loopback address"},
+		{"admin bad address", []string{"POSTWERK_ADMIN_LISTEN=8081"}, "POSTWERK_ADMIN_LISTEN: expected host:port"},
+		{"admin shares health", []string{"POSTWERK_ADMIN_LISTEN=127.0.0.1:8080"}, "must differ from POSTWERK_HTTP_LISTEN"},
+		{"admin bad allow", []string{"POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=yes"}, "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK: expected true or false"},
+		{"admin without tokens", []string{"POSTWERK_UI_TOKENS_FILE="}, "POSTWERK_UI_TOKENS_FILE: required while the admin listener is on"},
+		{"admin unreadable tokens", []string{"POSTWERK_UI_TOKENS_FILE=/nope"}, "POSTWERK_UI_TOKENS_FILE: cannot read file"},
+		{"admin senders as tokens", []string{"POSTWERK_UI_TOKENS_FILE=/run/secrets/senders"}, "POSTWERK_UI_TOKENS_FILE: line 1: expected name:role:hash"},
+		{"admin bad host", []string{"POSTWERK_ADMIN_HOSTS=https://relay.example.test"}, "POSTWERK_ADMIN_HOSTS"},
+		{"admin host with port", []string{"POSTWERK_ADMIN_HOSTS=relay.example.test:8081"}, "POSTWERK_ADMIN_HOSTS"},
+		{"tokens with admin off", []string{"POSTWERK_ADMIN_LISTEN=off"}, "POSTWERK_UI_TOKENS_FILE is set but the admin listener is off"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -327,9 +361,9 @@ func TestAllErrorsTogether(t *testing.T) {
 	if j, ok := err.(interface{ Unwrap() []error }); ok {
 		n = len(j.Unwrap())
 	}
-	// recipients, window, senders, TLS rule, store key, hash key, targets, typo
-	if n != 8 {
-		t.Fatalf("got %d errors, want 8:\n%v", n, err)
+	// recipients, window, senders, TLS rule, store key, hash key, UI tokens, targets, typo
+	if n != 9 {
+		t.Fatalf("got %d errors, want 9:\n%v", n, err)
 	}
 	if !errors.Is(err, err) {
 		t.Fatal("unreachable")
@@ -437,5 +471,44 @@ func TestKeyFileErrorsDoNotLeak(t *testing.T) {
 	}
 	if _, err := keys.Parse([]byte(storeKeyLine + "\n")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAdminListener(t *testing.T) {
+	load := func(extra ...string) *Config {
+		t.Helper()
+		c, err := Load(append(minimalEnv(), extra...), baseFiles(t).read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	for _, addr := range []string{"127.0.0.1:9000", "127.0.0.2:8081", "[::1]:8081", "localhost:8081", "LOCALHOST:0"} {
+		if c := load("POSTWERK_ADMIN_LISTEN=" + addr); c.Admin.Listen != addr || c.Admin.NonLoopback {
+			t.Errorf("%s: %+v", addr, c.Admin)
+		}
+	}
+	// Off: empty or "off", and then nothing else of the UI may be set.
+	for _, v := range []string{"", "off"} {
+		c := load("POSTWERK_ADMIN_LISTEN="+v, "POSTWERK_UI_TOKENS_FILE=")
+		if c.Admin.Listen != "" || c.Admin.Tokens != nil {
+			t.Errorf("%q: admin = %+v", v, c.Admin)
+		}
+		if _, ok := c.SecretFiles["POSTWERK_UI_TOKENS_FILE"]; ok {
+			t.Errorf("%q: tokens file read while off", v)
+		}
+	}
+	// The explicit exception for Docker port publishing, with a warning.
+	c := load("POSTWERK_ADMIN_LISTEN=:8081", "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true",
+		"POSTWERK_ADMIN_HOSTS=Relay.Example.test, 192.0.2.7")
+	if c.Admin.Listen != ":8081" || !c.Admin.NonLoopback || !reflect.DeepEqual(c.Admin.Hosts, []string{"relay.example.test", "192.0.2.7"}) {
+		t.Fatalf("admin = %+v", c.Admin)
+	}
+	if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "POSTWERK_ADMIN_LISTEN is not a loopback address") {
+		t.Fatalf("warnings = %q", w)
+	}
+	// Allowed but loopback anyway: no warning.
+	if c := load("POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true"); c.Admin.NonLoopback || len(c.Warnings()) != 0 {
+		t.Fatalf("loopback with allow: %+v %q", c.Admin, c.Warnings())
 	}
 }
