@@ -161,3 +161,45 @@ func TestUnknownUserCostsTheSame(t *testing.T) {
 		t.Fatalf("unknown user took %v, wrong password %v", unknown, known)
 	}
 }
+
+func TestEveryCheckCostsTheStrongestHash(t *testing.T) {
+	weak, err := Hash("weak-pw", MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strong, err := Hash("strong-pw", 2*MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ParseSenders(strings.NewReader("weak:" + weak + "\nstrong:" + strong + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var iterations int
+	orig := derive
+	derive = func(pw string, salt []byte, iter, n int) ([]byte, error) {
+		iterations += iter
+		return orig(pw, salt, iter, n)
+	}
+	t.Cleanup(func() { derive = orig })
+
+	cost := func(name, pw string) int {
+		iterations = 0
+		s.Verify(name, pw)
+		return iterations
+	}
+	for _, tt := range []struct{ name, pw string }{
+		{"weak", "wrong"}, {"strong", "wrong"}, {"nobody", "wrong"}, {"weak", strings.Repeat("x", 2000)},
+		{"weak", "weak-pw"}, // first good login: full cost
+	} {
+		if got := cost(tt.name, tt.pw); got != 2*MinIterations {
+			t.Errorf("Verify(%s) cost %d iterations, want %d", tt.name, got, 2*MinIterations)
+		}
+	}
+	if !s.Cached("weak", "weak-pw") || s.Cached("weak", "wrong") || s.Cached("strong", "strong-pw") {
+		t.Fatal("cache state wrong")
+	}
+	if got := cost("weak", "weak-pw"); got != 0 {
+		t.Errorf("cached login cost %d iterations", got)
+	}
+}

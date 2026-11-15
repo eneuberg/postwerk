@@ -15,9 +15,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -41,6 +43,11 @@ const (
 	writeTimeout    = time.Minute
 	// rejectTimeout bounds writing the 421 to a connection over the limit.
 	rejectTimeout = 2 * time.Second
+	// authTimeout: a connection that has not logged in by then is closed.
+	authTimeout = 30 * time.Second
+	// authWait is how long a login waits for a free password check slot
+	// before it gets a 454.
+	authWait = 5 * time.Second
 )
 
 // DefaultMaxConnections is the default limit of concurrent connections.
@@ -55,6 +62,7 @@ var (
 	errAuthRequired = &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "Authentication required"}
 	errAuthFailed   = &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "Authentication failed"}
 	errAuthTooMany  = &smtp.SMTPError{Code: 421, EnhancedCode: smtp.EnhancedCode{4, 7, 0}, Message: "Too many failed authentication attempts, closing connection"}
+	errAuthBusy     = &smtp.SMTPError{Code: 454, EnhancedCode: smtp.EnhancedCode{4, 7, 0}, Message: "Temporary authentication failure, try again later"}
 	errBadAddress   = &smtp.SMTPError{Code: 553, EnhancedCode: smtp.EnhancedCode{5, 1, 3}, Message: "Invalid address"}
 	errNeedsUTF8    = &smtp.SMTPError{Code: 553, EnhancedCode: smtp.EnhancedCode{5, 6, 7}, Message: "Non-ASCII address requires SMTPUTF8"}
 	errTooBig       = &smtp.SMTPError{Code: 552, EnhancedCode: smtp.EnhancedCode{5, 3, 4}, Message: "Message too big"}
@@ -82,16 +90,25 @@ type Options struct {
 	// MaxConnections limits concurrent connections; 0 means
 	// DefaultMaxConnections.
 	MaxConnections int
+	// MaxAuthChecks limits concurrent password checks (PBKDF2); 0 means
+	// runtime.GOMAXPROCS(0).
+	MaxAuthChecks int
 	// Wake is called after each accepted mail; it must not block.
 	Wake   func()
 	Logger *slog.Logger
 	Now    func() time.Time
+
+	// Only tests set these; zero means the fixed values above.
+	authTimeout time.Duration
+	authWait    time.Duration
 }
 
 // Server is the SMTP ingress.
 type Server struct {
 	opts Options
 	srv  *smtp.Server
+	// authSlots holds one token per password check in progress.
+	authSlots chan struct{}
 
 	mu    sync.Mutex
 	conns map[*trackedConn]struct{}
@@ -114,7 +131,16 @@ func New(opts Options) *Server {
 	if opts.Wake == nil {
 		opts.Wake = func() {}
 	}
-	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{})}
+	if opts.MaxAuthChecks <= 0 {
+		opts.MaxAuthChecks = runtime.GOMAXPROCS(0)
+	}
+	if opts.authTimeout <= 0 {
+		opts.authTimeout = authTimeout
+	}
+	if opts.authWait <= 0 {
+		opts.authWait = authWait
+	}
+	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), authSlots: make(chan struct{}, opts.MaxAuthChecks)}
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Domain = opts.Hostname
 	srv.MaxMessageBytes = opts.MaxMessageBytes
@@ -194,7 +220,7 @@ func (l trackingListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		tc := &trackedConn{Conn: c, srv: l.srv}
+		tc := &trackedConn{Conn: c, srv: l.srv, authBy: time.Now().Add(l.srv.opts.authTimeout)}
 		l.srv.mu.Lock()
 		full := len(l.srv.conns) >= l.srv.opts.MaxConnections
 		if !full {
@@ -217,9 +243,34 @@ func (l trackingListener) Accept() (net.Conn, error) {
 type trackedConn struct {
 	net.Conn
 	srv          *Server
+	authBy       time.Time   // the login must be done by then
+	authed       atomic.Bool // a login succeeded
 	mu           sync.Mutex
 	authFailures int
 	closeAfter   bool // close after the next write
+}
+
+// SetReadDeadline caps every read before the login at authBy. When it
+// passes, the read times out and the SMTP library answers with its fixed
+// "421 4.4.2 Idle timeout" and closes the connection. TLS sets its
+// deadlines through here as well, so a stalled STARTTLS handshake is cut
+// too.
+func (c *trackedConn) SetReadDeadline(t time.Time) error {
+	return c.Conn.SetReadDeadline(c.capped(t))
+}
+
+func (c *trackedConn) SetDeadline(t time.Time) error {
+	if err := c.Conn.SetWriteDeadline(t); err != nil {
+		return err
+	}
+	return c.Conn.SetReadDeadline(c.capped(t))
+}
+
+func (c *trackedConn) capped(t time.Time) time.Time {
+	if !c.authed.Load() && (t.IsZero() || t.After(c.authBy)) {
+		return c.authBy
+	}
+	return t
 }
 
 func (c *trackedConn) Close() error {
@@ -297,13 +348,47 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 }
 
 func (s *session) checkPlain(identity, username, password string) error {
-	if (identity == "" || identity == username) && s.srv.opts.Senders.Verify(username, password) {
-		s.mu.Lock()
-		s.sender = username
-		s.mu.Unlock()
-		return nil
+	ok := false
+	if identity == "" || identity == username {
+		var err error
+		if ok, err = s.srv.verify(username, password); err != nil {
+			return err
+		}
+	} else {
+		// Same cost as any other failed login.
+		if _, err := s.srv.verify("", password); err != nil {
+			return err
+		}
 	}
-	return s.authFailure()
+	if !ok {
+		return s.authFailure()
+	}
+	s.mu.Lock()
+	s.sender = username
+	s.mu.Unlock()
+	if s.conn != nil {
+		s.conn.authed.Store(true)
+	}
+	return nil
+}
+
+// verify checks a password. A login seen before costs one HMAC; every other
+// check needs one of MaxAuthChecks slots, so a burst of logins cannot take
+// every CPU. A check that finds no slot within authWait gets a fixed 454.
+func (s *Server) verify(name, password string) (bool, error) {
+	if s.opts.Senders.Cached(name, password) {
+		return true, nil
+	}
+	t := time.NewTimer(s.opts.authWait)
+	defer t.Stop()
+	select {
+	case s.authSlots <- struct{}{}:
+	case <-t.C:
+		s.opts.Logger.Warn("smtp auth refused, too many password checks at once", "limit", cap(s.authSlots))
+		return false, errAuthBusy
+	}
+	defer func() { <-s.authSlots }()
+	return s.opts.Senders.Verify(name, password), nil
 }
 
 func (s *session) authFailure() error {

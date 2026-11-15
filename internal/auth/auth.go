@@ -7,11 +7,15 @@
 // with salt and key in unpadded standard base64. Empty lines and lines starting
 // with "#" are ignored. Names match [a-z0-9][a-z0-9._-]{0,63}.
 //
-// Verification costs the same for unknown and known senders: an unknown name is
-// checked against a dummy hash with the highest iteration count in the file.
-// After a successful login, an HMAC of the password under a random key held in
-// memory lets later logins of the same sender skip PBKDF2, so bursts of
-// connections do not burn CPU. A wrong password always pays the full cost.
+// Every check costs the same: the highest iteration count in the file. An
+// unknown name is checked against a dummy hash with that count, and a sender
+// whose hash has fewer iterations pays the difference with extra PBKDF2
+// rounds. So the time of a failed login says nothing about which names exist
+// or how their hashes were made. After a successful login, an HMAC of the
+// password under a random key held in memory lets later logins of the same
+// sender skip PBKDF2 (Cached), so bursts of connections do not burn CPU; only
+// the right password can take that path. A wrong password always pays the
+// full cost.
 package auth
 
 import (
@@ -63,7 +67,7 @@ type hash struct {
 // concurrent use.
 type Senders struct {
 	users map[string]hash
-	dummy hash
+	dummy hash // also the strongest iteration count in the file
 
 	cacheKey []byte
 	mu       sync.Mutex
@@ -176,30 +180,48 @@ func parseHash(v string) (hash, error) {
 // Len returns the number of known senders.
 func (s *Senders) Len() int { return len(s.users) }
 
-// Verify reports whether password is correct for the sender name. Unknown
-// names take as long as a wrong password for a known name.
+// Verify reports whether password is correct for the sender name. Unless
+// the login is cached, it always costs PBKDF2 with the strongest iteration
+// count in the file, for known and unknown names alike.
 func (s *Senders) Verify(name, password string) bool {
+	if s.Cached(name, password) {
+		return true
+	}
 	h, known := s.users[name]
 	if !known || len(password) > maxPasswordLen {
 		_ = check(s.dummy, password)
 		return false
 	}
-
-	mac := s.mac(password)
-	s.mu.Lock()
-	cached := s.cache[name]
-	s.mu.Unlock()
-	if cached != nil && hmac.Equal(cached, mac) {
-		return true
+	ok := check(h, password)
+	if extra := s.dummy.iterations - h.iterations; extra > 0 {
+		// Pay the difference to the strongest hash, so the time does not
+		// tell weak hashes (or their names) apart.
+		_, _ = derive(password, s.dummy.salt, extra, keyLen)
 	}
-
-	if !check(h, password) {
+	if !ok {
 		return false
 	}
 	s.mu.Lock()
-	s.cache[name] = mac
+	s.cache[name] = s.mac(password)
 	s.mu.Unlock()
 	return true
+}
+
+// Cached reports whether name logged in with this password before; it costs
+// one HMAC, no PBKDF2. A false result says nothing; Verify decides.
+func (s *Senders) Cached(name, password string) bool {
+	if len(password) > maxPasswordLen {
+		return false
+	}
+	s.mu.Lock()
+	cached := s.cache[name]
+	s.mu.Unlock()
+	return cached != nil && hmac.Equal(cached, s.mac(password))
+}
+
+// derive is PBKDF2-SHA256; tests count the iterations through it.
+var derive = func(password string, salt []byte, iterations, keyLength int) ([]byte, error) {
+	return pbkdf2.Key(sha256.New, password, salt, iterations, keyLength)
 }
 
 func (s *Senders) mac(password string) []byte {
@@ -209,7 +231,7 @@ func (s *Senders) mac(password string) []byte {
 }
 
 func check(h hash, password string) bool {
-	key, err := pbkdf2.Key(sha256.New, password, h.salt, h.iterations, len(h.key))
+	key, err := derive(password, h.salt, h.iterations, len(h.key))
 	if err != nil {
 		return false
 	}

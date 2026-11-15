@@ -38,6 +38,7 @@ var senders = sync.OnceValue(func() *auth.Senders {
 })
 
 type env struct {
+	srv   *Server
 	store *store.Store
 	addr  string
 	logs  *testutil.SafeBuffer
@@ -64,6 +65,7 @@ func start(t *testing.T, mod func(*Options)) *env {
 		mod(&opts)
 	}
 	srv := New(opts)
+	e.srv = srv
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -633,5 +635,65 @@ func TestNonASCIIAddressNeedsSMTPUTF8(t *testing.T) {
 	}
 	if c, text := cmd(conn, "RCPT TO:<用户@例子.广告>"); c != 250 {
 		t.Fatalf("RCPT with SMTPUTF8: %d %q", c, text)
+	}
+}
+
+func TestAuthChecksLimited(t *testing.T) {
+	h, err := auth.Hash("secret", auth.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := auth.ParseSenders(strings.NewReader("app:" + h + "\n")) // nothing cached yet
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := start(t, func(o *Options) { o.Senders = fresh; o.MaxAuthChecks = 1; o.authWait = 50 * time.Millisecond })
+	// Take the only slot, as a long password check would.
+	slots := e.srv.authSlots
+	slots <- struct{}{}
+	c := dial(t, e.addr)
+	err = c.Auth(sasl.NewPlainClient("", "app", "secret"))
+	var se *smtp.SMTPError
+	if !errors.As(err, &se) || se.Code != 454 || se.Message != "Temporary authentication failure, try again later" {
+		t.Fatalf("AUTH while busy: %v", err)
+	}
+	<-slots
+	// Not counted as a failed login; the next try works and is cached.
+	if err := c.Auth(sasl.NewPlainClient("", "app", "secret")); err != nil {
+		t.Fatalf("AUTH after the slot was freed: %v", err)
+	}
+	// A cached login needs no slot.
+	slots <- struct{}{}
+	defer func() { <-slots }()
+	c2 := dial(t, e.addr)
+	if err := c2.Auth(sasl.NewPlainClient("", "app", "secret")); err != nil {
+		t.Fatalf("cached AUTH while busy: %v", err)
+	}
+}
+
+func TestUnauthenticatedConnectionClosed(t *testing.T) {
+	e := start(t, func(o *Options) { o.authTimeout = 300 * time.Millisecond })
+	idle, err := textproto.Dial("tcp", e.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idle.Close()
+	if _, _, err := idle.ReadResponse(220); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	code, _, _ := idle.ReadResponse(0)
+	if code != 421 || time.Since(start) > 3*time.Second {
+		t.Fatalf("idle unauthenticated connection: %d after %v", code, time.Since(start))
+	}
+	if _, _, err := idle.ReadResponse(0); err == nil {
+		t.Fatal("connection still open")
+	}
+
+	// A logged-in connection outlives the login deadline.
+	conn, _ := rawSession(t, e.addr)
+	time.Sleep(500 * time.Millisecond)
+	if c, _ := cmd(conn, "NOOP"); c != 250 {
+		t.Fatalf("NOOP after login: %d", c)
 	}
 }
