@@ -32,6 +32,18 @@ Open http://localhost:8025 to see the mail in Mailpit. The Postwerk log shows on
 The reply `250 2.0.0 queued as pw_…` means Postwerk has stored the mail. It does not mean the mail was delivered. Each
 target's result is recorded later as an event.
 
+## Open the UI
+
+Open http://localhost:8081 and log in with the name `ops` and the token `example-ui-token-local-only` (from
+[examples/ui-tokens.example](../examples/ui-tokens.example), a public example: never use it elsewhere). The overview
+shows each target with what is queued and what happened in the last 24 hours; **Mails** lists every mail with its
+status per target; **Search** finds a mail by its id, `X-Postwerk-Ref`, `Message-ID` or a recipient address. The UI
+never shows message content.
+
+The example publishes the UI on your machine's loopback only (`127.0.0.1:8081`). On a server, keep it that way and
+open it through an SSH tunnel (`ssh -L 8081:127.0.0.1:8081 your-server`); in Kubernetes, use `kubectl port-forward`.
+Details: [ui.md](ui.md).
+
 ## Create senders and keys
 
 ```sh
@@ -40,6 +52,9 @@ printf '%s' 'your-password' | docker run --rm -i postwerk:dev hash-password
 
 # Create a new key for a key file (encryption at rest, address hashing).
 docker run --rm postwerk:dev gen-key
+
+# Create a UI token: prints the token, then the line for the UI tokens file.
+docker run --rm postwerk:dev gen-token alice admin
 ```
 
 Use separate key files for the store key and the hash key. Never use the example keys outside a local machine.
@@ -76,6 +91,7 @@ POSTWERK_SMTP_TLS_KEY_FILE=/run/secrets/tls.key
 POSTWERK_TARGETS=mailjet
 POSTWERK_TARGET_MAILJET_URL=smtp://in-v3.mailjet.com:587    # STARTTLS required
 POSTWERK_TARGET_MAILJET_CREDENTIALS_FILE=/run/secrets/mailjet
+POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens               # the UI on 127.0.0.1:8081, or POSTWERK_ADMIN_LISTEN=off
 # plus the key files for encryption at rest and address hashing, see configuration.md
 ```
 
@@ -85,5 +101,6 @@ Every variable, its default, and the key files are described in [configuration.m
 ## Next steps
 
 - [Scope and fit](scope.md#6-before-you-integrate): what to check before you connect your applications
+- [Internal UI](ui.md): how the UI is reached and protected, and what it shows
 - [Privacy and security](privacy-and-security.md): what is stored, for how long, and who can read it
 - [FAQ](faq.md): short answers to common questions

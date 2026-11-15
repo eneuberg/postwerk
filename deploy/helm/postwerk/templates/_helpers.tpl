@@ -56,6 +56,12 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if and .Values.tls.certManager.enabled (not .Values.tls.enabled) }}
 {{- fail "tls.certManager.enabled needs tls.enabled=true" }}
 {{- end }}
+{{- if .Values.ui.enabled }}
+{{- $port := int .Values.ui.port }}
+{{- if or (lt $port 1) (gt $port 65535) (eq $port 2525) (eq $port 8080) }}
+{{- fail "ui.port must be a free port between 1 and 65535, not 2525 (SMTP) or 8080 (health)" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.targets }}
 {{- fail "targets: at least one target is required" }}
 {{- end }}

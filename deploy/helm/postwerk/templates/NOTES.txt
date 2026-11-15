@@ -14,6 +14,13 @@ Health, from your machine only:
   kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "postwerk.fullname" . }} 8080:8080
   curl http://127.0.0.1:8080/readyz
 
+{{ if .Values.ui.enabled -}}
+UI, from your machine only (needs the RBAC right to port-forward to pods here):
+  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "postwerk.fullname" . }} {{ .Values.ui.port }}:{{ .Values.ui.port }}
+  open http://localhost:{{ .Values.ui.port }} and sign in with a name and token from the Secret {{ .Values.secrets.uiTokens.name }}
+  The UI listens on the pod's loopback only; never add a Service port or Ingress for it.
+
+{{ end -}}
 Events (one JSON line each) are in the pod log:
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "postwerk.fullname" . }} -f
 

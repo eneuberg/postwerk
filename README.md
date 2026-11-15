@@ -8,7 +8,7 @@ Postwerk is a small, self-hosted SMTP relay for outgoing transactional email, wr
 Kubernetes send their mail through it instead of straight to a provider. Postwerk keeps an audit log of every mail and
 tracks its delivery to each target. It runs as one binary with one SQLite file.
 
-![Animated diagram: applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to monitoring. In a second round Mailjet answers with error 550, the error event raises an alert in monitoring (for example GlitchTip), and a planned audit lookup asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
+![Animated diagram: applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to monitoring. In a second round Mailjet answers with error 550, the error event raises an alert in monitoring (for example GlitchTip), and an audit lookup asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
 
 To try it on your machine with Docker Compose and Mailpit, see [Getting started](docs/getting-started.md). To run it in
 a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md).
@@ -36,7 +36,7 @@ delivers one copy to each configured target (a provider such as Mailjet, a captu
 server) and retries temporary failures. Every step goes into an append-only event log. The raw message is removed once
 every target has it.
 
-![Architecture diagram: senders deliver mail over SMTP to the ingress, which stores it; delivery sends one copy to each target; a reporter turns the event log into reports. Provider status, the query API and UI, and all reports except stdout are planned, not built.](docs/architecture.svg)
+![Architecture diagram: senders deliver mail over SMTP to the ingress, which stores it; delivery sends one copy to each target; a reporter turns the event log into reports. Provider status, the query API and all reports except stdout are planned, not built; the UI is built.](docs/architecture.svg)
 
 ## Postwerk compared with Postfix and maddy
 
@@ -47,7 +47,7 @@ and being able to say what happened to each one.
 |---|---|---|---|
 | Built for | outgoing application mail only | full mail server (inbound, IMAP, DKIM) | full mail transfer agent |
 | Provider rejects the login (`535`) | mail stays queued, error raised at once | mail fails, not retried (our reading of the v0.9.7 source) | deferred and retried |
-| What happened to one mail? | event per mail, target and recipient; query API planned | search the logs | search the logs, `postqueue` |
+| What happened to one mail? | event per mail, target and recipient; internal UI, query API planned | search the logs | search the logs, `postqueue` |
 | Copy to Mailjet and Mailpit at once | each target tracked on its own | several `deliver_to` | extra BCC recipient, not tracked |
 | Mail content on disk | encrypted, removed once handed off | plain in the queue | plain in the queue |
 | Setup | env variables, non-root, one SQLite file | own config language | `main.cf`/`master.cf`, master runs as root |
@@ -61,6 +61,7 @@ options: [docs/scope.md](docs/scope.md).
 - [Getting started](docs/getting-started.md): local example, test mail, senders, keys, minimal configuration
 - [Kubernetes](docs/kubernetes.md): Helm chart, secrets, network rules, TLS inside the cluster, wiring an app
 - [FAQ](docs/faq.md): short answers to common questions
+- [Internal UI](docs/ui.md): status, mail history and search, on a loopback listener reached by tunnel
 - [Configuration](docs/configuration.md): every environment variable, secret files and key files
 - [Design](docs/design.md): components, targets, mail lifecycle, retry policy, event model
 - [Code architecture](docs/architecture.md): packages, data flow, store schema, delivery worker

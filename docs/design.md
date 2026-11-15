@@ -1,7 +1,7 @@
 # Postwerk design
 
 Status: foundation built. SMTP ingress, the store, per-target delivery with the retry policy, the event log with the
-stdout output, retention and encryption at rest exist and are tested. Parts marked *(planned)* are not built yet; their
+stdout output, retention, encryption at rest and a read-only internal UI exist and are tested. Parts marked *(planned)* are not built yet; their
 details may change. The code layout is in [architecture.md](architecture.md), every setting in
 [configuration.md](configuration.md), and whether Postwerk fits a given setup in [scope.md](scope.md).
 
@@ -14,8 +14,8 @@ every step, so every mail can be audited and tracked from one place.
 - **In:** finished RFC 5322 messages over SMTP, from known senders (login required).
 - **Out:** the same messages, unchanged except for Postwerk's own headers, to a list of targets: a sending provider such
   as Mailjet, a capture tool such as Mailpit, or any other SMTP server.
-- **Beside:** an append-only event log, exported to observability tools, and *(planned)* a read-only query API with a
-  small UI.
+- **Beside:** an append-only event log, exported to observability tools, a small read-only UI, and *(planned)* a
+  query API.
 
 Postwerk does not read or change message content. It does not receive mail for mailboxes, sign messages, render
 templates, build links, check link expiry or decide what an alert is.
@@ -34,11 +34,12 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Reporter | event log → sinks, each with its own cursor | built for stdout; other sinks planned | standard library |
 | Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
-| Query API and UI | read-only JSON API and HTML pages, admin-only resend | planned | standard library, `html/template` |
+| UI | read-only HTML pages on the loopback admin listener: overview, mails, search, one mail | built | standard library, `html/template` |
+| Query API | read-only JSON API on the admin listener, admin-only resend and close | planned (its read layer `internal/query` is built) | standard library |
 
 One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
 ([kubernetes.md](kubernetes.md)). [architecture.svg](architecture.svg) shows the full design, including the
-planned parts (provider status, query API and UI, sinks other than stdout).
+planned parts (provider status, query API, sinks other than stdout).
 
 ## 3. Targets
 
@@ -133,7 +134,8 @@ the later API.
 ### What `250` means
 
 A `250` reply from Postwerk (`250 2.0.0 queued as pw_…`) means Postwerk has stored the mail and is now responsible for
-it. It does not mean the mail was delivered. The events, and later the status API and UI, say what happened afterwards.
+it. It does not mean the mail was delivered. The events and the UI (later also the status API) say what happened
+afterwards.
 
 Every `250` along the way has the same meaning: "I have it now." The target's `250` means the provider has it; only the
 provider status says whether the recipient's server accepted it. Whether a person read it, or found it in the spam
@@ -245,6 +247,7 @@ Kinds written today:
 | `delivery.too_large` | error (warn if optional) | the message is larger than the `SIZE` the target offers; not sent |
 | `target.auth_failed` | error (warn if optional) | the target replied `535` |
 | `target.unreachable` | warn | no reply before the message was sent: connection, TLS or protocol error |
+| `ui.login`, `ui.login_failed`, `ui.search` | info, warn, info | someone used the UI; the event carries `"actor"` (the token name) and `"text"` (the role, or what was searched by), never a query or an address |
 
 Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.delivered`, `provider.bounced`,
 `provider.blocked`, `provider.complained`, `provider.stuck`, `queue.stale`. The retention job's own events are listed in
@@ -268,9 +271,10 @@ today stops the start with "not implemented yet".
 ## 10. Query API (planned)
 
 Built today: `GET /healthz` (alive) and `GET /readyz` (store reachable, workers running) on the internal HTTP listener,
-without a token. Everything else in this section is planned.
+without a token, and the read layer (`internal/query`) that the UI uses. Everything else in this section is planned.
 
-Internal listener, bearer tokens with scopes `read` and `admin`. Token use is itself logged as an event.
+On the admin listener (section 11), with the tokens of the UI tokens file, roles `read` and `admin`. Token use is
+itself logged as an event.
 
 | Call | Returns | Scope |
 |---|---|---|
@@ -282,18 +286,26 @@ Internal listener, bearer tokens with scopes `read` and `admin`. Token use is it
 | `POST /v1/mails/{id}/resend?target=…` | new attempt for a `failed` or `unknown` delivery, while the raw message exists | admin |
 | `POST /v1/mails/{id}/close?target=…` | mark an `unknown` delivery as done without resending | admin |
 
-The API will never return message content. Searching by address is planned to move into a request body, so addresses
-stay out of URLs and access logs ([privacy-and-security.md](privacy-and-security.md#82-privacy-changes-and-their-status)).
+The API will never return message content. Searching by address will take a request body, as the UI's search does,
+so addresses stay out of URLs and access logs
+([privacy-and-security.md](privacy-and-security.md#82-privacy-changes-and-their-status)).
 
 Senders can set `X-Postwerk-Ref: <their id>` to find a mail by their own reference later. A `ref` that contains `@` is
 not stored, because a reference must be an opaque id, not an address. Postwerk also returns its id in the SMTP reply
 (`250 2.0.0 queued as pw_…`).
 
-## 11. UI (planned)
+## 11. UI
 
-A small, read-only web UI on the internal listener: search, a mail with its deliveries and history, queue per target,
-recent errors. Server-rendered HTML, no JavaScript build, no message content. Resend and close only with an admin token.
-Not meant to be exposed to the internet.
+Built: a small, read-only web UI ([ui.md](ui.md)). It runs on its own admin listener, `127.0.0.1:8081` by default,
+loopback only, and is opened through `kubectl port-forward` or an SSH tunnel; it never shares the health listener and
+is never on a Service or Ingress. People log in with a name and a token from the UI tokens file (role `read` or
+`admin`) and get an in-memory session. Pages: an overview per target (last 24 hours by recipient status, queued now,
+oldest queued, recent problems), the mail list with filters, a search by id, ref, `Message-ID` or address, and one
+mail with its deliveries, recipients and events. `admin` sees addresses in full, `read` masked; after
+pseudonymization nobody does. Server-rendered HTML, no JavaScript, no message content; a Host check, CSRF tokens and a
+strict Content-Security-Policy guard against attacks through the browser. Every login and search is an event.
+
+Planned: resend and close (D13) as forms for `admin` only.
 
 ## 12. Provider status (planned)
 
@@ -318,6 +330,8 @@ serves the `check` policy in section 6.
   `SIZE` Mailjet offers), recipients per message (default 50), line length, read and write timeouts.
 - The client only ever sees fixed reply texts; internal errors are logged, never sent.
 - The HTTP listener is separate from ingress, defaults to `127.0.0.1:8080` and is meant for an internal network only.
+- The UI has its own admin listener on loopback (`127.0.0.1:8081`), reached only through a tunnel, with a token login,
+  sessions, a Host allow-list, CSRF tokens and strict headers ([ui.md](ui.md)).
 - The container image is built from `scratch` (binary and CA certificates only, no shell) and runs as uid 65532 with a
   read-only root file system except for the data volume. No extra capabilities, no host network, no cluster API access.
 - No content or recipient addresses in logs, events or error reports.
@@ -340,6 +354,7 @@ POSTWERK_TARGET_MAILJET_CREDENTIALS_FILE=/run/secrets/mailjet
 POSTWERK_TARGET_CAPTURE_URL=smtp+plain://mailpit:1025
 POSTWERK_TARGET_CAPTURE_OPTIONAL=true
 POSTWERK_TARGET_CAPTURE_ON_UNKNOWN=retry
+POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens   # UI on 127.0.0.1:8081
 # plus the key files for encryption at rest and address hashing
 ```
 
@@ -354,7 +369,8 @@ Built:
 - Two targets, one broken: the other is delivered on time, the broken one retries on its own.
 - Crash during sending, restart, and proof that the recovery and each built `ON_UNKNOWN` policy behave as described.
 - Leak test: every end-to-end test sends to a canary address and checks that it appears nowhere in logs, exported
-  events, the events table or reply texts.
+  events, the events table or reply texts. The UI tests extend it to searches: the canary is never logged, never in an
+  event, never echoed into a page, and shown only to `admin` before pseudonymization; no page shows message content.
 - `docker compose` example with Mailpit as target for local runs ([examples/compose.yaml](../examples/compose.yaml)).
 
 Planned: a sink that is down catches up after it comes back (for the external sinks), tests against Mailpit's chaos

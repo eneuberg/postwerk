@@ -6,12 +6,12 @@ this page is the map for people reading or changing the code.
 ## Packages
 
 ```
-cmd/postwerk          main: parse config, open store, start ingress, workers, reporter, retention, HTTP; handle signals
+cmd/postwerk          main: parse config, open store, start ingress, workers, reporter, retention, HTTP, admin; handle signals
 internal/config       environment + secret files → validated Config (O1); reference in configuration.md
 internal/id           mail ids: "pw_" + 26 chars, time-ordered, crypto random
 internal/message      header handling: read Ref/Skip/Message-ID, strip X-Postwerk-*, prepend own headers (I8, D10)
 internal/redact       remove mail addresses from free text such as SMTP replies (S5)
-internal/auth         sender password hashes and verification (I2)
+internal/auth         sender password hashes and UI tokens (name:role:hash) with equal-cost verification (I2, I12, U4)
 internal/keys         key file format (<key-id>:<base64>), active key + old keys, gen-key (E5)
 internal/seal         AES-256-GCM sealing of the stored message, keyed by the key id in each blob (E1–E4)
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
@@ -20,7 +20,9 @@ internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I
 internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop and sinks (A2, A3)
-internal/httpapi      health endpoints now; query API and UI later (H1)
+internal/httpapi      health endpoints on the health listener (H1)
+internal/query        read logic for the UI and the later JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
+internal/ui           the internal web UI on the admin listener: login, sessions, CSRF, Host check, pages (H3, U1–U16)
 internal/testutil     helpers for tests only (self-signed certificates, polling, buffers); never imported by code
 ```
 
@@ -28,7 +30,8 @@ Dependency rule: `store` depends on nothing internal except `redact`, so every f
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
 packages (`config` for the `Target` type, `auth`, `id`, `message`, `redact`, `seal`), never on each other. `seal` and
-`addrhash` depend only on `keys`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
+`addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `ui` depends on `query`,
+`auth` and the store's event type, never on `ingress` or `delivery`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
 makes the data flow visible: everything meets in the store.
 
 ## Data flow
@@ -43,7 +46,10 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
                                                      pseudonymize, delete rows/events,  │
                                                      retention.purged; WAL checkpoint   │
                                                                                         │
-     stdout ◀── report (cursor per sink) ◀── events after cursor ───────────────────────┘
+     stdout ◀── report (cursor per sink) ◀── events after cursor ───────────────────────┤
+                                                                                        │
+  person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
+                                                         └── tx: ui.login / ui.search events ▶┘
 ```
 
 Ingress wakes the workers through a non-blocking signal after each commit; workers also poll on a timer, so a missed
@@ -56,7 +62,7 @@ One `*sql.DB` with a single open connection. All access is serialized; at transa
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
 
-Tables (version 4):
+Tables (version 5):
 
 | Table | Holds | Notes |
 |---|---|---|
@@ -64,7 +70,7 @@ Tables (version 4):
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
 | `deliveries` | mail id, target, attempts, next attempt, `data_sent_at`, last code and redacted text of the attempt, updated time | what one SMTP transaction shares; primary key (mail id, target); next attempt is set while a recipient is queued; partial index on (target, next attempt) |
 | `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth |
-| `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
+| `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login, actor (token name of a UI event) | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
 | `cursors` | sink name, last seq | one row per sink |
 | `event_retention` | one row: `cutoff` (Unix ms) | events older than the cutoff may be deleted; triggers refuse lowering it, deleting the row or inserting another (S10) |
 
@@ -77,7 +83,8 @@ stored the raw message without a blob header; they are not supported (there was 
 the MAIL parameters as the sender declared them: `body` (`7BIT`, `8BITMIME` or NULL), `smtputf8` (0 or 1) and
 `declared_size` (NULL if not given). `0004_recipient_status.sql` adds `delivery_recipients`, fills it with each
 delivery's status for every recipient, drops `deliveries.status` (and the unused provider columns; provider status will
-be kept per recipient) and adds `events.recipient`.
+be kept per recipient) and adds `events.recipient`. `0005_ui.sql` adds partial indexes on `mails.ref` and
+`mails.message_id` for lookups, and `events.actor`.
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -123,6 +130,9 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
 | `retention.purged` | info | a retention run changed something; text holds counts only (`raw_purged=… raw_expired=… pseudonymized=… records_deleted=… events_deleted=…`) |
 | `store.decrypt_failed` | error | the stored message could not be decrypted (unknown key id, failed authentication); the delivery is `failed`, nothing was sent |
+| `ui.login` | info | someone logged in to the UI; `actor` is the token name, text the role |
+| `ui.login_failed` | warn | a failed UI login; `actor` only if the name is in the tokens file |
+| `ui.search` | info | a UI search; `actor` is the token name, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
 
 The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.
 
@@ -249,8 +259,24 @@ All steps look at the recipient statuses: the message stays while any recipient 
 7. One `retention.purged` event with the counts (`raw_expired` counts recipients), if anything changed; then `PRAGMA wal_checkpoint(TRUNCATE)`.
 
 Lookups by address (`store.MailIDsByAddress`) take the normalized query and its hashes under every key
-(`addrhash.Hasher.Lookup`), so they find plain and pseudonymized rows alike. The query API (H2) and erasure requests
-will use it.
+(`addrhash.Hasher.Lookup`), so they find plain and pseudonymized rows alike. The UI's search uses it through
+`internal/query`; the query API (H2) and erasure requests will too.
+
+## Query layer and UI
+
+`internal/query` holds the read logic; the SQL behind it is in the store (`ListMails`, `TargetStatsSince`,
+`MailIDsByRef`, `MailIDsByMessageID`, `MailIDsByAddress`, `MailEvents`, `Mail`, `Deliveries`). `ListMails` filters by
+the derived state in SQL: it counts each mail's recipients per status and applies the same rule as `store.Summarize`
+(a test checks both agree for every combination), so pages stay correct with a state filter. The query layer decides
+what a reader may see: `query.Full` (role `admin`) returns addresses, `query.Masked` (role `read`, the zero value)
+returns `j•••@e•••.com`, and a pseudonymized mail returns no address at all. No function returns the stored message.
+
+`internal/ui` is one `http.Handler` on the admin listener (`ui.NewServer` sets the timeouts). An outer layer sets the
+security headers on every response, refuses unknown `Host` headers and bounds the body; Go's
+`http.CrossOriginProtection` refuses cross-site `POST`s; every page needs a session, and every `POST` the session's
+CSRF token. Sessions are a map in memory. Templates (`html/template`) and the stylesheet are embedded; the UI has no
+JavaScript. Login checks run through `auth.Tokens`, at most `GOMAXPROCS` at once. A login or search is allowed only
+after its event is written, so nothing happens in the UI that the audit log misses. Details: [ui.md](ui.md).
 
 ## Errors and logging
 
@@ -277,5 +303,11 @@ will use it.
   test also runs retention with tiny periods and then searches the database file and the WAL file byte by byte: the
   message body is never there in plaintext, and after pseudonymization neither are the recipient or the envelope
   sender; only hashes remain, and the mail is still found by address.
+- UI tests drive the handler with `httptest`: Host check, security headers on every response, CSRF, login (one token
+  check per attempt, whatever was typed), concurrency limit, session expiry, logout, masking by role, pagination, a
+  crawl of every reachable page that must never show the seeded message body, and the canary leak test for searches
+  (the canary is never in logs, events or the exported stream, never echoed into a page, and visible only to `admin`
+  before pseudonymization). `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo` serves made-up data for
+  design work and screenshots.
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.

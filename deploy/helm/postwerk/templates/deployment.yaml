@@ -76,6 +76,21 @@ spec:
               value: ":8080"
             - name: POSTWERK_DATA
               value: /data/postwerk.db
+            {{- if .Values.ui.enabled }}
+            # The UI on the pod's loopback only: reachable through
+            # kubectl port-forward, never through a Service.
+            - name: POSTWERK_ADMIN_LISTEN
+              value: {{ printf "127.0.0.1:%d" (int .Values.ui.port) | quote }}
+            - name: POSTWERK_UI_TOKENS_FILE
+              value: /run/secrets/ui-tokens/tokens
+            {{- with .Values.ui.hosts }}
+            - name: POSTWERK_ADMIN_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- else }}
+            - name: POSTWERK_ADMIN_LISTEN
+              value: "off"
+            {{- end }}
             {{- with .Values.hostname }}
             - name: POSTWERK_HOSTNAME
               value: {{ . | quote }}
@@ -187,6 +202,11 @@ spec:
               mountPath: /run/secrets/tls
               readOnly: true
             {{- end }}
+            {{- if .Values.ui.enabled }}
+            - name: ui-tokens
+              mountPath: /run/secrets/ui-tokens
+              readOnly: true
+            {{- end }}
             {{- range .Values.targets }}
             {{- if .credentialsSecret }}
             - name: target-{{ .name | replace "_" "-" }}
@@ -249,6 +269,15 @@ spec:
             items:
               - key: {{ .Values.secrets.hashKey.key }}
                 path: hash-key
+        {{- end }}
+        {{- if .Values.ui.enabled }}
+        - name: ui-tokens
+          secret:
+            secretName: {{ .Values.secrets.uiTokens.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.uiTokens.key }}
+                path: tokens
         {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls

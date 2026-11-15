@@ -104,7 +104,9 @@ Every login, failed login and search is an event in the event log (exported like
 | `ui.login_failed` | warn | `actor`: the name only if it is in the tokens file (a mistyped token pasted into the name field must not end up in the log) |
 | `ui.search` | info | `actor`: the token name, `text`: what was searched by (`id`, `ref`, `message_id`, `address`, `any`), never the query |
 
-Searches are limited to 30 per minute per token name; more get `429`.
+On stdout and in every sink these events carry `"actor"` and `"text"` instead of an `"smtp"` object. A login or a search
+that cannot be written to the event log is refused, so nothing happens in the UI that the audit log misses. Searches
+are limited to 30 per minute per token name; more get `429`.
 
 ## 5. Pages
 
@@ -128,6 +130,8 @@ local part, first character of the domain, the top-level domain (`jane@example.c
 pseudonymization nobody sees them; the page says "pseudonymized". A search by address still finds the mail through the
 keyed hash (K3).
 
+Recipients are numbered by their position in the envelope, from 0, as in the events.
+
 **Never shown:** message content, subject, headers other than `Message-ID`, and anything from the stored message.
 
 The UI is read-only for now. Resend and close (D13) will come as `POST` forms for `admin` only.
@@ -140,6 +144,9 @@ The UI is read-only for now. Resend and close (D13) will come as `POST` forms fo
 | `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking by role; the later JSON API (H2) uses the same functions |
 | `internal/ui` | HTTP handlers, sessions, login, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
 | `internal/auth` | token file parsing on top of the sender password hashes |
+
+For design work, `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m` serves made-up data,
+logged in as `admin` on that port and as `read` on the next one.
 
 ## 7. Not built yet
 

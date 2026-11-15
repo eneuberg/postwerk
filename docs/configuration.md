@@ -17,6 +17,7 @@ Durations use Go syntax (`90s`, `30m`, `72h`) or days with `d` (`7d`), also comb
 |---|---|---|---|
 | `POSTWERK_SMTP_LISTEN` | `:2525` | `host:port` or `:port` | Address of the SMTP server (ingress). |
 | `POSTWERK_HTTP_LISTEN` | `127.0.0.1:8080` | `host:port` or `:port` | Address of the HTTP listener with `/healthz` and `/readyz`. |
+| `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` (**recommended**) | a loopback `host:port`, or `off` (or empty) | The admin listener with the internal UI (section "Admin listener and UI"). |
 | `POSTWERK_HOSTNAME` | `postwerk` | a host name | Name in the SMTP greeting and in `EHLO` towards targets. |
 | `POSTWERK_SMTP_TLS_CERT_FILE` | none | path to a PEM file | Certificate for STARTTLS on ingress. Set together with the key file. |
 | `POSTWERK_SMTP_TLS_KEY_FILE` | none | path to a PEM file | Private key for STARTTLS. Secret file. |
@@ -31,7 +32,8 @@ Security notes:
 - **Health probes in containers.** The default HTTP address is the loopback interface, which is right for a process on
   a host. In a container, probes come from outside the loopback (the kubelet, Docker's health check from the
   host network), so containers set `POSTWERK_HTTP_LISTEN=:8080`, as [examples/compose.yaml](../examples/compose.yaml)
-  does. Never publish this port to the internet; the later query API will share it.
+  does. Never publish this port to the internet. The UI and the later query API are not on it: they have their own
+  admin listener on the loopback interface.
 - **Kubernetes.** The Helm chart in `deploy/helm/postwerk` sets all of this (one replica, `Recreate`, ClusterIP only,
   secrets as files, NetworkPolicy); see [kubernetes.md](kubernetes.md). Pods need `enableServiceLinks: false`:
   service links add variables such as `POSTWERK_PORT` for a Service named `postwerk`, and unknown `POSTWERK_*`
@@ -45,6 +47,27 @@ Security notes:
 
 Create a line with `printf '%s' 'password' | postwerk hash-password` (reads the password from stdin, prints the hash).
 The file holds hashes only, but it is still a secret file: a copy allows offline guessing.
+
+## Admin listener and UI
+
+The internal web UI ([ui.md](ui.md)) runs on its own listener, never on the health listener. It is meant to be opened
+through a tunnel (`kubectl port-forward`, `ssh -L`), so it binds to the loopback interface, also inside containers.
+
+| Variable | Default | Allowed | What it does |
+|---|---|---|---|
+| `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` (**recommended**) | a loopback address (`127.0.0.0/8`, `[::1]`, `localhost`) with a port; `off` or empty turns it off | Address of the admin listener. Another address is a configuration error unless the next variable is `true`. Must differ from the health and SMTP listeners. |
+| `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` | `false` (**recommended**) | `true`, `false` | Allow a non-loopback admin address. Needed only inside a Docker container whose port is published on the host's loopback (`127.0.0.1:8081:8081`): Docker's port publishing cannot reach the container's own loopback. A warning is logged at every start. |
+| `POSTWERK_UI_TOKENS_FILE` | required while the admin listener is on | path | Who may log in. One line per person or team: `name:role:pbkdf2-sha256$<iterations>$<salt>$<key>`, role `read` (addresses masked) or `admin` (addresses in full). Names: `[a-z0-9][a-z0-9._-]{0,63}`. Empty lines and `#` lines are ignored. Secret file. |
+| `POSTWERK_ADMIN_HOSTS` | none | comma-separated host names or IP addresses, no port | Host names the UI answers to besides `localhost`, `127.0.0.1` and `[::1]` (any port). Every other `Host` gets `403`, against DNS rebinding. Needed only if people reach the UI under another name, for example through a jump host. |
+
+Create a token with `postwerk gen-token <name> <read|admin>`: it prints a random token (32 bytes, base64url) on the
+first line and the tokens-file line on the second. Give the token to the person; Postwerk keeps only the hash.
+`POSTWERK_UI_TOKENS_FILE`, `POSTWERK_ADMIN_HOSTS` or `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` set while the admin listener
+is `off` is a configuration error (ambiguous).
+
+Fixed, not configurable: sessions end after 30 minutes without a request and 8 hours after the login; at most one
+token check per CPU at once (a login waits up to 5 s, then gets "try again"); at most 30 searches per minute per token
+name.
 
 ## Store and keys
 
@@ -217,6 +240,7 @@ non-empty value stops the start.
 | `postwerk` or `postwerk serve` | Run the relay. |
 | `postwerk hash-password` | Read one password from stdin, print the value for the senders file. |
 | `postwerk gen-key` | Print a new key line for a store or hash key file. |
+| `postwerk gen-token <name> <read\|admin>` | Print a new UI token and its line for `POSTWERK_UI_TOKENS_FILE`. |
 | `postwerk version` | Print the version. |
 
 ## Production checklist
@@ -233,6 +257,9 @@ non-empty value stops the start.
 - [ ] **Grace period** longer than `POSTWERK_SHUTDOWN_TIMEOUT` (Kubernetes `terminationGracePeriodSeconds: 120`).
 - [ ] **No capture target in production.**
 - [ ] **HTTP listener** reachable only by the probes (`:8080` inside the container, never published).
+- [ ] **Admin listener** on loopback (`127.0.0.1:8081`, the default) and opened only through `kubectl port-forward` or
+      an SSH tunnel; no Service port, Ingress or public address. A tokens file with one named token per person,
+      `admin` only for those who need full addresses. Or `POSTWERK_ADMIN_LISTEN=off`.
 - [ ] **In Kubernetes:** the chart's NetworkPolicy on, SMTP only from the sending pods, no Ingress, `LoadBalancer` or
       `NodePort`, a CNI that enforces NetworkPolicy ([kubernetes.md](kubernetes.md)).
 - [ ] **Retention** at the recommended values, or changes written down with their reason; backups no longer than

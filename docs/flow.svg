@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-labelledby="t d">
   <title id="t">Postwerk mail flow, reports and audit lookup</title>
-  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup (query API and UI) is planned.</desc>
+  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI; the query API is planned.</desc>
   <style>
     .card   { fill: #f6f8fa; stroke: #d0d7de; }
     .box    { fill: #ffffff; stroke: #8c959f; stroke-width: 1.2; }

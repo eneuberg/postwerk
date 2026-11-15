@@ -1,4 +1,4 @@
-# Used by CI: cleartext AUTH, no pseudonymization, NetworkPolicy off.
+# Used by CI: cleartext AUTH, no pseudonymization, NetworkPolicy off, UI off.
 tls:
   enabled: false
   allowInsecureAuth: true
@@ -8,3 +8,5 @@ networkPolicy:
   enabled: false
 persistence:
   existingClaim: postwerk-data
+ui:
+  enabled: false

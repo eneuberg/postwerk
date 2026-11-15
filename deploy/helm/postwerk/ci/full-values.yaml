@@ -18,6 +18,9 @@ targets:
     onUnknown: retry
     retryWindow: 1h
     allowRecipients: "*@example.test"
+ui:
+  port: 9081
+  hosts: [relay.example.test]
 extraEnv: []
 service:
   exposeHTTP: true

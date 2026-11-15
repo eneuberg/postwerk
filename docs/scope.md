@@ -44,8 +44,8 @@ person. An allow-list such as `*@example.test, qa-*@your-domain` per target is a
 access, and protects against a mistake that is hard to undo. Mailpit offers a similar setting for its own relay
 feature, which shows the need is real. It is built as the per-target setting `ALLOW_RECIPIENTS`.
 
-Built so far: items 1 to 7, 11 to 13 and 15, and item 9 for stdout. Planned: items 8, 10 and 14, and item 9 for
-OpenTelemetry, the error tracker and webhooks.
+Built so far: items 1 to 7, 11 to 13 and 15, item 9 for stdout and item 10 for the UI. Planned: items 8 and 14, the
+lookup API of item 10, and item 9 for OpenTelemetry, the error tracker and webhooks.
 
 ### Should not do
 
@@ -112,7 +112,7 @@ What it costs:
 | DKIM signing | no (provider does it) | via milter (e.g. OpenDKIM) | built in |
 | Upstream login rejected (`535`) | queue held, retried, error event at once | deferred and retried by default (`smtp_sasl_auth_soft_bounce = yes`) | in our reading of the v0.9.7 source, treated as a permanent failure (not retried) on the SMTP downstream |
 | Several destinations per mail | list of targets, each with its own status | extra recipients via `always_bcc` or `recipient_bcc_maps`; not tracked as separate deliveries for audit | several `deliver_to` targets possible per the docs |
-| Per-mail status lookup | event log by mail id today; API and UI by id, sender reference or `Message-ID` planned | log files and `postqueue` | logs |
+| Per-mail status lookup | internal UI by id, sender reference, `Message-ID` or address, plus the event log; JSON API planned | log files and `postqueue` | logs |
 | Provider status after hand-off | planned, polled (Mailjet first) | no | no |
 | Error reports to monitoring | events as JSON on stdout today; OpenTelemetry, Sentry protocol, webhook planned | via log shipping | via log shipping |
 | Maturity | early development, foundation built, not production-ready | decades of production use | younger project |

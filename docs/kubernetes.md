@@ -9,7 +9,7 @@ Kubernetes.
 | Resource | What and why |
 |---|---|
 | Deployment | **One replica, strategy `Recreate`.** Postwerk keeps its queue in one SQLite file with one writer; two pods on the same file would corrupt it. `Recreate` stops the old pod before the new one starts. |
-| Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`. |
+| Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`. The UI port is never on the Service (section 7.1). |
 | PersistentVolumeClaim | The SQLite file at `/data`. Kept on `helm uninstall` (`helm.sh/resource-policy: keep`), so the queue and the records survive. |
 | NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, egress only DNS and the target ports 587 and 465 (section 7). |
 | ServiceAccount | Without a token: Postwerk never talks to the Kubernetes API. |
@@ -22,7 +22,8 @@ token and no service links. Service links would add variables such as `POSTWERK_
 mode `0440` (owner root, group 65532), so only Postwerk can read them and it logs no permission warning.
 
 Probes: a startup probe and a liveness probe on `/healthz`, a readiness probe on `/readyz`, all on port 8080
-(`POSTWERK_HTTP_LISTEN=:8080`). The grace period is 120 s, longer than Postwerk's own shutdown deadline of 100 s, so a
+(`POSTWERK_HTTP_LISTEN=:8080`). The internal UI runs on its own listener on the pod's loopback,
+`127.0.0.1:8081` ([ui.md](ui.md)); probes never touch it, and nothing in the cluster can reach it. The grace period is 120 s, longer than Postwerk's own shutdown deadline of 100 s, so a
 send in progress always finishes (configuration.md, section "Shutdown").
 
 ## 2. Before you install
@@ -57,11 +58,18 @@ docker run --rm "$IMG" gen-key > hash-key
 # Target credentials: one line username:password (for Mailjet: API key and secret key).
 printf '%s:%s\n' "$MJ_APIKEY_PUBLIC" "$MJ_APIKEY_PRIVATE" > mailjet-credentials
 
+# UI tokens: one name:role:hash line per person or team (role read or admin).
+# gen-token prints the token (first line: give it to the person) and the line (second line).
+docker run --rm "$IMG" gen-token alice admin   # token, then alice:admin:pbkdf2-sha256$600000$…
+echo 'alice:admin:pbkdf2-sha256$600000$…' > ui-tokens
+
 kubectl -n mail create secret generic postwerk-senders --from-file=senders=senders
 kubectl -n mail create secret generic postwerk-store-key --from-file=store-key=store-key
 kubectl -n mail create secret generic postwerk-hash-key --from-file=hash-key=hash-key
 kubectl -n mail create secret generic postwerk-target-mailjet --from-file=credentials=mailjet-credentials
-shred -u senders store-key hash-key mailjet-credentials 2>/dev/null || rm -f senders store-key hash-key mailjet-credentials
+kubectl -n mail create secret generic postwerk-ui-tokens --from-file=tokens=ui-tokens
+shred -u senders store-key hash-key mailjet-credentials ui-tokens 2>/dev/null ||
+  rm -f senders store-key hash-key mailjet-credentials ui-tokens
 ```
 
 The secret names and keys above are the chart's defaults (`secrets.*`, `targets[].credentialsSecret`). Keep a copy of
@@ -71,8 +79,9 @@ store key makes every queued mail unreadable (it fails with `store.decrypt_faile
 The STARTTLS certificate is a Secret of type `kubernetes.io/tls` named `postwerk-tls` (`tls.secretName`), either
 created by cert-manager (section 6) or by you: `kubectl -n mail create secret tls postwerk-tls --cert=… --key=…`.
 
-To add a sender later, add a line to the senders file, update the Secret and restart Postwerk
-(`kubectl -n mail rollout restart deploy/<release>-postwerk`): secret files are read once at start.
+To add a sender or a UI token later, add a line to its file, update the Secret and restart Postwerk
+(`kubectl -n mail rollout restart deploy/<release>-postwerk`): secret files are read once at start. Without the UI,
+set `ui.enabled=false`; then the tokens Secret is not needed.
 
 ## 4. Install
 
@@ -124,7 +133,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `image.repository`, `image.tag`, `image.digest` | `postwerk`, `dev`, empty | The image; a digest wins over the tag (**recommended**: digest). |
 | `hostname` | empty (Postwerk's default `postwerk`) | `POSTWERK_HOSTNAME`: name in the greeting and in `EHLO` towards targets. |
 | `instance` | empty | `POSTWERK_INSTANCE`: added to every log line and event. |
-| `secrets.senders`, `secrets.storeKey`, `secrets.hashKey` | `postwerk-senders`/`senders`, `postwerk-store-key`/`store-key`, `postwerk-hash-key`/`hash-key` | Existing Secrets (name and key). |
+| `secrets.senders`, `secrets.storeKey`, `secrets.hashKey`, `secrets.uiTokens` | `postwerk-senders`/`senders`, `postwerk-store-key`/`store-key`, `postwerk-hash-key`/`hash-key`, `postwerk-ui-tokens`/`tokens` | Existing Secrets (name and key). |
 | `tls.enabled` | `true` (**recommended**) | STARTTLS on ingress with the certificate in `tls.secretName`. |
 | `tls.secretName` | `postwerk-tls` | Secret of type `kubernetes.io/tls`. |
 | `tls.certManager.enabled` | `false` | Create a cert-manager `Certificate` that fills `tls.secretName`. |
@@ -144,6 +153,9 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `retention.recordRetention` | `90d` (**recommended**) | `POSTWERK_RECORD_RETENTION`. |
 | `retention.eventRetention` | `90d` (**recommended**) | `POSTWERK_EVENT_RETENTION`. |
 | `retention.secureDelete` | `on` (**recommended**) | `POSTWERK_SECURE_DELETE`. |
+| `ui.enabled` | `true` | The internal UI on `127.0.0.1:<ui.port>` in the pod (`POSTWERK_ADMIN_LISTEN`), with the tokens from `secrets.uiTokens`. `false` sets `POSTWERK_ADMIN_LISTEN=off`. |
+| `ui.port` | `8081` | Loopback port of the UI; not 2525 or 8080. It is never added to the Service. |
+| `ui.hosts` | `[]` | Extra host names the UI answers to (`POSTWERK_ADMIN_HOSTS`); not needed with port-forward. |
 | `extraEnv` | `[]` | More `POSTWERK_*` variables as `{name, value}`. |
 | `service.exposeHTTP` | `false` | Add port 8080 to the Service, for monitoring. |
 | `persistence.size`, `storageClassName`, `existingClaim` | `1Gi`, default class, empty | The data volume. |
@@ -260,8 +272,8 @@ Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down wh
 ## 7. Network rules
 
 - **Never expose Postwerk outside the cluster.** No Ingress, no `LoadBalancer`, no `NodePort`, no `hostPort`, no
-  `hostNetwork`. The chart creates none of these; do not add them. The HTTP port will later carry the query API and
-  must stay internal too.
+  `hostNetwork`. The chart creates none of these; do not add them. The UI (and later the query API) is on the pod's
+  loopback and is opened with `kubectl port-forward` (section 7.1).
 - **SMTP (2525)** only from the pods in `networkPolicy.smtpFrom`. Keep the list short: every pod on it can try to log
   in, and a sender that logs in can send mail in your name.
 - **HTTP (8080)** only from `networkPolicy.httpFrom`, for example a monitoring namespace. Probes need no entry: the
@@ -270,11 +282,55 @@ Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down wh
 - **Egress** only DNS and the target ports 587 and 465. Provider addresses change without notice, so the default
   allows those ports to any address; narrow `targetCIDRs` if your provider publishes fixed ranges. A target inside the
   cluster (a capture tool) needs an `egress.extra` rule.
-- **Access for people** only through a VPN into the cluster network or a tunnel: `kubectl -n mail port-forward
-  deploy/postwerk 8080:8080` (then `curl http://127.0.0.1:8080/readyz`), or an SSH tunnel to a jump host. Never a
+- **Access for people** only through a tunnel: the UI with `kubectl port-forward` (section 7.1), the health port
+  with `kubectl -n mail port-forward deploy/postwerk 8080:8080` (then `curl http://127.0.0.1:8080/readyz`). Never a
   public address.
 - **No per-IP blocking:** pod addresses change; the NetworkPolicy decides who can connect, the login decides who can
   send (decisions D26, D28).
+
+### 7.1 Opening the UI
+
+The UI listens on `127.0.0.1:8081` inside the pod. `kubectl port-forward` connects to the pod's loopback, so it is the
+way in, and the only one:
+
+```sh
+kubectl -n mail port-forward deploy/postwerk 8081:8081
+# open http://localhost:8081 and sign in with your name and token
+```
+
+Any local port works (`9000:8081`, then `http://localhost:9000`). The forwarded port is open to every process on your
+machine while the command runs, which is why the UI still asks for a token; stop the command when you are done.
+
+Who may open the UI is decided by Kubernetes RBAC: the `create` verb on `pods/portforward` in Postwerk's namespace
+(plus `get` on pods and deployments to find the pod). Grant it to the people who may see mail records, and to nobody
+else; with `admin` tokens they see recipient addresses in full.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: postwerk-ui, namespace: mail}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/portforward]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: postwerk-ui, namespace: mail}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: postwerk-ui}
+subjects:
+  - {kind: Group, name: mail-operators, apiGroup: rbac.authorization.k8s.io}
+```
+
+The tunnel travels inside the API server's TLS connection. Do not add a Service port, an Ingress, a
+NetworkPolicy rule or a sidecar proxy for the UI: each would make it reachable from the cluster network. Every login
+and search is an event in the pod log (`ui.login`, `ui.login_failed`, `ui.search`, with the token name as `actor`).
 
 ## 8. Backups
 

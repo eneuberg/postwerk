@@ -1,0 +1,7 @@
+# EXAMPLE ONLY, for the local compose example. Never use it anywhere else.
+# UI tokens file (POSTWERK_UI_TOKENS_FILE): one line per person or team,
+# name:role:hash, role read or admin. The line below is for the name "ops"
+# and the token "example-ui-token-local-only".
+# Make a real token and its line with:
+#   docker run --rm postwerk:dev gen-token <name> <read|admin>
+ops:admin:pbkdf2-sha256$600000$79Hu+we4igWZf+I+L8ZAQA$lA8BiNd9QR4hw642Qp4TKzYsaXqP47RJ0mS1H6LfvCM

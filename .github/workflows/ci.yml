@@ -80,8 +80,18 @@ jobs:
             if grep -Eq 'type: (LoadBalancer|NodePort)|kind: Ingress' rendered.yaml; then
               echo "chart exposes Postwerk outside the cluster"; exit 1
             fi
+            # The UI listens on the pod's loopback only and has no port anywhere.
+            if grep -A1 'name: POSTWERK_ADMIN_LISTEN' rendered.yaml | grep 'value:' | grep -Ev '"(127\.0\.0\.1:[0-9]+|off)"'; then
+              echo "admin listener not on loopback"; exit 1
+            fi
+            if grep -Eq '(containerPort|port|targetPort): (8081|9081)$' rendered.yaml; then
+              echo "chart exposes the UI port"; exit 1
+            fi
           done
           # Unsafe combinations must fail to render.
           if helm template ci "$chart" --set tls.enabled=false >/dev/null 2>&1; then
             echo "tls.enabled=false without allowInsecureAuth rendered"; exit 1
+          fi
+          if helm template ci "$chart" --set ui.port=8080 >/dev/null 2>&1; then
+            echo "ui.port on the health port rendered"; exit 1
           fi
