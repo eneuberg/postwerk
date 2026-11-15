@@ -39,13 +39,18 @@ every target has it.
 
 ## Postwerk compared with Postfix and maddy
 
-| | Postwerk | Postfix | maddy |
+Postfix and maddy are complete mail servers. Postwerk does less on purpose and puts the effort into not losing mail
+and being able to say what happened to each one.
+
+| | Postwerk | maddy | Postfix |
 |---|---|---|---|
-| What it is | outbound relay with audit log | full mail transfer agent | all-in-one mail server |
-| Receives mail for mailboxes | no | yes | yes |
-| Several destinations per mail | list of targets, each tracked | extra recipients, not tracked separately | several `deliver_to` per block |
-| Per-mail audit | event log; query API and UI planned | log files, `postqueue` | logs |
-| Maturity | early development | decades of production use | younger project |
+| Built for | outgoing application mail only | full mail server (inbound, IMAP, DKIM) | full mail transfer agent |
+| Provider rejects the login (`535`) | mail stays queued, error raised at once | mail fails, not retried (our reading of the v0.9.7 source) | deferred and retried |
+| What happened to one mail? | event per mail, target and recipient; query API planned | search the logs | search the logs, `postqueue` |
+| Copy to Mailjet and Mailpit at once | each target tracked on its own | several `deliver_to` | extra BCC recipient, not tracked |
+| Mail content on disk | encrypted, removed once handed off | plain in the queue | plain in the queue |
+| Setup | env variables, non-root, one SQLite file | own config language | `main.cf`/`master.cf`, master runs as root |
+| Maturity | early development | younger project | decades of production use |
 
 Use Postfix or maddy if you need to receive mail, host mailboxes or sign DKIM yourself. Full comparison and other
 options: [docs/scope.md](docs/scope.md).
