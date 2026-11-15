@@ -254,6 +254,11 @@ will use it.
 
 ## Errors and logging
 
+- Ingress holds a whole message in memory between `DATA` and the commit. A global budget
+  (`POSTWERK_MAX_INFLIGHT_BYTES`) bounds that: `DATA` reserves the maximum size (or the declared `SIZE`) before reading,
+  and gets `451 4.3.1` when the budget is used up. With `DATA`, the SMTP library sends `354` before Postwerk's
+  `Data` runs, so a refused message still crosses the network but is discarded without being buffered. The budget
+  counts message bytes; processing and sealing copy a message a few times, so actual memory is a small multiple.
 - The SMTP client on the other side only ever sees fixed reply texts chosen by Postwerk. Every session method
   returns a fixed `*smtp.SMTPError`; the SMTP library would otherwise send the text of any other error to the client.
 - Every free text that is stored or exported (SMTP replies, network errors) goes through `redact`: addresses become

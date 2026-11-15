@@ -209,3 +209,15 @@ Three cheap measures, no new dependency:
 No per-IP blocking or rate limit: in Kubernetes, pod addresses change with every restart, and many senders can share
 a node's address behind NAT. Blocking by address would hit the wrong clients and miss the attacker. The network
 policy (D28) limits who can connect at all.
+
+## D27 A global memory budget for messages in flight
+
+Ingress keeps each message in memory until it is sealed and committed. With 100 connections and 15 MiB messages, a
+burst could ask for 1.5 GiB plus copies, more than a small container has, and the out-of-memory killer would end the
+process for every sender at once. A global budget (`POSTWERK_MAX_INFLIGHT_BYTES`, default 256 MiB) turns that into a
+`451 4.3.1` for the senders over the limit, which every SMTP client retries. A `DATA` reserves the maximum message
+size, or the declared `SIZE` when smaller, so typical small mails do not block each other; a message that turns out
+larger than declared must grow its reservation or gets the `451`. Reserving at `DATA` (not at `MAIL` or `RCPT`)
+keeps idle transactions from holding memory. The library sends `354` before the check, so the refused message still
+crosses the network, but it is discarded without being buffered. 256 MiB fits 17 messages at the maximum size and
+thousands of typical transactional mails.

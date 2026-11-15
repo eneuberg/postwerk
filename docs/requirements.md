@@ -38,6 +38,7 @@ its default is listed in [configuration.md](configuration.md).
 | I12 | Every password check that is not a cached login costs PBKDF2 with the strongest iteration count in the senders file, for unknown names, mismatched identities and weaker hashes alike. | F |
 | I13 | At most `runtime.GOMAXPROCS(0)` password checks run at once; a login that finds no slot within 5 s gets `454 4.7.0 Temporary authentication failure, try again later` (not counted as a failure). Cached logins (one HMAC) need no slot. | F |
 | I14 | A connection that has not logged in within 30 s is closed (`421 4.4.2`, the SMTP library's fixed idle reply); the deadline also covers a STARTTLS handshake. No per-IP blocking. | F |
+| I15 | Memory budget `POSTWERK_MAX_INFLIGHT_BYTES` (default 256 MiB): each `DATA` reserves the maximum message size, or the declared `SIZE` if smaller, before reading; budget exhausted → fixed `451 4.3.1`, nothing buffered; released when the mail is stored or refused. | F |
 
 ## Store
 

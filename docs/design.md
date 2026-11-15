@@ -313,7 +313,8 @@ serves the `check` policy in section 6.
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), meant for a local machine or a network that encrypts traffic between
   nodes. Without a certificate and without that setting, Postwerk does not start.
 - TLS towards targets by default; cleartext only with `smtp+plain://` and never with credentials (section 3).
-- Limits: message size (default 15 MiB, the `SIZE` Mailjet offers), recipients per message (default 50), line length, read and write timeouts.
+- Limits: memory for messages in flight (default 256 MiB, `451 4.3.1` when used up), message size (default 15 MiB, the
+  `SIZE` Mailjet offers), recipients per message (default 50), line length, read and write timeouts.
 - The client only ever sees fixed reply texts; internal errors are logged, never sent.
 - The HTTP listener is separate from ingress, defaults to `127.0.0.1:8080` and is meant for an internal network only.
 - The container image is built from `scratch` (binary and CA certificates only, no shell) and runs as uid 65532 with a
