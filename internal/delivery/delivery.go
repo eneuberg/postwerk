@@ -1,0 +1,502 @@
+// Package delivery sends queued mails to their targets (D1–D11).
+//
+// Each target has its own worker goroutine, so a slow or broken target never
+// delays another (D2). A worker claims one due delivery at a time, sends it,
+// classifies the result and writes the next state with its event. A send in
+// progress is never cut by a shutdown: it runs on a context without
+// cancellation and is bounded only by the SMTP timeouts.
+//
+// The stored message is decrypted right before the attempt. A message that
+// retention has removed, or that cannot be decrypted, fails the delivery
+// without anything being sent.
+package delivery
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"log/slog"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/emersion/go-sasl"
+	"github.com/emersion/go-smtp"
+
+	"github.com/eneuberg/postwerk/internal/config"
+	"github.com/eneuberg/postwerk/internal/message"
+	"github.com/eneuberg/postwerk/internal/seal"
+	"github.com/eneuberg/postwerk/internal/store"
+)
+
+// Defaults for Options. Every single timeout fits within DefaultAttemptTimeout,
+// and config.DefaultShutdownTimeout (100 s) is longer than it, so a send that
+// is in progress when the shutdown starts can always finish.
+const (
+	DefaultPollInterval      = 30 * time.Second
+	DefaultDialTimeout       = 15 * time.Second
+	DefaultCommandTimeout    = 30 * time.Second
+	DefaultSubmissionTimeout = 60 * time.Second
+	DefaultAttemptTimeout    = 90 * time.Second
+)
+
+// Options configure a Manager.
+type Options struct {
+	Store *store.Store
+	// Sealer opens the stored messages. Required.
+	Sealer  *seal.Sealer
+	Targets []config.Target
+	Logger  *slog.Logger
+	// HeloName is the name Postwerk gives in EHLO. With STARTTLS the
+	// first EHLO, before TLS, says "localhost" (a limit of the SMTP
+	// library); the EHLO inside TLS uses HeloName.
+	HeloName string
+
+	// Backoff returns the wait after attempt n; nil means DefaultBackoff.
+	Backoff func(attempt int) time.Duration
+	// PollInterval bounds how long a worker sleeps without a wake signal.
+	PollInterval time.Duration
+	// Timeouts; zero means the default.
+	DialTimeout       time.Duration
+	CommandTimeout    time.Duration
+	SubmissionTimeout time.Duration
+	// AttemptTimeout bounds one whole attempt, including the message body.
+	AttemptTimeout time.Duration
+	// Now returns the current time; nil means time.Now.
+	Now func() time.Time
+
+	// rootCAs replaces the system roots. Only tests set it.
+	rootCAs *x509.CertPool
+}
+
+// Manager runs one worker per target.
+type Manager struct {
+	workers []*worker
+	wg      sync.WaitGroup
+	cancel  context.CancelFunc
+}
+
+// New creates a Manager. Call Start to run it.
+func New(opts Options) *Manager {
+	if opts.Sealer == nil {
+		panic("delivery: Options.Sealer is required")
+	}
+	if opts.Backoff == nil {
+		opts.Backoff = DefaultBackoff
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = DefaultPollInterval
+	}
+	if opts.DialTimeout <= 0 {
+		opts.DialTimeout = DefaultDialTimeout
+	}
+	if opts.CommandTimeout <= 0 {
+		opts.CommandTimeout = DefaultCommandTimeout
+	}
+	if opts.SubmissionTimeout <= 0 {
+		opts.SubmissionTimeout = DefaultSubmissionTimeout
+	}
+	if opts.AttemptTimeout <= 0 {
+		opts.AttemptTimeout = DefaultAttemptTimeout
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	if opts.HeloName == "" {
+		opts.HeloName = "localhost"
+	}
+	m := &Manager{}
+	for _, t := range opts.Targets {
+		m.workers = append(m.workers, &worker{
+			opts:   &opts,
+			target: t,
+			log:    opts.Logger.With("target", t.Name),
+			wake:   make(chan struct{}, 1),
+		})
+	}
+	return m
+}
+
+// Start starts the workers. They stop when ctx is cancelled or Stop is
+// called, after finishing the send in progress.
+func (m *Manager) Start(ctx context.Context) {
+	ctx, m.cancel = context.WithCancel(ctx)
+	for _, w := range m.workers {
+		w.running.Store(true)
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			defer w.running.Store(false)
+			w.run(ctx)
+		}()
+	}
+}
+
+// Recover handles the deliveries of every worker that were left in sending by
+// a crash or a cut shutdown (D6), before the workers start. The caller runs
+// it before the first retention run, so that retention sees the recovered
+// state: a mail past its maximum age is then expired, not sent. Each worker
+// runs the same recovery again when it starts; that finds nothing left.
+func (m *Manager) Recover(ctx context.Context) error {
+	var errs []error
+	for _, w := range m.workers {
+		if err := w.recoverSending(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Wake tells every worker that new work may be due. It never blocks.
+func (m *Manager) Wake() {
+	for _, w := range m.workers {
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Running reports whether every worker is running.
+func (m *Manager) Running() bool {
+	for _, w := range m.workers {
+		if !w.running.Load() {
+			return false
+		}
+	}
+	return len(m.workers) > 0
+}
+
+// Stop asks the workers to stop and waits until they have, or until ctx ends.
+// A worker finishes its current send first.
+func (m *Manager) Stop(ctx context.Context) error {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type worker struct {
+	opts    *Options
+	target  config.Target
+	log     *slog.Logger
+	wake    chan struct{}
+	running atomic.Bool
+}
+
+func (w *worker) run(ctx context.Context) {
+	for ctx.Err() == nil {
+		err := w.recoverSending(context.WithoutCancel(ctx))
+		if err == nil {
+			break
+		}
+		w.log.Error("recovery of interrupted deliveries failed, will retry", "err", err)
+		w.sleep(ctx, w.opts.PollInterval)
+	}
+	for ctx.Err() == nil {
+		c, err := w.opts.Store.Claim(ctx, w.target.Name, w.opts.Now())
+		if err != nil {
+			if ctx.Err() == nil {
+				w.log.Error("claim failed", "err", err)
+				w.sleep(ctx, w.opts.PollInterval)
+			}
+			continue
+		}
+		if c == nil {
+			w.wait(ctx)
+			continue
+		}
+		// From here on the send runs to its end, even during shutdown.
+		if !w.process(context.WithoutCancel(ctx), c) {
+			w.sleep(ctx, w.opts.PollInterval) // the store is in trouble; do not spin
+		}
+	}
+}
+
+// wait sleeps until a wake signal, the next due time or the poll interval.
+func (w *worker) wait(ctx context.Context) {
+	d := w.opts.PollInterval
+	next, ok, err := w.opts.Store.NextDue(ctx, w.target.Name)
+	if err != nil && ctx.Err() == nil {
+		w.log.Error("next due lookup failed", "err", err)
+	}
+	if ok {
+		d = min(d, max(next.Sub(w.opts.Now()), time.Millisecond))
+	}
+	w.sleep(ctx, d)
+}
+
+func (w *worker) sleep(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-w.wake:
+	case <-t.C:
+	}
+}
+
+func (w *worker) policy(received time.Time) policy {
+	return policy{
+		onUnknown: w.target.OnUnknown,
+		optional:  w.target.Optional,
+		deadline:  received.Add(w.target.RetryWindow),
+		backoff:   w.opts.Backoff,
+	}
+}
+
+// recoverSending handles deliveries left in sending by a crash (D6): before
+// data_sent_at they are queued again, after it they are an unclear outcome.
+func (w *worker) recoverSending(ctx context.Context) error {
+	stuck, err := w.opts.Store.Sending(ctx, w.target.Name)
+	if err != nil {
+		return err
+	}
+	for _, st := range stuck {
+		now := w.opts.Now()
+		r := store.Result{MailID: st.MailID, Target: w.target.Name, At: now, Attempt: st.Attempt}
+		if !st.DataSent {
+			r.Status, r.NextAttempt = store.Queued, now
+			r.Kind, r.Level = store.KindDeliveryRetry, store.Warn
+			r.Text = "interrupted before the message was sent, queued again"
+		} else {
+			d := decide(Unclear, "interrupted after the message was sent", w.policy(st.ReceivedAt), now, st.Attempt)
+			r.Status, r.NextAttempt, r.Kind, r.Level, r.Text = d.status, d.next, d.kind, d.level, d.text
+		}
+		if err := w.opts.Store.Finish(ctx, r); err != nil {
+			return err
+		}
+		w.log.Warn("recovered interrupted delivery", "mail_id", st.MailID, "status", string(r.Status))
+	}
+	return nil
+}
+
+// process runs one attempt and stores its result. It reports false if the
+// result could not be stored.
+func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
+	problem := store.Error
+	if w.target.Optional {
+		problem = store.Warn
+	}
+	if c.Raw == nil {
+		// Retention removed the message between scheduling and this claim.
+		return w.finish(ctx, store.Result{
+			MailID: c.MailID, Target: c.Target, At: w.opts.Now(), Attempt: c.Attempt, Status: store.Failed,
+			Kind: store.KindRawExpired, Level: problem,
+			Text: "stored message was removed by retention; the delivery can no longer be sent",
+		})
+	}
+	raw, err := w.opts.Sealer.Open(c.MailID, c.Raw)
+	if err != nil {
+		// Never send what cannot be authenticated. The error names the key id
+		// at most, never content.
+		w.log.Error("stored message cannot be decrypted, delivery failed", "mail_id", c.MailID, "err", err)
+		return w.finish(ctx, store.Result{
+			MailID: c.MailID, Target: c.Target, At: w.opts.Now(), Attempt: c.Attempt, Status: store.Failed,
+			Kind: store.KindDecryptFailed, Level: store.Error, Text: err.Error(),
+		})
+	}
+	res := w.send(ctx, c, raw)
+	now := w.opts.Now()
+	r := store.Result{MailID: c.MailID, Target: c.Target, At: now, Attempt: c.Attempt}
+	if storeErr := res.storeErr; storeErr != nil {
+		// The message was not sent. Queue it again; if the store is broken
+		// this fails too and recovery handles the row after a restart.
+		w.log.Error("store failed during send, message not sent", "mail_id", c.MailID, "err", storeErr)
+		r.Status, r.NextAttempt = store.Queued, now.Add(w.opts.Backoff(c.Attempt))
+		r.Kind, r.Level, r.Text = store.KindDeliveryRetry, store.Warn, "internal storage error before sending"
+	} else {
+		o, code, text := Classify(res.err, res.dataSent)
+		if o == HandedOff && res.err == nil {
+			text = res.reply // often holds the target's own queue id
+		}
+		d := decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
+		if o == Temporary && code == 0 && d.status == store.Queued {
+			d.kind = store.KindTargetUnreachable
+		}
+		r.Status, r.NextAttempt, r.Code, r.Kind, r.Level, r.Text = d.status, d.next, code, d.kind, d.level, d.text
+	}
+	return w.finish(ctx, r) && res.storeErr == nil
+}
+
+// finish stores the result of an attempt and reports whether that worked.
+func (w *worker) finish(ctx context.Context, r store.Result) bool {
+	if err := w.opts.Store.Finish(ctx, r); err != nil {
+		w.log.Error("storing the result of an attempt failed", "mail_id", r.MailID, "err", err)
+		return false
+	}
+	return true
+}
+
+// sendResult is the raw result of one attempt.
+type sendResult struct {
+	dataSent bool   // data_sent_at was recorded
+	reply    string // the target's text after the message, on success
+	err      error  // from the network or the target
+	storeErr error  // recording data_sent_at failed; nothing was sent
+}
+
+// send makes one attempt with the decrypted message raw.
+func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendResult {
+	client, err := w.connect(ctx)
+	if err != nil {
+		return sendResult{err: err}
+	}
+	defer client.Close()
+
+	if w.target.Username != "" {
+		if err := client.Auth(sasl.NewPlainClient("", w.target.Username, w.target.Password)); err != nil {
+			return sendResult{err: err}
+		}
+	}
+	if err := client.Mail(c.EnvelopeFrom, nil); err != nil {
+		return sendResult{err: err}
+	}
+	for _, rcpt := range c.Recipients {
+		if err := client.Rcpt(rcpt, nil); err != nil {
+			return sendResult{err: err}
+		}
+	}
+	wc, err := client.Data()
+	if err != nil {
+		return sendResult{err: err}
+	}
+	// The target has answered 354 and waits for the message. From the
+	// first byte on, a broken connection leaves it open whether the target
+	// has it (D5).
+	if err := w.opts.Store.MarkDataSent(ctx, c.MailID, c.Target, w.opts.Now()); err != nil {
+		return sendResult{storeErr: err}
+	}
+	if w.target.Status == config.StatusMailjet {
+		// Tracking must be unambiguous: only Postwerk's own X-MJ-CustomID
+		// reaches Mailjet.
+		raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
+	}
+	if err := message.Write(wc, w.headers(c.MailID), raw); err != nil {
+		return sendResult{dataSent: true, err: err}
+	}
+	resp, err := wc.CloseWithResponse()
+	if err != nil {
+		return sendResult{dataSent: true, err: err}
+	}
+	_ = client.Quit()
+	return sendResult{dataSent: true, reply: resp.StatusText}
+}
+
+func (w *worker) headers(mailID string) []message.Field {
+	h := []message.Field{{Name: message.HeaderID, Value: mailID}}
+	if w.target.Status == config.StatusMailjet {
+		h = append(h, message.Field{Name: message.HeaderMailjetCustomID, Value: mailID})
+	}
+	return h
+}
+
+func (w *worker) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName: w.target.Host,
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    w.opts.rootCAs,
+	}
+}
+
+// connect dials the target per its scheme (D7) and says EHLO.
+func (w *worker) connect(ctx context.Context) (*smtp.Client, error) {
+	d := net.Dialer{Timeout: w.opts.DialTimeout}
+	raw, err := d.DialContext(ctx, "tcp", w.target.Addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := &boundConn{Conn: raw, hard: time.Now().Add(w.opts.AttemptTimeout), soft: w.opts.CommandTimeout}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	var client *smtp.Client
+	switch w.target.Scheme {
+	case config.SchemeSMTPS:
+		client = smtp.NewClient(tls.Client(conn, w.tlsConfig()))
+	case config.SchemeSTARTTLS:
+		// NewClientStartTLS greets, says EHLO and starts TLS with the
+		// library's default timeouts; the soft limit caps them.
+		client, err = smtp.NewClientStartTLS(conn, w.tlsConfig())
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+	case config.SchemePlain:
+		client = smtp.NewClient(conn)
+	default:
+		conn.Close()
+		return nil, errors.New("unsupported scheme")
+	}
+	client.CommandTimeout = w.opts.CommandTimeout
+	client.SubmissionTimeout = w.opts.SubmissionTimeout
+	conn.soft = 0 // the client's own timeouts apply from here on
+	if err := client.Hello(w.opts.HeloName); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// maxTargetBytes bounds what one attempt reads from a target. Replies are a
+// few hundred bytes; the SMTP client limits the length of a line but not the
+// number of lines in a multi-line reply, which it keeps in memory.
+const maxTargetBytes = 1 << 20
+
+var errTooMuchFromTarget = errors.New("target sent more than 1 MiB of replies in one attempt")
+
+// boundConn caps every deadline the SMTP client sets: never later than hard
+// (the end of the attempt), and while soft is set, never later than soft
+// from now. A cleared deadline becomes hard, so writing the message body
+// cannot hang forever either. It also stops reading after maxTargetBytes.
+type boundConn struct {
+	net.Conn
+	hard time.Time
+	soft time.Duration
+	read int
+}
+
+func (c *boundConn) Read(b []byte) (int, error) {
+	if c.read >= maxTargetBytes {
+		return 0, errTooMuchFromTarget
+	}
+	if rest := maxTargetBytes - c.read; len(b) > rest {
+		b = b[:rest]
+	}
+	n, err := c.Conn.Read(b)
+	c.read += n
+	return n, err
+}
+
+func (c *boundConn) bound(t time.Time) time.Time {
+	if c.soft > 0 {
+		if s := time.Now().Add(c.soft); t.IsZero() || t.After(s) {
+			t = s
+		}
+	}
+	if t.IsZero() || t.After(c.hard) {
+		t = c.hard
+	}
+	return t
+}
+
+func (c *boundConn) SetDeadline(t time.Time) error      { return c.Conn.SetDeadline(c.bound(t)) }
+func (c *boundConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(c.bound(t)) }
+func (c *boundConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(c.bound(t)) }
