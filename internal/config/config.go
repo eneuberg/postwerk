@@ -30,11 +30,13 @@ const Prefix = "POSTWERK_"
 
 // Defaults. docs/configuration.md is the reference for every variable.
 const (
-	DefaultSMTPListen      = ":2525"
-	DefaultHTTPListen      = "127.0.0.1:8080"
-	DefaultDataPath        = "/data/postwerk.db"
-	DefaultHostname        = "postwerk"
-	DefaultMaxMessageBytes = 25 << 20
+	DefaultSMTPListen = ":2525"
+	DefaultHTTPListen = "127.0.0.1:8080"
+	DefaultDataPath   = "/data/postwerk.db"
+	DefaultHostname   = "postwerk"
+	// DefaultMaxMessageBytes (recommended) is 15 MiB, the SIZE that
+	// Mailjet's relay offers, so a mail Postwerk accepts also fits there.
+	DefaultMaxMessageBytes = 15 << 20
 	DefaultMaxRecipients   = 50
 	DefaultMaxConnections  = 100
 	DefaultRetryWindow     = 24 * time.Hour

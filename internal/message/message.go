@@ -182,6 +182,15 @@ func Write(w io.Writer, fields []Field, msg []byte) error {
 	return err
 }
 
+// Size returns the number of bytes Write writes for fields and msg.
+func Size(fields []Field, msg []byte) int {
+	n := len(msg)
+	for _, f := range fields {
+		n += len(f.Name) + len(": ") + len(f.Value) + len("\r\n")
+	}
+	return n
+}
+
 func isEmptyLine(line []byte) bool {
 	return len(line) == 1 && line[0] == '\n' || len(line) == 2 && line[0] == '\r' && line[1] == '\n'
 }

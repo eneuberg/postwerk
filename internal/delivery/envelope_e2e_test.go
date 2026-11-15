@@ -117,3 +117,34 @@ func TestNoUTF8AddressLeaks(t *testing.T) {
 		t.Fatalf("retry event = %+v", ev)
 	}
 }
+
+func TestMessageSize(t *testing.T) {
+	small := newTarget(t, plain, nil, "", "")
+	small.set(func(b *behavior) { b.size = "1000" })
+	big := newTarget(t, plain, nil, "", "")
+	big.set(func(b *behavior) { b.size = "15728640" })
+	h := startPostwerk(t, []config.Target{target("small", small, plain), target("big", big, plain)}, harnessOpts{})
+
+	large := testMsg + strings.Repeat(strings.Repeat("x", 70)+"\r\n", 20) // about 1.6 kB
+	tooLarge := h.send([]string{canary, "b@example.test"}, large)
+	fits := h.send([]string{canary}, testMsg)
+
+	d := h.waitStatus(tooLarge, "small", store.Failed)
+	if d.Attempts != 1 || !d.DataSent.IsZero() {
+		t.Fatalf("small = %+v", d)
+	}
+	if ev := eventOf(h, tooLarge, "small", store.KindDeliveryTooLarge); ev == nil || ev.Level != store.Error ||
+		!strings.Contains(ev.Text, "at most 1000") {
+		t.Fatalf("too_large event = %+v", ev)
+	}
+	h.waitStatus(tooLarge, "big", store.HandedOff)
+	h.waitStatus(fits, "small", store.HandedOff)
+	if got := small.got(); len(got) != 1 || got[0].opts.Size != int64(len(got[0].data)) {
+		t.Fatalf("small target got %d mails, SIZE=%d", len(got), got[0].opts.Size)
+	}
+	for _, r := range big.got() {
+		if r.opts.Size != int64(len(r.data)) {
+			t.Fatalf("SIZE=%d, message has %d bytes", r.opts.Size, len(r.data))
+		}
+	}
+}

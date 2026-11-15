@@ -178,3 +178,15 @@ func TestEightBit(t *testing.T) {
 		}
 	}
 }
+
+func TestSize(t *testing.T) {
+	fields := []Field{{Name: "X-Postwerk-Id", Value: "pw_1"}, {Name: "X-MJ-CustomID", Value: "pw_1"}}
+	msg := []byte("Subject: x\r\n\r\nbody\r\n")
+	var buf bytes.Buffer
+	if err := Write(&buf, fields, msg); err != nil {
+		t.Fatal(err)
+	}
+	if got := Size(fields, msg); got != buf.Len() {
+		t.Fatalf("Size = %d, Write wrote %d", got, buf.Len())
+	}
+}

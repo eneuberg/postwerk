@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -448,6 +449,19 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 		_ = client.Quit()
 		return sendResult{refused: store.KindDeliveryUnsupported, reason: reason}
 	}
+	if w.target.Status == config.StatusMailjet {
+		// Tracking must be unambiguous: only Postwerk's own X-MJ-CustomID
+		// reaches Mailjet.
+		raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
+	}
+	headers := w.headers(c.MailID)
+	size := message.Size(headers, raw)
+	if limit, ok := client.MaxMessageSize(); ok && limit > 0 && size > limit {
+		_ = client.Quit()
+		return sendResult{refused: store.KindDeliveryTooLarge, reason: fmt.Sprintf(
+			"the message has %d bytes, the target takes at most %d (SIZE); not sent", size, limit)}
+	}
+	opts.Size = int64(size) // sent as SIZE= where the target offers SIZE
 	if w.target.Username != "" {
 		if err := client.Auth(sasl.NewPlainClient("", w.target.Username, w.target.Password)); err != nil {
 			return sendResult{err: err}
@@ -498,12 +512,7 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 		return sendResult{storeErr: err}
 	}
 	res.recorded, res.dataSent = true, true
-	if w.target.Status == config.StatusMailjet {
-		// Tracking must be unambiguous: only Postwerk's own X-MJ-CustomID
-		// reaches Mailjet.
-		raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
-	}
-	if err := message.Write(wc, w.headers(c.MailID), raw); err != nil {
+	if err := message.Write(wc, headers, raw); err != nil {
 		res.err = err
 		return res
 	}

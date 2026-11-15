@@ -67,7 +67,7 @@ func TestMinimalDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.SMTPListen != ":2525" || c.HTTPListen != "127.0.0.1:8080" || c.DataPath != "/data/postwerk.db" ||
-		c.Hostname != "postwerk" || c.MaxMessageBytes != 26214400 || c.MaxRecipients != 50 ||
+		c.Hostname != "postwerk" || c.MaxMessageBytes != 15728640 || c.MaxRecipients != 50 ||
 		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.Instance != "" ||
 		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 {
 		t.Fatalf("defaults wrong: %+v", c)

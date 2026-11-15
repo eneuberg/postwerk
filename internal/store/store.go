@@ -75,8 +75,11 @@ const (
 	// KindDeliveryUnsupported: the mail needs an SMTP extension
 	// (SMTPUTF8, 8BITMIME) that the target does not offer; nothing was sent.
 	KindDeliveryUnsupported = "delivery.unsupported"
-	KindTargetAuthFailed    = "target.auth_failed"
-	KindTargetUnreachable   = "target.unreachable"
+	// KindDeliveryTooLarge: the target offers a SIZE smaller than the
+	// message; nothing was sent.
+	KindDeliveryTooLarge  = "delivery.too_large"
+	KindTargetAuthFailed  = "target.auth_failed"
+	KindTargetUnreachable = "target.unreachable"
 	// KindRawExpired: the stored message was removed by retention while the
 	// delivery still needed it; the delivery is failed and cannot be resent.
 	KindRawExpired = "retention.raw_expired"

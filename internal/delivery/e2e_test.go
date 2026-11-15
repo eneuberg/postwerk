@@ -62,6 +62,7 @@ type behavior struct {
 	hold     chan struct{}
 	holding  chan struct{} // closed when a message is being held
 	hide     []string      // extensions removed from the EHLO reply, such as "SMTPUTF8"
+	size     string        // if set, the EHLO reply offers "SIZE <size>"
 }
 
 type fakeTarget struct {
@@ -134,11 +135,16 @@ type hidingConn struct {
 
 func (c hidingConn) Write(b []byte) (int, error) {
 	c.f.mu.Lock()
-	hide := c.f.b.hide
+	hide, size := c.f.b.hide, c.f.b.size
 	c.f.mu.Unlock()
 	out := b
 	for _, ext := range hide {
 		out = []byte(strings.ReplaceAll(string(out), "250-"+ext+"\r\n", ""))
+	}
+	if size != "" {
+		for _, sep := range []string{"-", " "} {
+			out = []byte(strings.ReplaceAll(string(out), "250"+sep+"SIZE\r\n", "250"+sep+"SIZE "+size+"\r\n"))
+		}
 	}
 	if _, err := c.Conn.Write(out); err != nil {
 		return 0, err
