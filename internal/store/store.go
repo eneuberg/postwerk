@@ -277,6 +277,9 @@ type Event struct {
 	// for events about the mail or the whole attempt. Events never carry
 	// the address itself.
 	Recipient *int
+	// Actor names the person behind an event caused through the UI or the
+	// query API: the token name. Empty for events of the relay itself.
+	Actor string
 }
 
 // Position returns a pointer to p, for Event.Recipient.
@@ -290,12 +293,29 @@ func insertEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 		rcpt = *e.Recipient
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO events (time, mail_id, target, recipient, kind, level, attempt, code, text, sender)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT sender FROM mails WHERE id = ?))`,
+		INSERT INTO events (time, mail_id, target, recipient, kind, level, attempt, code, text, sender, actor)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT sender FROM mails WHERE id = ?), ?)`,
 		ms(e.Time), nullStr(e.MailID), nullStr(e.Target), rcpt, e.Kind, string(e.Level),
-		nullInt(e.Attempt), nullInt(e.Code), nullStr(redact.Text(e.Text)), e.MailID)
+		nullInt(e.Attempt), nullInt(e.Code), nullStr(redact.Text(e.Text)), e.MailID, nullStr(e.Actor))
 	if err != nil {
 		return fmt.Errorf("insert event %s: %w", e.Kind, err)
+	}
+	return nil
+}
+
+// Append writes one event that belongs to no state change, such as a login
+// to the UI (U13). Its text is redacted like every other.
+func (s *Store) Append(ctx context.Context, e Event) error {
+	switch e.Level {
+	case Info, Warn, Error:
+	default:
+		return fmt.Errorf("store: append %s: invalid level %q", e.Kind, e.Level)
+	}
+	if e.Kind == "" {
+		return errors.New("store: append: event without kind")
+	}
+	if err := s.eventTx(ctx, func(tx *sql.Tx) error { return insertEvent(ctx, tx, e) }); err != nil {
+		return fmt.Errorf("store: append %s: %w", e.Kind, err)
 	}
 	return nil
 }
@@ -875,8 +895,14 @@ func Summarize(statuses []Status) Status {
 	for _, s := range statuses {
 		n[s]++
 	}
+	return summarizeCounts(n, len(statuses))
+}
+
+// summarizeCounts is Summarize over counts per status; total is the number
+// of recipients. stateSQL (read.go) is the same rule in SQL.
+func summarizeCounts(n map[Status]int, total int) Status {
 	switch {
-	case len(statuses) == 0:
+	case total == 0:
 		return ""
 	case n[Sending] > 0:
 		return Sending
@@ -884,7 +910,7 @@ func Summarize(statuses []Status) Status {
 		return Queued
 	case n[Unknown] > 0:
 		return Unknown
-	case n[Skipped] == len(statuses):
+	case n[Skipped] == total:
 		return Skipped
 	case n[Failed] == 0:
 		return HandedOff
@@ -898,25 +924,36 @@ func Summarize(statuses []Status) Status {
 // order.
 func (s *Store) EventsAfter(ctx context.Context, after int64, limit int) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT seq, time, mail_id, target, recipient, kind, level, attempt, code, text, sender
-		FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, after, limit)
+		SELECT `+eventColumns+` FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: events: %w", err)
 	}
+	out, err := scanEvents(rows)
+	if err != nil {
+		return nil, fmt.Errorf("store: events: %w", err)
+	}
+	return out, nil
+}
+
+const eventColumns = `seq, time, mail_id, target, recipient, kind, level, attempt, code, text, sender, actor`
+
+// scanEvents reads rows of eventColumns and closes them.
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	defer rows.Close()
 	var out []Event
 	for rows.Next() {
 		var e Event
 		var t int64
 		var level string
-		var mailID, target, text, sender sql.NullString
+		var mailID, target, text, sender, actor sql.NullString
 		var attempt, code, rcpt sql.NullInt64
-		if err := rows.Scan(&e.Seq, &t, &mailID, &target, &rcpt, &e.Kind, &level, &attempt, &code, &text, &sender); err != nil {
-			return nil, fmt.Errorf("store: events: %w", err)
+		if err := rows.Scan(&e.Seq, &t, &mailID, &target, &rcpt, &e.Kind, &level, &attempt, &code, &text, &sender,
+			&actor); err != nil {
+			return nil, err
 		}
 		e.Time = time.UnixMilli(t).UTC()
 		e.Level = Level(level)
-		e.MailID, e.Target, e.Text, e.Sender = mailID.String, target.String, text.String, sender.String
+		e.MailID, e.Target, e.Text, e.Sender, e.Actor = mailID.String, target.String, text.String, sender.String, actor.String
 		e.Attempt, e.Code = int(attempt.Int64), int(code.Int64)
 		if rcpt.Valid {
 			e.Recipient = Position(int(rcpt.Int64))

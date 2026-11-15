@@ -87,6 +87,19 @@ func TestStdoutLine(t *testing.T) {
 	if err := r.Flush(ctx); err != nil || buf.Len() != 0 {
 		t.Fatalf("second flush wrote %q, %v", buf.String(), err)
 	}
+
+	// A UI event names its actor.
+	at := time.UnixMilli(1763000000123)
+	if err := s.Append(ctx, store.Event{Time: at, Kind: "ui.login", Level: store.Info, Actor: "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want = `{"seq":3,"time":"2025-11-13T02:13:20.123Z","level":"info","kind":"ui.login","actor":"ops","instance":"prod"}`
+	if got := strings.TrimSpace(buf.String()); got != want {
+		t.Fatalf("line:\n%s\nwant\n%s", got, want)
+	}
 }
 
 func TestFailingSinkCatchesUp(t *testing.T) {
