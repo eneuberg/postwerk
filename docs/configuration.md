@@ -159,7 +159,14 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 Fixed, not configurable: line length 2000 bytes, address length 320 bytes, connection closed after 3 failed `AUTH`,
 SMTP read timeout 2 minutes, write timeout 1 minute. Envelope addresses with more than one `@`, or with characters that
 need a quoted local part (space, `"`, `\`, `<`, `>`, `(`, `)`, `,`, `;`), get `553`: they could not be passed on to a
-target unchanged.
+target unchanged. Internationalized addresses (UTF-8, RFC 6531) are accepted only when the sender gives `SMTPUTF8` in
+`MAIL`; otherwise they get `553 5.6.7 Non-ASCII address requires SMTPUTF8`.
+
+**SMTP extensions.** Ingress offers `8BITMIME`, `SMTPUTF8`, `SIZE`, `PIPELINING`, `CHUNKING` and
+`ENHANCEDSTATUSCODES`, never `DSN` or `REQUIRETLS` (Postwerk could not keep their promise towards every target). The
+declared `BODY=`, `SMTPUTF8` and `SIZE=` are stored and passed on to each target that offers them. A mail that needs
+`SMTPUTF8` or `8BITMIME` is never sent to a target without it: that delivery fails with `delivery.unsupported`
+(details in [architecture.md](architecture.md#delivery-worker)). Not configurable.
 
 ## Shutdown
 

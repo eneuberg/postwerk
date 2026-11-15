@@ -132,3 +132,21 @@ values. The reasons for each period are in [privacy-and-security.md](privacy-and
 A capture tool such as Mailpit stores full content, including password reset links and one-time codes. Postwerk
 recommends it for development and tests and advises against it in production by default. Production audit and
 tracing rely on Postwerk's own event log and, once built, its status lookup and error reporting, which keep no content.
+
+## D23 Envelope parameters are passed on, not dropped
+
+Postwerk is store-and-forward: it ends the sender's SMTP transaction and starts its own towards each target. Whatever
+the sender declared in `MAIL` would be lost unless Postwerk keeps it. It stores `BODY=`, `SMTPUTF8` and `SIZE=` with
+the mail and passes them to every target that offers the extension. A mail that needs an extension the target does not
+offer fails there with `delivery.unsupported` instead of being sent without it: a target that never agreed to UTF-8 or
+8-bit data may mangle it, and a quietly broken address or subject is worse than a visible failure.
+
+"Needs" is decided from the data, not only from the declaration. Go's `net/smtp` (and with it gomail) declares
+`SMTPUTF8` whenever the server offers it, so after Postwerk offers it, practically every mail from such a client carries
+it. A pure ASCII mail loses nothing without the parameter and is sent. `8BITMIME` is needed whenever the message holds
+an 8-bit byte, declared or not. The SMTP library declares `BODY=8BITMIME` to every target that offers it; 7-bit content
+is valid 8BITMIME, so this is harmless, and a declared `BODY=7BIT` is therefore not repeated as such.
+
+`DSN` and `REQUIRETLS` are not offered: Postwerk cannot promise delivery status notifications or TLS on every hop for
+every target, and offering an extension it cannot honour would be a silent lie. Mailjet's relay (checked
+2026-11-15) offers `8BITMIME`, `SMTPUTF8`, `SIZE 15728640` and no `DSN`.

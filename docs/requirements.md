@@ -33,6 +33,8 @@ its default is listed in [configuration.md](configuration.md).
 | I7 | If storing fails, reply `451` (temporary) and keep nothing half-written. Internal error texts never reach the client. | F |
 | I8 | `X-Postwerk-*` headers set by the sender are read (`Ref`, `Skip`) and removed before storage. *(safe default, proposed; scope gap 7)* | F |
 | I9 | An invalid `X-Postwerk-Ref` (contains `@`, is longer than 256 bytes or not printable ASCII) is not stored; the mail is still accepted, without a ref. The header is removed either way. | F |
+| I10 | Ingress offers `8BITMIME` and `SMTPUTF8`, not `DSN`, `REQUIRETLS` or `BINARYMIME`. The MAIL parameters `BODY=7BIT\|8BITMIME`, `SMTPUTF8` and `SIZE=` are stored as declared. | F |
+| I11 | Envelope addresses may hold UTF-8 (RFC 6531) only with `SMTPUTF8`; otherwise fixed reply `553 5.6.7`. Invalid UTF-8, control characters (C0, DEL, C1) and Unicode line separators get `553 5.1.3`. | F |
 
 ## Store
 
@@ -86,6 +88,8 @@ its default is listed in [configuration.md](configuration.md).
 | D10 | Postwerk adds `X-Postwerk-Id` and, for Mailjet targets, `X-MJ-CustomID`; for Mailjet targets any `X-MJ-CustomID` set by the sender is removed first, so tracking is unambiguous. | F |
 | D11 | Graceful shutdown: stop accepting, let in-flight sends finish within a deadline, then close the store. One attempt is capped at 90 s (dial 15 s, command 30 s, reply after the message 60 s); the default deadline `POSTWERK_SHUTDOWN_TIMEOUT` is 100 s, longer than the cap; the orchestrator's grace period must be longer still (120 s). *(safe default, proposed; scope gap 3)* | F |
 | D12 | Rate and connection limits per target. | L |
+| D13 | MAIL parameters are passed on where the target offers the extension: `SMTPUTF8` as declared; `BODY=8BITMIME` to every target that offers it (the SMTP library always declares it; 7-bit content is valid 8BITMIME). | F |
+| D14 | A mail that needs an extension the target does not offer is never sent without it: `SMTPUTF8` when declared and the envelope or header section holds non-ASCII; `8BITMIME` when the message holds any 8-bit byte. That delivery fails at once with `delivery.unsupported` (`error`, `warn` for optional targets). | F |
 
 ## Status, audit, reporting
 

@@ -68,8 +68,10 @@ to an identifiable person, directly or through other data the operator holds. Pe
 Every free text that is stored or exported goes through one redaction function: anything that looks like an address
 becomes `<redacted>`, control characters are removed, and the length is capped at 300 bytes. The reply code and the
 enhanced status code (`5.1.1`) stay, because they carry the useful information. Events are append-only and exported to
-every sink, so an address that got in once would be copied everywhere; redaction at write time prevents that. A leak
-test in the test suite checks it (section 8.2, change 14).
+every sink, so an address that got in once would be copied everywhere; redaction at write time prevents that.
+Internationalized addresses (UTF-8, such as `jörg@exämple.test`) are redacted the same way: an address token ends only
+at white space (ASCII or Unicode), brackets, quotes or separators, so non-ASCII letters are part of it. A leak test in
+the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, change 14).
 
 ### 2.2 Outside the store
 

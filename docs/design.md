@@ -76,6 +76,11 @@ from mailing real people by accident.
 Senders can keep a mail away from named targets with `X-Postwerk-Skip: <target>[, <target>]`, for example to keep mails
 with credentials out of a capture tool. Unknown target names in the header are ignored and logged.
 
+Envelope parameters: Postwerk stores and re-issues the envelope, so it keeps what the sender declared in `MAIL`
+(`BODY=`, `SMTPUTF8`, `SIZE=`) and passes it on to every target that offers the extension. A mail that needs
+`SMTPUTF8` (a non-ASCII address or header) or `8BITMIME` (8-bit content) is never sent to a target that lacks it; that
+delivery fails with `delivery.unsupported`. `DSN` and `REQUIRETLS` are not offered on ingress.
+
 Headers: Postwerk removes every `X-Postwerk-*` header set by the sender before it stores the mail. It reads
 `X-Postwerk-Ref` and `X-Postwerk-Skip` first. Towards every target it adds `X-Postwerk-Id: <mail id>`, and for targets
 with `STATUS=mailjet` also `X-MJ-CustomID: <mail id>`. No other header is added or changed.
@@ -127,6 +132,7 @@ waits only seconds before hand-off.
 | network error, TLS error, timeout before the message was sent | temporary | retry with backoff, event `target.unreachable` |
 | `535` (authentication failed) | our credentials are wrong or rotated | **retry and raise an error at once**; the delivery stays queued |
 | other `5xx` | permanent | `failed` |
+| target lacks `SMTPUTF8` or `8BITMIME` that the mail needs (seen in `EHLO`) | permanent | `failed`, event `delivery.unsupported`, nothing sent |
 | no reply after the message was sent (timeout, crash) | unclear | `unknown`, see section 6 |
 | retry window over | | `failed` |
 
@@ -209,6 +215,7 @@ Kinds written today:
 | `delivery.unknown` | error (warn if optional) | unclear outcome under `hold` (or `check`, until the adapter exists) |
 | `delivery.skipped` | info | excluded by `X-Postwerk-Skip` |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
+| `delivery.unsupported` | error (warn if optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; not sent |
 | `target.auth_failed` | error (warn if optional) | the target replied `535` |
 | `target.unreachable` | warn | no reply before the message was sent: connection, TLS or protocol error |
 

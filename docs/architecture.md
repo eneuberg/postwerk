@@ -56,11 +56,11 @@ One `*sql.DB` with a single open connection. All access is serialized; at transa
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
 
-Tables (version 2):
+Tables (version 3):
 
 | Table | Holds | Notes |
 |---|---|---|
-| `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at` | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
+| `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at`, the declared MAIL parameters `body`, `smtputf8`, `declared_size` | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
 | `deliveries` | mail id, target, status, attempts, next attempt, `data_sent_at`, last code and redacted text, provider fields, updated time | primary key (mail id, target); index on (target, status, next attempt) |
 | `events` | seq, time, mail id, target, kind, level, attempt, code, redacted text, sender login | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
@@ -72,7 +72,9 @@ and delete on `events`. `0002_retention.sql` adds `raw_purged_at`, `pseudonymize
 its triggers, indexes for retention (`mails.received_at`, partial indexes for rows that still hold raw or plain
 addresses, `events.time`), and replaces the delete trigger on `events` by one that allows only deletes below the
 cutoff (a missing row counts as cutoff 0). The update trigger stays. Databases written by builds before version 2
-stored the raw message without a blob header; they are not supported (there was no release).
+stored the raw message without a blob header; they are not supported (there was no release). `0003_envelope.sql` adds
+the MAIL parameters as the sender declared them: `body` (`7BIT`, `8BITMIME` or NULL), `smtputf8` (0 or 1) and
+`declared_size` (NULL if not given).
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -93,6 +95,7 @@ Statuses: `queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`. Eve
 | `delivery.unknown` | error (warn: optional) | no reply after the message was sent, policy `hold` or `check` |
 | `delivery.skipped` | info | the sender named the target in `X-Postwerk-Skip` |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
+| `delivery.unsupported` | error (warn: optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
 | `target.auth_failed` | error (warn: optional) | the target answered `535`; queued again |
 | `target.unreachable` | warn | no reply before the message was sent (connection, TLS or protocol error) |
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while the delivery was `queued` or `unknown`; it is now `failed` |
@@ -108,7 +111,7 @@ Times are stored as Unix milliseconds (UTC).
 ```
 loop:
   claim the next due delivery of this target  (tx: status=sending, attempts+1, event delivery.attempt)
-  connect (TLS per scheme), EHLO, AUTH, MAIL, RCPT…, DATA
+  connect (TLS per scheme), EHLO, check extensions, AUTH, MAIL (+ parameters), RCPT…, DATA
   target answers 354 → record data_sent_at     (tx)
   own headers + stored message, final dot
   read the reply → classify → next state       (tx: status + event)
@@ -151,6 +154,19 @@ sessions get at most half of the deadline, then they are closed (mails accepted 
 start). Then the remaining events are exported, HTTP stops and the store closes. Because the deadline is longer than
 the attempt cap, a send in progress always ends normally; a shorter configured deadline logs a warning. The
 orchestrator's grace period must be longer than the deadline (120 s).
+
+**Envelope parameters.** Postwerk re-issues `MAIL` and `RCPT` itself, so it passes on what the sender declared
+(`store.Params`). After `EHLO` the worker checks the target's extensions before it logs in:
+
+| Mail | Target offers it | Target lacks it |
+|---|---|---|
+| declared `SMTPUTF8`, non-ASCII in the envelope or the header section | `SMTPUTF8` passed on | `failed`, `delivery.unsupported`, nothing sent |
+| declared `SMTPUTF8`, all ASCII | `SMTPUTF8` passed on | sent without it (nothing is lost) |
+| any byte outside 7-bit ASCII in the message | `BODY=8BITMIME` | `failed`, `delivery.unsupported`, nothing sent |
+| 7-bit message | `BODY=8BITMIME` (set by the SMTP library for every target that offers it; 7-bit content is valid 8BITMIME) | sent without `BODY=` |
+
+Many clients declare `SMTPUTF8` whenever a server offers it (Go's `net/smtp` does), which is why a pure ASCII mail
+does not need it. `delivery.unsupported` is final: the target's capabilities do not change between attempts.
 
 Before a send, the worker opens the sealed message. If retention removed it, the claim returns no message and the
 delivery fails with `retention.raw_expired`; if it cannot be decrypted, it fails with `store.decrypt_failed`. In both
