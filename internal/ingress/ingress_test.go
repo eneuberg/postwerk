@@ -697,3 +697,71 @@ func TestUnauthenticatedConnectionClosed(t *testing.T) {
 		t.Fatalf("NOOP after login: %d", c)
 	}
 }
+
+// startData sends MAIL, RCPT and DATA on a raw session and waits for 354.
+func startData(t *testing.T, conn *textproto.Conn, mail string) {
+	t.Helper()
+	if c, text := cmd(conn, mail); c != 250 {
+		t.Fatalf("%s: %d %s", mail, c, text)
+	}
+	if c, text := cmd(conn, "RCPT TO:<x@example.test>"); c != 250 {
+		t.Fatalf("RCPT: %d %s", c, text)
+	}
+	if c, _ := cmd(conn, "DATA"); c != 354 {
+		t.Fatalf("DATA: %d", c)
+	}
+}
+
+func TestMemoryBudget(t *testing.T) {
+	e := start(t, func(o *Options) { o.MaxMessageBytes = 4096; o.MaxInflightBytes = 4096 })
+	a, _ := rawSession(t, e.addr)
+	b, _ := rawSession(t, e.addr)
+
+	// a holds the whole budget while its message is still arriving.
+	startData(t, a, "MAIL FROM:<a@example.test>")
+	a.PrintfLine("Subject: slow")
+	testutil.Eventually(t, time.Second, "budget taken", func() bool { return e.srv.budget.inUse() == 4096 })
+
+	startData(t, b, "MAIL FROM:<b@example.test>")
+	if c, text := cmd(b, "Subject: hi\r\n\r\nbody\r\n."); c != 451 || text != "4.3.1 Insufficient system resources, try again later" {
+		t.Fatalf("while the budget is taken: %d %q", c, text)
+	}
+	if c, text := cmd(a, "\r\nbody\r\n."); c != 250 {
+		t.Fatalf("a: %d %q", c, text)
+	}
+	if n := e.srv.budget.inUse(); n != 0 {
+		t.Fatalf("budget in use after a finished: %d", n)
+	}
+	startData(t, b, "MAIL FROM:<b@example.test>")
+	if c, text := cmd(b, "Subject: hi\r\n\r\nbody\r\n."); c != 250 {
+		t.Fatalf("after release: %d %q", c, text)
+	}
+
+	// A declared SIZE reserves only that much, so two fit.
+	startData(t, a, "MAIL FROM:<a@example.test> SIZE=1000")
+	a.PrintfLine("Subject: slow")
+	testutil.Eventually(t, time.Second, "budget taken", func() bool { return e.srv.budget.inUse() == 1000 })
+	startData(t, b, "MAIL FROM:<b@example.test> SIZE=1000")
+	if c, text := cmd(b, "Subject: hi\r\n\r\nbody\r\n."); c != 250 {
+		t.Fatalf("second declared message: %d %q", c, text)
+	}
+	// a grows beyond its declared size; the rest of the budget allows it.
+	if c, text := cmd(a, "\r\n"+strings.Repeat(strings.Repeat("x", 70)+"\r\n", 20)+"."); c != 250 {
+		t.Fatalf("message larger than declared: %d %q", c, text)
+	}
+
+	// Larger than declared while the rest of the budget is taken: 451.
+	startData(t, a, "MAIL FROM:<a@example.test> SIZE=1000")
+	a.PrintfLine("Subject: slow")
+	testutil.Eventually(t, time.Second, "budget taken", func() bool { return e.srv.budget.inUse() == 1000 })
+	startData(t, b, "MAIL FROM:<b@example.test> SIZE=1000")
+	if c, _ := cmd(b, "Subject: hi\r\n\r\n"+strings.Repeat(strings.Repeat("x", 70)+"\r\n", 20)+"."); c != 451 {
+		t.Fatalf("larger than declared without budget: %d", c)
+	}
+	if c, _ := cmd(a, "\r\nbody\r\n."); c != 250 {
+		t.Fatalf("a: %d", c)
+	}
+	if n := e.srv.budget.inUse(); n != 0 {
+		t.Fatalf("budget in use at the end: %d", n)
+	}
+}

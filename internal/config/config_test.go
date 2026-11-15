@@ -69,7 +69,8 @@ func TestMinimalDefaults(t *testing.T) {
 	if c.SMTPListen != ":2525" || c.HTTPListen != "127.0.0.1:8080" || c.DataPath != "/data/postwerk.db" ||
 		c.Hostname != "postwerk" || c.MaxMessageBytes != 15728640 || c.MaxRecipients != 50 ||
 		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.Instance != "" ||
-		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 {
+		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 ||
+		c.MaxInflightBytes != 256<<20 {
 		t.Fatalf("defaults wrong: %+v", c)
 	}
 	// The recommended retention defaults.
@@ -128,6 +129,7 @@ func TestFullConfig(t *testing.T) {
 		"POSTWERK_RECORD_RETENTION=400d",
 		"POSTWERK_EVENT_RETENTION=30d",
 		"POSTWERK_MAX_CONNECTIONS=7",
+		"POSTWERK_MAX_INFLIGHT_BYTES=2097152",
 		"POSTWERK_HOSTNAME=relay.example.test",
 		"POSTWERK_MAX_MESSAGE_BYTES=1048576",
 		"POSTWERK_MAX_RECIPIENTS=10",
@@ -156,7 +158,8 @@ func TestFullConfig(t *testing.T) {
 	if c.SMTPListen != "0.0.0.0:2526" || c.HTTPListen != ":9090" || c.DataPath != "/var/lib/pw.db" ||
 		c.Hostname != "relay.example.test" || c.MaxMessageBytes != 1<<20 || c.MaxRecipients != 10 ||
 		c.RetryWindow != 12*time.Hour || c.ShutdownTimeout != 40*time.Second || c.Instance != "prod-1" ||
-		c.TLSCertificate == nil || c.AllowInsecureAuth || c.MaxConnections != 7 {
+		c.TLSCertificate == nil || c.AllowInsecureAuth || c.MaxConnections != 7 ||
+		c.MaxInflightBytes != 2<<20 {
 		t.Fatalf("globals wrong: %+v", c)
 	}
 	if c.SecureDelete || c.RawKeepAfterHandoff != time.Hour || c.RawKeepAfterFailure != 0 ||
@@ -223,6 +226,8 @@ func TestErrors(t *testing.T) {
 		{"target window too long", []string{"POSTWERK_TARGET_MAILPIT_RETRY_WINDOW=8d"}, "POSTWERK_TARGET_MAILPIT_RETRY_WINDOW (192h0m0s) must be shorter"},
 		{"tls and insecure", []string{"POSTWERK_SMTP_TLS_CERT_FILE=/x", "POSTWERK_SMTP_TLS_KEY_FILE=/y"}, "is ambiguous"},
 		{"bad max connections", []string{"POSTWERK_MAX_CONNECTIONS=0"}, "POSTWERK_MAX_CONNECTIONS"},
+		{"bad inflight", []string{"POSTWERK_MAX_INFLIGHT_BYTES=1GB"}, "POSTWERK_MAX_INFLIGHT_BYTES: expected a whole number"},
+		{"inflight below size", []string{"POSTWERK_MAX_INFLIGHT_BYTES=1048576"}, "POSTWERK_MAX_INFLIGHT_BYTES must be at least POSTWERK_MAX_MESSAGE_BYTES"},
 		{"missing store key", []string{"POSTWERK_STORE_KEY_FILE="}, "POSTWERK_STORE_KEY_FILE: required"},
 		{"encryption off with key", []string{"POSTWERK_STORE_ENCRYPTION=off"}, "POSTWERK_STORE_ENCRYPTION=off together with POSTWERK_STORE_KEY_FILE is ambiguous"},
 		{"bad encryption", []string{"POSTWERK_STORE_ENCRYPTION=false"}, "POSTWERK_STORE_ENCRYPTION: expected on or off"},

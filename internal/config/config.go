@@ -39,7 +39,10 @@ const (
 	DefaultMaxMessageBytes = 15 << 20
 	DefaultMaxRecipients   = 50
 	DefaultMaxConnections  = 100
-	DefaultRetryWindow     = 24 * time.Hour
+	// DefaultMaxInflightBytes (recommended): memory for messages being
+	// received at once, 256 MiB (17 messages of the default 15 MiB).
+	DefaultMaxInflightBytes = 256 << 20
+	DefaultRetryWindow      = 24 * time.Hour
 	// DefaultShutdownTimeout is longer than one delivery attempt can take
 	// (delivery.DefaultAttemptTimeout, 90 s), so a send in progress always
 	// finishes. The orchestrator's grace period must be longer still, for
@@ -77,12 +80,13 @@ const maxDuration = 36500 * Day
 
 // Limits for numeric settings.
 const (
-	minMessageBytes = 1 << 10
-	maxMessageBytes = 1 << 30
-	maxRecipients   = 1000
-	maxTargets      = 16
-	maxSecretFile   = 1 << 20
-	maxConnections  = 10000
+	minMessageBytes  = 1 << 10
+	maxMessageBytes  = 1 << 30
+	maxRecipients    = 1000
+	maxTargets       = 16
+	maxSecretFile    = 1 << 20
+	maxConnections   = 10000
+	maxInflightBytes = 1 << 40
 )
 
 // Scheme is how Postwerk talks to a target.
@@ -162,6 +166,7 @@ type Config struct {
 	MaxMessageBytes   int64
 	MaxRecipients     int
 	MaxConnections    int
+	MaxInflightBytes  int64
 	RetryWindow       time.Duration
 	ShutdownTimeout   time.Duration
 	Instance          string
@@ -218,6 +223,7 @@ const (
 	envMaxMessageBytes   = "POSTWERK_MAX_MESSAGE_BYTES"
 	envMaxRecipients     = "POSTWERK_MAX_RECIPIENTS"
 	envMaxConnections    = "POSTWERK_MAX_CONNECTIONS"
+	envMaxInflightBytes  = "POSTWERK_MAX_INFLIGHT_BYTES"
 	envRetryWindow       = "POSTWERK_RETRY_WINDOW"
 	envShutdownTimeout   = "POSTWERK_SHUTDOWN_TIMEOUT"
 	envInstance          = "POSTWERK_INSTANCE"
@@ -242,7 +248,7 @@ var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_SENTRY_DSN", "POST
 
 var globalVars = []string{
 	envSMTPListen, envHTTPListen, envData, envSendersFile, envTLSCertFile, envTLSKeyFile,
-	envAllowInsecureAuth, envHostname, envMaxMessageBytes, envMaxRecipients, envMaxConnections, envRetryWindow,
+	envAllowInsecureAuth, envHostname, envMaxMessageBytes, envMaxRecipients, envMaxConnections, envMaxInflightBytes, envRetryWindow,
 	envShutdownTimeout, envInstance, envTargets,
 	envStoreKeyFile, envStoreEncryption, envHashKeyFile, envSecureDelete,
 	envRawKeepAfterHandoff, envRawKeepAfterFailure, envRawMaxAge, envPseudonymizeAfter,
@@ -308,6 +314,11 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	c.MaxMessageBytes = int64(l.integer(envMaxMessageBytes, DefaultMaxMessageBytes, minMessageBytes, maxMessageBytes))
 	c.MaxRecipients = l.integer(envMaxRecipients, DefaultMaxRecipients, 1, maxRecipients)
 	c.MaxConnections = l.integer(envMaxConnections, DefaultMaxConnections, 1, maxConnections)
+	c.MaxInflightBytes = int64(l.integer(envMaxInflightBytes, DefaultMaxInflightBytes, minMessageBytes, maxInflightBytes))
+	if c.MaxInflightBytes < c.MaxMessageBytes {
+		l.errorf("%s must be at least %s, or no message of the maximum size could be received",
+			envMaxInflightBytes, envMaxMessageBytes)
+	}
 	c.RetryWindow = l.duration(envRetryWindow, DefaultRetryWindow, false)
 	c.ShutdownTimeout = l.duration(envShutdownTimeout, DefaultShutdownTimeout, false)
 	c.AllowInsecureAuth = l.boolean(envAllowInsecureAuth)

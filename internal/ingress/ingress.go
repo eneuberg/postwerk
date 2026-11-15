@@ -70,6 +70,7 @@ var (
 	errBadParams    = &smtp.SMTPError{Code: 501, EnhancedCode: smtp.EnhancedCode{5, 5, 4}, Message: "Invalid parameters"}
 	errBadSequence  = &smtp.SMTPError{Code: 503, EnhancedCode: smtp.EnhancedCode{5, 5, 1}, Message: "Bad sequence of commands"}
 	errStorage      = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "Temporary local problem, try again later"}
+	errNoMemory     = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "Insufficient system resources, try again later"}
 	errReadFailed   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 2}, Message: "Error while reading the message"}
 	errLineTooLong  = &smtp.SMTPError{Code: 500, EnhancedCode: smtp.EnhancedCode{5, 5, 2}, Message: "Line too long"}
 )
@@ -93,6 +94,10 @@ type Options struct {
 	// MaxAuthChecks limits concurrent password checks (PBKDF2); 0 means
 	// runtime.GOMAXPROCS(0).
 	MaxAuthChecks int
+	// MaxInflightBytes is the memory budget for messages being received:
+	// each DATA reserves MaxMessageBytes (or the declared SIZE, if smaller)
+	// before it reads. 0 means no budget beyond MaxConnections.
+	MaxInflightBytes int64
 	// Wake is called after each accepted mail; it must not block.
 	Wake   func()
 	Logger *slog.Logger
@@ -109,6 +114,7 @@ type Server struct {
 	srv  *smtp.Server
 	// authSlots holds one token per password check in progress.
 	authSlots chan struct{}
+	budget    budget
 
 	mu    sync.Mutex
 	conns map[*trackedConn]struct{}
@@ -140,7 +146,8 @@ func New(opts Options) *Server {
 	if opts.authWait <= 0 {
 		opts.authWait = authWait
 	}
-	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), authSlots: make(chan struct{}, opts.MaxAuthChecks)}
+	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), authSlots: make(chan struct{}, opts.MaxAuthChecks),
+		budget: budget{max: opts.MaxInflightBytes}}
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Domain = opts.Hostname
 	srv.MaxMessageBytes = opts.MaxMessageBytes
@@ -480,7 +487,33 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	limit := s.srv.opts.MaxMessageBytes
-	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
+	// Reserve memory before reading. The SMTP library has already sent
+	// 354; returning now makes it read and discard the message without
+	// buffering it, and then send the 451.
+	reserved := limit
+	if params.DeclaredSize > 0 && params.DeclaredSize < limit {
+		reserved = params.DeclaredSize
+	}
+	if !s.srv.budget.take(reserved) {
+		s.srv.opts.Logger.Warn("message refused, memory budget for messages in flight exhausted",
+			"sender", sender, "budget", s.srv.budget.max)
+		return errNoMemory
+	}
+	defer func() { s.srv.budget.give(reserved) }()
+
+	raw, err := io.ReadAll(io.LimitReader(r, reserved+1))
+	if err == nil && int64(len(raw)) > reserved && reserved < limit {
+		// Larger than declared: grow the reservation to the full limit.
+		if !s.srv.budget.take(limit - reserved) {
+			s.srv.opts.Logger.Warn("message refused, larger than declared and memory budget exhausted",
+				"sender", sender, "budget", s.srv.budget.max)
+			return errNoMemory
+		}
+		reserved = limit
+		var rest []byte
+		rest, err = io.ReadAll(io.LimitReader(r, limit+1-int64(len(raw))))
+		raw = append(raw, rest...)
+	}
 	if err != nil {
 		if errors.Is(err, smtp.ErrDataTooLarge) {
 			return errTooBig
@@ -501,6 +534,36 @@ func (s *session) Data(r io.Reader) error {
 		return errStorage
 	}
 	return &smtp.SMTPError{Code: 250, EnhancedCode: smtp.EnhancedCode{2, 0, 0}, Message: "queued as " + mailID}
+}
+
+// budget counts the bytes reserved for messages being received.
+type budget struct {
+	mu   sync.Mutex
+	used int64
+	max  int64 // 0: unlimited
+}
+
+// take reserves n bytes and reports whether that fit.
+func (b *budget) take(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.max > 0 && b.used+n > b.max {
+		return false
+	}
+	b.used += n
+	return true
+}
+
+func (b *budget) give(n int64) {
+	b.mu.Lock()
+	b.used -= n
+	b.mu.Unlock()
+}
+
+func (b *budget) inUse() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.used
 }
 
 func (s *session) Reset() {

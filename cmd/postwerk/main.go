@@ -216,7 +216,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		Store: st, Sealer: sealer, Senders: cfg.Senders, Targets: cfg.Targets, Hostname: cfg.Hostname,
 		TLSCertificate: cfg.TLSCertificate, AllowInsecure: cfg.AllowInsecureAuth,
 		MaxMessageBytes: cfg.MaxMessageBytes, MaxRecipients: cfg.MaxRecipients,
-		MaxConnections: cfg.MaxConnections, Wake: mgr.Wake, Logger: logger,
+		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
 	})
 	httpSrv := httpapi.New(cfg.HTTPListen, func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
