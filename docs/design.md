@@ -1,7 +1,7 @@
 # Postwerk design
 
 Status: foundation built. SMTP ingress, the store, per-target delivery with the retry policy, the event log with the
-stdout output, retention, encryption at rest and a read-only internal UI exist and are tested. Parts marked *(planned)* are not built yet; their
+stdout output, retention, encryption at rest, a read-only internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
 details may change. The code layout is in [architecture.md](architecture.md), every setting in
 [configuration.md](configuration.md), and whether Postwerk fits a given setup in [scope.md](scope.md).
 
@@ -14,8 +14,8 @@ every step, so every mail can be audited and tracked from one place.
 - **In:** finished RFC 5322 messages over SMTP, from known senders (login required).
 - **Out:** the same messages, unchanged except for Postwerk's own headers, to a list of targets: a sending provider such
   as Mailjet, a capture tool such as Mailpit, or any other SMTP server.
-- **Beside:** an append-only event log, exported to observability tools, a small read-only UI, and *(planned)* a
-  query API.
+- **Beside:** an append-only event log, exported to observability tools, a small read-only UI and a read-only query
+  API.
 
 Postwerk does not read or change message content. It does not receive mail for mailboxes, sign messages, render
 templates, build links, check link expiry or decide what an alert is.
@@ -35,7 +35,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
 | UI | read-only HTML pages on the loopback admin listener: overview, mails, search, one mail | built | standard library, `html/template` |
-| Query API | read-only JSON API on the admin listener, admin-only resend and close | planned (its read layer `internal/query` is built) | standard library |
+| Query API | read-only JSON API on its own listener for other applications ([api.md](api.md)); admin-only resend and close later | built (read-only) | standard library |
 
 One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
 ([kubernetes.md](kubernetes.md)). [architecture.svg](architecture.svg) shows the full design, including the

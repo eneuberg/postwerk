@@ -9,9 +9,9 @@ Kubernetes.
 | Resource | What and why |
 |---|---|
 | Deployment | **One replica, strategy `Recreate`.** Postwerk keeps its queue in one SQLite file with one writer; two pods on the same file would corrupt it. `Recreate` stops the old pod before the new one starts. |
-| Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`. The UI port is never on the Service (section 7.1). |
+| Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`, port 8082 (query API) only with `api.enabled=true`. The UI port is never on the Service (section 7.1). |
 | PersistentVolumeClaim | The SQLite file at `/data`. Kept on `helm uninstall` (`helm.sh/resource-policy: keep`), so the queue and the records survive. |
-| NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, egress only DNS and the target ports 587 and 465 (section 7). |
+| NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, the query API only from the pods in `api.allowFrom`, egress only DNS and the target ports 587 and 465 (section 7). |
 | ServiceAccount | Without a token: Postwerk never talks to the Kubernetes API. |
 | Certificate (optional) | A cert-manager certificate for STARTTLS from an internal CA (section 6). |
 
@@ -104,6 +104,9 @@ shred -u senders store-key hash-key mailjet-credentials ui-tokens 2>/dev/null ||
   rm -f senders store-key hash-key mailjet-credentials ui-tokens
 ```
 
+Only with `api.enabled=true` (section 5.1): API tokens, one line per calling application, made with
+`gen-api-token <name> <read|admin>`, in a Secret `postwerk-api-tokens` with the key `tokens` (`secrets.apiTokens`).
+
 The secret names and keys above are the chart's defaults (`secrets.*`, `targets[].credentialsSecret`). Keep a copy of
 both key files in your password manager or secret store: a backup of the database is useless without them, and a lost
 store key makes every queued mail unreadable (it fails with `store.decrypt_failed`, it is never sent).
@@ -187,6 +190,11 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `ui.enabled` | `true` | The internal UI on `127.0.0.1:<ui.port>` in the pod (`POSTWERK_ADMIN_LISTEN`), with the tokens from `secrets.uiTokens`. `false` sets `POSTWERK_ADMIN_LISTEN=off`. |
 | `ui.port` | `8081` | Loopback port of the UI; not 2525 or 8080. It is never added to the Service. |
 | `ui.hosts` | `[]` | Extra host names the UI answers to (`POSTWERK_ADMIN_HOSTS`); not needed with port-forward. |
+| `api.enabled` | `false` | The query API ([api.md](api.md)) on `:<api.port>` in the pod and on the Service, with the tokens from `secrets.apiTokens`. |
+| `api.port` | `8082` | Port of the API; not 2525, 8080 or `ui.port`. |
+| `api.allowFrom` | `[]` | NetworkPolicy peers that may call the API. Empty: nobody. |
+| `api.hosts` | `[]` | Host names besides the Service names, which are always in `POSTWERK_API_HOSTS`. |
+| `api.tls.enabled`, `api.tls.secretName` | `true` (**recommended**), empty | TLS on the API; an empty secret name uses `tls.secretName`, whose names are the Service names. |
 | `extraEnv` | `[]` | More `POSTWERK_*` variables as `{name, value}`. |
 | `service.exposeHTTP` | `false` | Add port 8080 to the Service, for monitoring. |
 | `persistence.size`, `storageClassName`, `existingClaim` | `1Gi`, default class, empty | The data volume. |
@@ -233,6 +241,44 @@ and a host name that is in the certificate. An application in another namespace 
 
 A `250` from Postwerk means "stored", not "delivered" (design.md section 4). A `451` or `454` is temporary: well-behaved
 clients retry it.
+
+### 5.1 A client of the query API
+
+An application that shows what happened to a mail, such as a support tool, calls the query API ([api.md](api.md)).
+Turn it on, name the client in `api.allowFrom`, and give the client its bearer token in a Secret of its own:
+
+```yaml
+# values
+api:
+  enabled: true
+  allowFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: support
+      podSelector:
+        matchLabels:
+          app: support-tool
+```
+
+```sh
+docker run --rm "$IMG" gen-api-token support-tool read   # bearer value, then the tokens-file line
+kubectl -n mail create secret generic postwerk-api-tokens --from-file=tokens=api-tokens
+kubectl -n support create secret generic support-tool-postwerk --from-literal=token='support-tool.Xb3k…'
+```
+
+```yaml
+# in the client's Deployment
+env:
+  - name: POSTWERK_API_URL
+    value: https://postwerk.mail.svc.cluster.local:8082   # one of the certificate's DNS names
+  - name: POSTWERK_API_TOKEN
+    valueFrom:
+      secretKeyRef: {name: support-tool-postwerk, key: token}
+```
+
+The client sends `Authorization: Bearer $POSTWERK_API_TOKEN`, trusts the internal CA of section 6, and uses
+`POST /v1/search` and `GET /v1/mails/{id}`. Give it a `read` token unless it needs full addresses or the lists. The
+variable names above are the client's, not Postwerk's. Every call is an `api.request` event with the token name.
 
 ## 6. TLS inside the cluster
 
@@ -305,13 +351,14 @@ Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down wh
 ## 7. Network rules
 
 - **Never expose Postwerk outside the cluster.** No Ingress, no `LoadBalancer`, no `NodePort`, no `hostPort`, no
-  `hostNetwork`. The chart creates none of these; do not add them. The UI (and later the query API) is on the pod's
-  loopback and is opened with `kubectl port-forward` (section 7.1).
+  `hostNetwork`. The chart creates none of these; do not add them. The UI is on the pod's loopback and is opened with
+  `kubectl port-forward` (section 7.1). The query API, when on, is on the ClusterIP Service only.
 - **SMTP (2525)** only from the pods in `networkPolicy.smtpFrom`. Keep the list short: every pod on it can try to log
   in, and a sender that logs in can send mail in your name.
 - **HTTP (8080)** only from `networkPolicy.httpFrom`, for example a monitoring namespace. Probes need no entry: the
   kubelet on the pod's own node can always reach it (Kubernetes NetworkPolicy does not block traffic from a pod's
   node).
+- **Query API (8082)**, when on, only from the pods in `api.allowFrom`; an empty list lets nobody in.
 - **Egress** only DNS and the target ports 587 and 465. Provider addresses change without notice, so the default
   allows those ports to any address; narrow `targetCIDRs` if your provider publishes fixed ranges. A target inside the
   cluster (a capture tool) needs an `egress.extra` rule.

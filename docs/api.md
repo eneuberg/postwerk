@@ -1,0 +1,225 @@
+# Query API
+
+A small, read-only JSON API for other applications inside the cluster, such as a support tool: "what happened to the
+mail for this address, this id or this ref?". One can look up what happened to a given mail; nobody can read all mails
+through it with a `read` token. It never returns message content. Requirements: H2, H4–H9 in
+[requirements.md](requirements.md#http); reasons: decisions D32–D34 in [decisions.md](decisions.md).
+
+Resend and close are not built yet.
+
+## 1. Turning it on
+
+The API has its own listener, off by default:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `POSTWERK_API_LISTEN` | `off` | Address, for example `:8082`. Unlike the UI it may bind the pod address, because another pod calls it. |
+| `POSTWERK_API_TOKENS_FILE` | required while on | Bearer tokens, one `name:role:hash` line per calling application. |
+| `POSTWERK_API_HOSTS` | none (any `Host`) | If set, the only `Host` names the API answers to (any port); others get `403`. |
+| `POSTWERK_API_TLS_CERT_FILE`, `POSTWERK_API_TLS_KEY_FILE` | none | TLS on the API listener; the pair is reloaded when the files change. Without TLS on a non-loopback address, a warning is logged at every start. |
+
+Details: [configuration.md](configuration.md#query-api). In Kubernetes: `api.enabled=true` in the Helm chart
+([kubernetes.md](kubernetes.md#51-a-client-of-the-query-api)).
+
+**Tokens.** `postwerk gen-api-token <name> <read|admin>` prints two lines: the bearer value `<name>.<token>` for the
+calling application, and the line for `POSTWERK_API_TOKENS_FILE`. The file format and the hashing are the same as for
+the UI tokens. Use one token per calling application, so the `actor` of every event names it. The file is read once at
+start.
+
+```sh
+$ postwerk gen-api-token support-tool read
+support-tool.Xb3k…43 characters…
+support-tool:read:pbkdf2-sha256$600000$…
+```
+
+Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
+
+## 2. Roles
+
+| | `read` | `admin` |
+|---|---|---|
+| `POST /v1/search` | yes, at most 20 mails | yes, at most 100 mails |
+| `GET /v1/mails/{id}` | yes, addresses masked (`j•••@e•••.com`) | yes, addresses in full |
+| `GET /v1/mails` (list with filters) | no (`403`) | yes |
+| `GET /v1/overview` (per target) | no (`403`) | yes |
+
+A `read` token can only answer "what happened to this mail?": every search is an exact match on one id, ref,
+Message-ID or address, and there is no listing. After pseudonymization nobody sees an address (`"state":
+"pseudonymized"`), but a search by address still finds the mail through the keyed hash.
+
+## 3. Endpoints
+
+All paths start with `/v1/`. Responses are `application/json`; times are RFC 3339 in UTC; a time that is not set is
+left out. Statuses are the derived ones of the UI: `queued`, `sending`, `unknown`, `handed_off`, `failed`, `partial`,
+`skipped`.
+
+### Search: `POST /v1/search`
+
+The search term goes in the body, never in the URL, so it stays out of access logs.
+
+```http
+POST /v1/search HTTP/1.1
+Host: postwerk.mail.svc:8082
+Authorization: Bearer support-tool.Xb3k…
+Content-Type: application/json
+
+{"by": "address", "query": "jane@example.com"}
+```
+
+`by` is `id`, `ref` (`X-Postwerk-Ref`), `message_id` (with or without angle brackets), `address` (recipient or
+envelope sender) or `any` (the default; the address only if the query contains `@`). The query is at most 998 bytes.
+
+```json
+{
+  "mails": [
+    {
+      "id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X",
+      "received_at": "2026-11-15T11:00:00Z",
+      "sender": "shop",
+      "size": 2345,
+      "recipients": 2,
+      "status": "partial",
+      "targets": [{"target": "mailjet", "status": "partial"}]
+    }
+  ],
+  "limit": 20,
+  "truncated": false
+}
+```
+
+`truncated` is `true` when more mails matched than `limit`. A search result holds no address.
+
+### One mail: `GET /v1/mails/{id}`
+
+The id is not personal data, so it may be in the URL. Example for a `read` token:
+
+```json
+{
+  "id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X",
+  "received_at": "2026-11-15T11:00:00Z",
+  "sender": "shop",
+  "size": 2345,
+  "ref": "order-4711",
+  "message_id": "<4711@shop.example.com>",
+  "envelope_from": {"state": "masked", "address": "n•••@e•••.com"},
+  "params": {"smtputf8": false},
+  "stored": false,
+  "raw_purged_at": "2026-11-15T11:00:02Z",
+  "status": "partial",
+  "recipients": [
+    {"position": 0, "state": "masked", "address": "j•••@e•••.com"},
+    {"position": 1, "state": "masked", "address": "m•••@e•••.org"}
+  ],
+  "deliveries": [
+    {
+      "target": "mailjet",
+      "status": "partial",
+      "attempts": 1,
+      "last_code": 250,
+      "last_text": "2.0.0 OK",
+      "recipients": [
+        {"position": 0, "status": "handed_off", "last_code": 250, "last_text": "2.0.0 OK"},
+        {"position": 1, "status": "failed", "last_code": 550, "last_text": "5.1.1 <redacted>: mailbox unavailable"}
+      ]
+    }
+  ],
+  "events": [
+    {"seq": 1, "time": "2026-11-15T11:00:00Z", "kind": "mail.accepted", "level": "info"},
+    {"seq": 2, "time": "2026-11-15T11:00:01Z", "kind": "delivery.attempt", "level": "info", "target": "mailjet", "attempt": 1},
+    {"seq": 3, "time": "2026-11-15T11:00:02Z", "kind": "delivery.handed_off", "level": "info", "target": "mailjet", "recipient": 0, "attempt": 1, "code": 250, "text": "2.0.0 OK"},
+    {"seq": 4, "time": "2026-11-15T11:00:02Z", "kind": "delivery.failed", "level": "error", "target": "mailjet", "recipient": 1, "attempt": 1, "code": 550, "text": "5.1.1 <redacted>: mailbox unavailable"}
+  ],
+  "events_truncated": false
+}
+```
+
+An address `state` is `full` (admin), `masked` (read), `pseudonymized` (no address) or `null_sender` (`MAIL FROM:<>`).
+Recipients are numbered by their position in the envelope, from 0, as in the events. SMTP texts are stored redacted.
+At most 500 events are returned. An unknown id gets `404`.
+
+### List: `GET /v1/mails` (admin)
+
+Filters as URL parameters, each at most once: `state`, `target`, `from` and `to` (days, `YYYY-MM-DD`, UTC), `page`
+(from 1, 50 mails per page, newest first). Filters never hold an address.
+
+```json
+{"page": 1, "has_next": false, "mails": [{"id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X", "…": "as in search"}]}
+```
+
+### Overview: `GET /v1/overview` (admin)
+
+Per target: recipients of mails received in the last 24 hours by status, mails queued now, the oldest queued; and the
+ten most recent `failed`, `unknown` or `partial` mails.
+
+```json
+{
+  "now": "2026-11-15T12:00:00Z",
+  "since": "2026-11-14T12:00:00Z",
+  "targets": [
+    {
+      "target": "mailjet",
+      "configured": true,
+      "recent": {"failed": 1, "handed_off": 1, "queued": 0, "sending": 0, "skipped": 0, "unknown": 0},
+      "recent_total": 2,
+      "queued": 1,
+      "oldest_queued_at": "2026-11-15T11:58:00Z",
+      "oldest_queued_age_seconds": 120
+    }
+  ],
+  "problems": [{"id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X", "…": "as in search"}]
+}
+```
+
+### Errors
+
+Every error is `{"error": "<code>", "message": "<text>"}`:
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `bad_request` | invalid JSON, unknown field, more than one value, invalid `by` or filter, empty query, URL parameters on a `POST`, a body on a `GET` |
+| 401 | `unauthorized` | missing, malformed or wrong token; with `WWW-Authenticate: Bearer realm="postwerk"` |
+| 403 | `forbidden` | the role may not use the endpoint |
+| 403 | `host_not_allowed`, `browser_refused` | `Host` not in `POSTWERK_API_HOSTS`; a request with `Origin` or `Sec-Fetch-*` headers |
+| 404 | `not_found` | no such endpoint or mail |
+| 405 | `method_not_allowed` | wrong method (with `Allow`) |
+| 413 | `too_large` | body over 4 KiB |
+| 415 | `unsupported_media_type` | a `POST` without `Content-Type: application/json` (UTF-8) |
+| 429 | `rate_limited` | over a rate limit; with `Retry-After` in seconds |
+| 503 | `unavailable` | the request could not be written to the event log, or too many token checks at once; with `Retry-After` |
+
+## 4. Protection
+
+- **Tokens.** Every check of an unknown or wrong token costs one PBKDF2 check with the strongest iteration count in
+  the file, for unknown names too; at most one check per CPU runs at once, and a request that waits more than 5 s for
+  a slot gets `503`. A token that passed once is remembered as an HMAC in memory, so a client that calls often costs
+  one HMAC per request.
+- **Rate limits** (fixed): 60 requests per minute per token name, and 600 per minute for all callers together,
+  counted before the token check, so a flood of wrong tokens is bounded too. Over a limit: `429` with `Retry-After`.
+- **No browsers.** No CORS headers, so a browser cannot call the API from a page; `OPTIONS` gets `405`; requests with
+  `Origin` or `Sec-Fetch-*` headers get `403`.
+- **Strict requests.** JSON only, at most 4 KiB, unknown fields refused. Server timeouts: 5 s for the headers, 10 s to
+  read, 20 s to write, 60 s idle; headers at most 8 KiB.
+- **Headers on every response:** `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri
+  'none'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`.
+- **Network.** Postwerk is never reachable from outside the cluster. In Kubernetes the NetworkPolicy lets in only the
+  pods in `api.allowFrom`; with an empty list nobody gets in. TLS is on in the chart by default.
+
+**Never returned:** message content, subject, headers other than `Message-ID`, anything from the stored message.
+
+## 5. Audit
+
+| Kind | Level | Carries |
+|---|---|---|
+| `api.request` | info | `actor`: the token name; `text`: endpoint, search kind, HTTP status and number of mails, for example `search by=address status=200 results=1` |
+| `api.forbidden` | warn | `actor`: the token name; `text`: the endpoint |
+| `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file; no text |
+
+Never the search term, a mail id, a ref or an address. A request is answered only after its `api.request` event is
+written; if that fails, the client gets `503` and no data. Requests over a rate limit write no event.
+
+## 6. Code
+
+`internal/api` holds the handler, the checks and the JSON shapes, on top of `internal/query` (the same read logic and
+masking as the UI). `postwerk gen-api-token` is in `cmd/postwerk`; the listener and its TLS (`internal/tlsreload`) are
+set up there too.

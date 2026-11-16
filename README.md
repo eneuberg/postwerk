@@ -48,7 +48,7 @@ and being able to say what happened to each one.
 |---|---|---|---|
 | Built for | outgoing application mail only | full mail server (inbound, IMAP, DKIM) | full mail transfer agent |
 | Provider rejects the login (`535`) | mail stays queued, error raised at once | mail fails, not retried (our reading of the v0.9.7 source) | deferred and retried |
-| What happened to one mail? | event per mail, target and recipient; internal UI, query API planned | search the logs | search the logs, `postqueue` |
+| What happened to one mail? | event per mail, target and recipient; internal UI and query API | search the logs | search the logs, `postqueue` |
 | Copy to Mailjet and Mailpit at once | each target tracked on its own | several `deliver_to` | extra BCC recipient, not tracked |
 | Mail content on disk | encrypted, removed once handed off | plain in the queue | plain in the queue |
 | Setup | env variables, non-root, one SQLite file | own config language | `main.cf`/`master.cf`, master runs as root |
@@ -63,6 +63,7 @@ options: [docs/scope.md](docs/scope.md).
 - [Kubernetes](docs/kubernetes.md): Helm chart, secrets, network rules, TLS inside the cluster, wiring an app
 - [FAQ](docs/faq.md): short answers to common questions
 - [Internal UI](docs/ui.md): status, mail history and search, on a loopback listener reached by tunnel
+- [Query API](docs/api.md): read-only JSON lookups for other applications, bearer tokens, roles, examples
 - [Configuration](docs/configuration.md): every environment variable, secret files and key files
 - [Design](docs/design.md): components, targets, mail lifecycle, retry policy, event model
 - [Code architecture](docs/architecture.md): packages, data flow, store schema, delivery worker

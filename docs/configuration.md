@@ -18,6 +18,7 @@ Durations use Go syntax (`90s`, `30m`, `72h`) or days with `d` (`7d`), also comb
 | `POSTWERK_SMTP_LISTEN` | `:2525` | `host:port` or `:port` | Address of the SMTP server (ingress). |
 | `POSTWERK_HTTP_LISTEN` | `127.0.0.1:8080` | `host:port` or `:port` | Address of the HTTP listener with `/healthz` and `/readyz`. |
 | `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` (**recommended**) | a loopback `host:port`, or `off` (or empty) | The admin listener with the internal UI (section "Admin listener and UI"). |
+| `POSTWERK_API_LISTEN` | `off` | `host:port`, `:port`, or `off` (or empty) | The JSON query API for other applications (section "Query API"). |
 | `POSTWERK_HOSTNAME` | `postwerk` | a host name | Name in the SMTP greeting and in `EHLO` towards targets. |
 | `POSTWERK_SMTP_TLS_CERT_FILE` | none | path to a PEM file | Certificate for STARTTLS on ingress. Set together with the key file. |
 | `POSTWERK_SMTP_TLS_KEY_FILE` | none | path to a PEM file | Private key for STARTTLS. Secret file. |
@@ -38,8 +39,8 @@ Security notes:
 - **Health probes in containers.** The default HTTP address is the loopback interface, which is right for a process on
   a host. In a container, probes come from outside the loopback (the kubelet, Docker's health check from the
   host network), so containers set `POSTWERK_HTTP_LISTEN=:8080`, as [examples/compose.yaml](../examples/compose.yaml)
-  does. Never publish this port to the internet. The UI and the later query API are not on it: they have their own
-  admin listener on the loopback interface.
+  does. Never publish this port to the internet. The UI and the query API are not on it: the UI has its own admin
+  listener on the loopback interface, the API its own listener.
 - **Kubernetes.** The Helm chart in `deploy/helm/postwerk` sets all of this (one replica, `Recreate`, ClusterIP only,
   secrets as files, NetworkPolicy); see [kubernetes.md](kubernetes.md). Pods need `enableServiceLinks: false`:
   service links add variables such as `POSTWERK_PORT` for a Service named `postwerk`, and unknown `POSTWERK_*`
@@ -74,6 +75,28 @@ is `off` is a configuration error (ambiguous).
 Fixed, not configurable: sessions end after 30 minutes without a request and 8 hours after the login; at most one
 token check per CPU at once (a login waits up to 5 s, then gets "try again"); at most 30 searches per minute per token
 name.
+
+## Query API
+
+The read-only JSON API ([api.md](api.md)) for another application, such as a support tool, on its own listener. Off by
+default. Unlike the admin listener it may bind a pod address, because another pod calls it.
+
+| Variable | Default | Allowed | What it does |
+|---|---|---|---|
+| `POSTWERK_API_LISTEN` | `off` | `host:port` or `:port`; `off` or empty turns it off | Address of the API listener. Must differ from the health, SMTP and admin listeners. |
+| `POSTWERK_API_TOKENS_FILE` | required while the API is on | path | Bearer tokens, one line per calling application, in the format of `POSTWERK_UI_TOKENS_FILE`: `name:role:pbkdf2-sha256$…`, role `read` (lookups only, addresses masked) or `admin` (also lists and the overview, addresses in full). Secret file. |
+| `POSTWERK_API_HOSTS` | none (any `Host`) | comma-separated host names or IP addresses, no port | If set, the only `Host` names the API answers to (any port); every other `Host` gets `403`. The Helm chart sets the Service names. |
+| `POSTWERK_API_TLS_CERT_FILE` | none | path to a PEM file | Certificate for TLS on the API. Set together with the key file. Re-read every minute; a renewed pair is served without a restart. |
+| `POSTWERK_API_TLS_KEY_FILE` | none | path to a PEM file | Private key for TLS on the API. Secret file. |
+
+Create a token with `postwerk gen-api-token <name> <read|admin>`: the first line is the bearer value `<name>.<token>`
+for the calling application, the second line goes into the tokens file. Any of the other variables set while the API
+is `off` is a configuration error (ambiguous). Without TLS on an address that is not loopback, a warning is logged at
+every start: bearer tokens and addresses would cross the pod network in cleartext.
+
+Fixed, not configurable: 60 requests per minute per token name and 600 for all callers together (then `429` with
+`Retry-After`); at most one token check per CPU at once (a request waits up to 5 s, then gets `503`); bodies at most
+4 KiB; a `read` search returns at most 20 mails.
 
 ## Store and keys
 
@@ -247,6 +270,7 @@ non-empty value stops the start.
 | `postwerk hash-password` | Read one password from stdin, print the value for the senders file. |
 | `postwerk gen-key` | Print a new key line for a store or hash key file. |
 | `postwerk gen-token <name> <read\|admin>` | Print a new UI token and its line for `POSTWERK_UI_TOKENS_FILE`. |
+| `postwerk gen-api-token <name> <read\|admin>` | Print a new API bearer value (`<name>.<token>`) and its line for `POSTWERK_API_TOKENS_FILE`. |
 | `postwerk version` | Print the version. |
 
 ## Production checklist
@@ -266,6 +290,8 @@ non-empty value stops the start.
 - [ ] **Admin listener** on loopback (`127.0.0.1:8081`, the default) and opened only through `kubectl port-forward` or
       an SSH tunnel; no Service port, Ingress or public address. A tokens file with one named token per person,
       `admin` only for those who need full addresses. Or `POSTWERK_ADMIN_LISTEN=off`.
+- [ ] **Query API** off (the default), or on with TLS, one token per calling application, `read` unless full
+      addresses or the lists are needed, and in Kubernetes `api.allowFrom` naming only those applications.
 - [ ] **In Kubernetes:** the chart's NetworkPolicy on, SMTP only from the sending pods, no Ingress, `LoadBalancer` or
       `NodePort`, a CNI that enforces NetworkPolicy ([kubernetes.md](kubernetes.md)).
 - [ ] **Retention** at the recommended values, or changes written down with their reason; backups no longer than

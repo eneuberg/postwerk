@@ -115,8 +115,14 @@ its default is listed in [configuration.md](configuration.md).
 | ID | Requirement | Phase |
 |---|---|---|
 | H1 | Separate HTTP listener, default `127.0.0.1:8080`. `/healthz` (alive) and `/readyz` (store reachable, workers running). | F |
-| H2 | Read-only query API with bearer tokens (`read`, `admin`), token use logged; resend and close for admins. On the admin listener (U1), on top of the query layer (U15). | L |
+| H2 | Read-only JSON query API with bearer tokens (`read`, `admin`), every use logged, on its own listener (H4), on top of the query layer (U15): H4–H9 below, [api.md](api.md). Resend and close for admins come later. | F |
 | H3 | Small read-only UI, server-rendered, no content: U1–U16 below, [ui.md](ui.md). | F |
+| H4 | The API has its own listener `POSTWERK_API_LISTEN`, default `off`; it may bind a pod address and must differ from the health, SMTP and admin listeners. Optional TLS (`POSTWERK_API_TLS_CERT_FILE`, `POSTWERK_API_TLS_KEY_FILE`), re-read while running; without TLS on a non-loopback address, a warning at every start. | F |
+| H5 | Tokens from `POSTWERK_API_TOKENS_FILE` in the format of U4, sent as `Authorization: Bearer <name>.<token>`; `postwerk gen-api-token <name> <role>` prints both. Checks as U5: the strongest hash for every name, at most `GOMAXPROCS` at once, 5 s wait for a slot, then `503`. A token that passed once costs one HMAC. | F |
+| H6 | `read`: `POST /v1/search` (id, `X-Postwerk-Ref`, `Message-ID`, address through K3; at most 20 mails) and `GET /v1/mails/{id}`, addresses masked (U12); no list, no overview (`403`). `admin`: also `GET /v1/mails` (filters, pages) and `GET /v1/overview`, addresses in full, searches up to 100 mails. Never content, subject or headers other than `Message-ID`. | F |
+| H7 | Every authenticated request is an `api.request` event (`actor` the token name; endpoint, search kind, status and count as text); `api.forbidden` for a role refusal, `api.auth_failed` for a bad token (`actor` only if the name is known). Never the search term, an id, a ref or an address. A request is answered only once its event is written, otherwise `503`. | F |
+| H8 | At most 60 requests per minute per token name and 600 for all callers together, counted before the token check; more get `429` with `Retry-After`. | F |
+| H9 | JSON only: a `POST` needs `Content-Type: application/json` (UTF-8, else `415`), bodies at most 4 KiB (`413`), unknown fields refused, search terms only in the body. No CORS; requests with `Origin` or `Sec-Fetch-*` get `403`. Security headers and server timeouts on every response; optional `Host` allow-list `POSTWERK_API_HOSTS`. | F |
 
 ## UI and admin listener
 
@@ -124,7 +130,7 @@ Details and reasons: [ui.md](ui.md), decision D29.
 
 | ID | Requirement | Phase |
 |---|---|---|
-| U1 | A separate admin listener `POSTWERK_ADMIN_LISTEN` (default `127.0.0.1:8081`) serves the UI and later the query API; it is never the health listener. `off` or empty turns it off. | F |
+| U1 | A separate admin listener `POSTWERK_ADMIN_LISTEN` (default `127.0.0.1:8081`) serves the UI; it is never the health listener (the query API has its own, H4). `off` or empty turns it off. | F |
 | U2 | The admin listener must be a loopback address (`127.0.0.0/8`, `::1`, `localhost`). Another address is a configuration error unless `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true` (for Docker port publishing); then a warning is logged at every start. | F |
 | U3 | No Service port, Ingress or NetworkPolicy rule for the admin listener; people reach it with `kubectl port-forward` or an SSH tunnel. | F |
 | U4 | `POSTWERK_UI_TOKENS_FILE` is required while the admin listener is on: `name:role:<PBKDF2 hash>` per line, role `read` or `admin`. `postwerk gen-token <name> <role>` prints a random 32-byte base64url token and its line. | F |
@@ -151,6 +157,6 @@ Details and reasons: [ui.md](ui.md), decision D29.
 | O4 | Direct dependencies kept to the SMTP library, its SASL package and the SQLite driver for the foundation. Every new dependency needs a reason in decisions.md. | F |
 | O5 | CI: format check, vet, tests with the race detector, vulnerability scan, container build, Helm chart lint, render and schema check. | F |
 | O6 | Helm chart `deploy/helm/postwerk`: one replica with `Recreate`, ClusterIP Service only (no Ingress, `LoadBalancer` or `NodePort`), PVC, existing Secrets mounted as files (`0440`, `fsGroup` 65532), non-root uid/gid 65532, read-only root file system, all capabilities dropped, seccomp `RuntimeDefault`, no service account token, no service links, probes on `/healthz` and `/readyz`, grace period 120 s, resource requests and limits, every retention setting as a value with its recommended default. Guide: [kubernetes.md](kubernetes.md). | F |
-| O7 | NetworkPolicy on by default: SMTP only from configured peers, HTTP only from configured sources (probes come from the node), egress only DNS and the target ports 587/465 (any address by default, configurable CIDRs). Optional cert-manager `Certificate` for STARTTLS. The UI listens on the pod's loopback with its tokens from an existing Secret, and has no Service port or policy rule (U3). | F |
+| O7 | NetworkPolicy on by default: SMTP only from configured peers, HTTP only from configured sources (probes come from the node), egress only DNS and the target ports 587/465 (any address by default, configurable CIDRs). Optional cert-manager `Certificate` for STARTTLS. The UI listens on the pod's loopback with its tokens from an existing Secret, and has no Service port or policy rule (U3). The query API is off by default; with `api.enabled` it gets a Service port, TLS by default and an ingress rule only from `api.allowFrom` (empty: nobody). | F |
 | O8 | Release: a tag `v<semver>` builds `ghcr.io/eneuberg/postwerk:<semver>` for `linux/amd64` and `linux/arm64` (cross-compiled, no emulation), with an SBOM and BuildKit provenance, signs the index digest keyless with cosign (GitHub OIDC) and verifies the signature. No `latest` tag. The tag must match the chart's `appVersion`. Actions pinned by commit, job permissions `contents: read`, `packages: write`, `id-token: write` only. | F |
 | O9 | The Helm chart defaults to `ghcr.io/eneuberg/postwerk` with the chart's `appVersion` as tag; `image.repository`, `image.tag` and `image.digest` override it. Signature check documented with the exact identity and issuer. | F |

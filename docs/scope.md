@@ -4,8 +4,8 @@ What Postwerk should do, what it should not do, how it differs from other ways t
 setup. It starts from the ideal and compares it with the current [design](design.md) at the end.
 
 Status: early development. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
-event log on stdout, retention and encryption at rest); the query API, the UI, provider status and the external sinks
-are planned. Nothing here is measured production behavior yet.
+event log on stdout, retention and encryption at rest, the internal UI and the read-only query API); provider status
+and the external sinks are planned. Nothing here is measured production behavior yet.
 
 ## 1. The ideal in one paragraph
 
@@ -112,7 +112,7 @@ What it costs:
 | DKIM signing | no (provider does it) | via milter (e.g. OpenDKIM) | built in |
 | Upstream login rejected (`535`) | queue held, retried, error event at once | deferred and retried by default (`smtp_sasl_auth_soft_bounce = yes`) | in our reading of the v0.9.7 source, treated as a permanent failure (not retried) on the SMTP downstream |
 | Several destinations per mail | list of targets, each with its own status | extra recipients via `always_bcc` or `recipient_bcc_maps`; not tracked as separate deliveries for audit | several `deliver_to` targets possible per the docs |
-| Per-mail status lookup | internal UI by id, sender reference, `Message-ID` or address, plus the event log; JSON API planned | log files and `postqueue` | logs |
+| Per-mail status lookup | internal UI and a JSON query API by id, sender reference, `Message-ID` or address, plus the event log | log files and `postqueue` | logs |
 | Provider status after hand-off | planned, polled (Mailjet first) | no | no |
 | Error reports to monitoring | events as JSON on stdout today; OpenTelemetry, Sentry protocol, webhook planned | via log shipping | via log shipping |
 | Maturity | early development, foundation built, not production-ready | decades of production use | younger project |

@@ -22,8 +22,9 @@ internal/delivery     one worker per target: claim, open the seal, send, classif
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop and sinks (A2, A3)
 internal/httpapi      health endpoints on the health listener (H1)
-internal/query        read logic for the UI and the later JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
+internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
 internal/ui           the internal web UI on the admin listener: login, sessions, CSRF, Host check, pages (H3, U1–U16)
+internal/api          the read-only JSON query API on its own listener: bearer tokens, limits, events, JSON (H2, H4–H9)
 internal/testutil     helpers for tests only (self-signed certificates, polling, buffers); never imported by code
 ```
 
@@ -32,7 +33,7 @@ written. The store holds no keys: messages reach it already sealed, and the rete
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
 packages (`config` for the `Target` type, `auth`, `id`, `message`, `redact`, `seal`), never on each other. `seal` and
 `addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `ui` depends on `query`,
-`auth` and the store's event type, never on `ingress` or `delivery`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
+`auth` and the store's event type, never on `ingress` or `delivery`; so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
 makes the data flow visible: everything meets in the store.
 
 ## Data flow
@@ -51,6 +52,8 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
                                                                                         │
   person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
                                                          └── tx: ui.login / ui.search events ▶┘
+  other pod ──▶ API listener (POSTWERK_API_LISTEN) ── api ── query ── reads ───────────▶│
+                                                       └── tx: api.request / api.auth_failed ▶┘
 ```
 
 Ingress wakes the workers through a non-blocking signal after each commit; workers also poll on a timer, so a missed
@@ -137,6 +140,9 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `ui.login` | info | someone logged in to the UI; `actor` is the token name, text the role |
 | `ui.login_failed` | warn | a failed UI login; `actor` only if the name is in the tokens file |
 | `ui.search` | info | a UI search; `actor` is the token name, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
+| `api.request` | info | a query API request; `actor` is the token name, text the endpoint, search kind, HTTP status and number of mails (`search by=address status=200 results=1`), never the query |
+| `api.forbidden` | warn | an API token asked for an endpoint its role may not use; text the endpoint |
+| `api.auth_failed` | warn | a missing, malformed or wrong API token; `actor` only if the name is in the tokens file |
 
 The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.
 
@@ -264,7 +270,7 @@ All steps look at the recipient statuses: the message stays while any recipient 
 
 Lookups by address (`store.MailIDsByAddress`) take the normalized query and its hashes under every key
 (`addrhash.Hasher.Lookup`), so they find plain and pseudonymized rows alike. The UI's search uses it through
-`internal/query`; the query API (H2) and erasure requests will too.
+`internal/query`, for the UI and the query API (H2); erasure requests will too.
 
 ## Query layer and UI
 
@@ -313,5 +319,10 @@ after its event is written, so nothing happens in the UI that the audit log miss
   (the canary is never in logs, events or the exported stream, never echoed into a page, and visible only to `admin`
   before pseudonymization). `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo` serves made-up data for
   design work and screenshots.
+- API tests drive the handler with `httptest`: role separation (a `read` token cannot list and sees masked
+  addresses, `admin` sees them in full), the search bound for `read`, auth failures and their events, the token cache,
+  both rate limits, method, content type, body size and browser checks, the Host allow-list, security headers, and a
+  leak test (no content, subject or other header in any response; the query never in an event, log or the exported
+  stream). `cmd/postwerk` runs the whole program with the API over TLS.
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.

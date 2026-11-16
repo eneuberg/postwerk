@@ -316,3 +316,53 @@ Operators need an image they can pull and check, without building it themselves.
   match it, so chart and image cannot drift.
 - **Publishing stays a manual step.** A release starts only when the maintainer pushes a tag.
 
+## D32 The query API on its own listener, reachable from the cluster network
+
+H2 first said "on the admin listener". The admin listener is loopback only (D29): people reach it through a tunnel,
+and nothing in the cluster can. The API's callers are other pods, such as a support tool, so it needs an address
+those pods can reach. Moving the admin listener to the pod address would put the UI on the cluster network as well.
+
+- **A separate listener, `POSTWERK_API_LISTEN`, off by default.** It may bind the pod address. Only the API is on it,
+  and only operators who need it turn it on; the UI stays loopback only.
+- **Who may connect is the NetworkPolicy's job.** In the chart the API gets a Service port only when enabled, and an
+  ingress rule only from the pods in `api.allowFrom`; an empty list lets nobody in. As for SMTP, Postwerk itself has no
+  per-IP rules (D26).
+- **TLS, on by default in the chart.** Bearer tokens and full addresses would otherwise cross the pod network in
+  cleartext. The API has its own certificate variables, so it does not depend on STARTTLS being on; the chart uses
+  the SMTP certificate by default, whose names are already the Service names. The pair is reloaded like the SMTP one.
+  Outside the chart, a non-loopback API without TLS logs a warning at every start.
+- **No browsers.** The callers are services. No CORS headers, so no web page can call it; requests that carry
+  `Origin` or `Sec-Fetch-*` headers are refused. That also removes the reason for the UI's DNS-rebinding defence;
+  the `Host` allow-list is optional, and the chart fills it with the Service names.
+
+## D33 Bearer tokens `<name>.<token>`, from a file of their own
+
+- **Same format and checks as the UI tokens.** One `name:role:hash` line per calling application, PBKDF2 at the
+  strongest iteration count for every name, at most one check per CPU. One scheme to review.
+- **The name travels with the token.** With the name, a wrong token costs one PBKDF2 check; with the token alone it
+  would have to be checked against every line. The token is base64url and has no dot, so the last dot separates the
+  two (names may contain dots). `postwerk gen-api-token` prints the whole value.
+- **A cache for tokens that passed.** A client calls on every lookup, and PBKDF2 for each would burn CPU. A token
+  that passed once is kept as an HMAC under a random in-memory key; only the right token takes that path, a wrong one
+  always pays the full check.
+- **A file of its own, `POSTWERK_API_TOKENS_FILE`.** People and applications get different credentials, and a
+  token for a service never works for the UI or the other way round. The UI's own login can change without
+  touching the API.
+
+## D34 Lookups for `read`, lists only for `admin`, and every request in the event log
+
+The purpose is "what happened to the mail for this address, id or ref", not a copy of the mail history.
+
+- **`read` can only look up.** Search by exact id, ref, Message-ID or address (no prefixes, no wildcards), at most 20
+  mails per search, and one mail's detail, with addresses masked as in the UI. There is no listing and no overview,
+  so a read token cannot page through all mails; the rate limit bounds guessing. `admin` gets lists, the overview and
+  full addresses, for an operator's own tooling.
+- **Search terms only in a `POST` body**, as in the UI, so they stay out of URLs and access logs. A mail id may be in
+  the URL: it is random and not personal data. List filters never hold an address.
+- **Every request is an event, answered only after the event is written.** `api.request` names the token, the
+  endpoint, the search kind, the status and the number of mails, never the term; that is enough to see who looked
+  up how much, without the log itself becoming a list of addresses. A failed token and a role refusal are `warn`
+  events. Requests over a rate limit write no event, so a flood cannot fill the log; the global limit counts requests
+  before the token check, so a flood of wrong tokens is bounded too.
+- **Limits are fixed for now**: 60 requests per minute per token and 600 in all. They can become settings once real
+  use shows the need.

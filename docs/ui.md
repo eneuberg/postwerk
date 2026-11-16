@@ -13,7 +13,7 @@ The UI runs on its own listener, the **admin listener**, separate from SMTP and 
 |---|---|---|---|---|
 | SMTP | `POSTWERK_SMTP_LISTEN` | `:2525` | `:2525` | sending applications |
 | Health | `POSTWERK_HTTP_LISTEN` | `127.0.0.1:8080` | `:8080` (probes come from outside the pod's loopback) | the kubelet, monitoring |
-| Admin (UI, later the query API) | `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` | `127.0.0.1:8081` in Kubernetes; see Docker below | people, through a tunnel |
+| Admin (UI) | `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` | `127.0.0.1:8081` in Kubernetes; see Docker below | people, through a tunnel |
 
 The admin listener binds to the loopback interface, also inside a container. Nothing in front of Postwerk forwards to
 it: no Service port, no Ingress, no NetworkPolicy rule. Probes never touch it, so the health port can stay open to
@@ -141,7 +141,7 @@ The UI is read-only for now. Resend and close (D13) will come as `POST` forms fo
 | Package | Holds |
 |---|---|
 | `internal/store` | the SQL for every read (lists, counts, events of a mail); still the only package that speaks SQL |
-| `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking by role; the later JSON API (H2) uses the same functions |
+| `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking by role; the JSON API (H2, [api.md](api.md)) uses the same functions |
 | `internal/ui` | HTTP handlers, sessions, login, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
 | `internal/auth` | token file parsing on top of the sender password hashes |
 
@@ -150,5 +150,5 @@ logged in as `admin` on that port and as `read` on the next one.
 
 ## 7. Not built yet
 
-Resend and close (admin), the JSON API (H2) on the same listener with the same tokens, TLS on the admin listener
+Resend and close (admin), TLS on the admin listener
 itself, and sessions that survive a restart.
