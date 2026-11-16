@@ -6,6 +6,7 @@
 //	postwerk hash-password  read a password from stdin, print a senders-file hash
 //	postwerk gen-key        print a new key line for a store or hash key file
 //	postwerk gen-token NAME ROLE  print a new UI token and its tokens-file line
+//	postwerk gen-api-token NAME ROLE  print a new API bearer token and its tokens-file line
 //	postwerk version        print the version
 package main
 
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/addrhash"
+	"github.com/eneuberg/postwerk/internal/api"
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/config"
 	"github.com/eneuberg/postwerk/internal/delivery"
@@ -58,6 +60,9 @@ commands:
   gen-token NAME ROLE
                  print a new random UI token (first line, give it to the person) and its line
                  for POSTWERK_UI_TOKENS_FILE (second line); ROLE is read or admin
+  gen-api-token NAME ROLE
+                 print a new random API bearer token (first line, for the calling application)
+                 and its line for POSTWERK_API_TOKENS_FILE (second line); ROLE is read or admin
   version        print the version
 `
 
@@ -71,7 +76,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		cmd, args = args[0], args[1:]
 	}
 	if cmd == "gen-token" {
-		return genToken(args, stdout, stderr)
+		return genToken(args, stdout, stderr, false)
+	}
+	if cmd == "gen-api-token" {
+		return genToken(args, stdout, stderr, true)
 	}
 	if len(args) > 0 {
 		fmt.Fprint(stderr, usage)
@@ -109,7 +117,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // genToken prints a new UI token and the matching tokens-file line (U4).
-func genToken(args []string, stdout, stderr io.Writer) int {
+// For the API (H5) the first line is the whole bearer value, <name>.<token>.
+func genToken(args []string, stdout, stderr io.Writer, forAPI bool) int {
 	if len(args) != 2 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -119,6 +128,9 @@ func genToken(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "postwerk:", err)
 		return 2
+	}
+	if forAPI {
+		token = api.BearerToken(args[0], token)
 	}
 	fmt.Fprintln(stdout, token)
 	fmt.Fprintln(stdout, line)
@@ -208,10 +220,10 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // stop together (workers after their current send), then the final event
 // export, HTTP and the store. All of it shares one deadline,
 // cfg.ShutdownTimeout. listening, if not nil, is called with the bound
-// addresses once the listeners are open; adminAddr is nil when the admin
-// listener is off.
+// addresses once the listeners are open; adminAddr and apiAddr are nil when
+// the admin listener or the API is off.
 func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOut io.Writer,
-	listening func(smtpAddr, httpAddr, adminAddr net.Addr)) error {
+	listening func(smtpAddr, httpAddr, adminAddr, apiAddr net.Addr)) error {
 	sealer, err := seal.New(cfg.StoreKeys)
 	if err != nil {
 		return err
@@ -318,6 +330,16 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		}
 		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
 	}
+	apiSrv, apiL, apiTLS, err := apiListener(cfg, st, logger)
+	if err != nil {
+		if adminL != nil {
+			adminL.Close()
+		}
+		httpL.Close()
+		smtpL.Close()
+		st.Close()
+		return fmt.Errorf("api listener: %w", err)
+	}
 
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
@@ -329,8 +351,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if smtpTLS != nil {
 		go smtpTLS.Run(runCtx)
 	}
+	if apiTLS != nil {
+		go apiTLS.Run(runCtx)
+	}
 
-	serveErr := make(chan error, 3)
+	serveErr := make(chan error, 4)
 	go func() { serveErr <- ing.Serve(smtpL) }()
 	go func() {
 		if err := httpSrv.Serve(httpL); !errors.Is(err, http.ErrServerClosed) {
@@ -348,17 +373,29 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			}
 		}()
 	}
+	var apiAddr net.Addr
+	apiLog := "off"
+	if apiSrv != nil {
+		apiAddr = apiL.Addr()
+		apiLog = apiAddr.String()
+		go func() {
+			if err := apiSrv.Serve(apiL); !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- err
+			}
+		}()
+	}
 
 	var names []string
 	for _, t := range cfg.Targets {
 		names = append(names, t.Name+"("+string(t.Scheme)+")")
 	}
 	logger.Info("postwerk started", "version", version, "smtp", smtpL.Addr().String(),
-		"http", httpL.Addr().String(), "admin", adminLog, "targets", strings.Join(names, ","), "sentry", sentryLog,
+		"http", httpL.Addr().String(), "admin", adminLog, "api", apiLog, "api_tls", apiTLS != nil,
+		"targets", strings.Join(names, ","), "sentry", sentryLog,
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String())
 	if listening != nil {
-		listening(smtpL.Addr(), httpL.Addr(), adminAddr)
+		listening(smtpL.Addr(), httpL.Addr(), adminAddr, apiAddr)
 	}
 
 	var runErr error
@@ -411,11 +448,53 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			logger.Warn("admin listener shutdown incomplete", "err", err)
 		}
 	}
+	if apiSrv != nil {
+		if err := apiSrv.Shutdown(sd); err != nil {
+			logger.Warn("api listener shutdown incomplete", "err", err)
+		}
+	}
 	if err := st.Close(); err != nil {
 		logger.Warn("closing the store failed", "err", err)
 	}
 	logger.Info("postwerk stopped")
 	return runErr
+}
+
+// apiListener opens the JSON query API's listener (H2), with TLS from a
+// reloaded certificate if configured. It returns nils when the API is off.
+func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*http.Server, net.Listener, *tlsreload.Reloader, error) {
+	if cfg.API.Listen == "" {
+		return nil, nil, nil, nil
+	}
+	var names []string
+	for _, t := range cfg.Targets {
+		names = append(names, t.Name)
+	}
+	q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
+	a, err := api.New(api.Options{Query: q, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts, Logger: logger})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var reloader *tlsreload.Reloader
+	if cfg.API.TLSCertFile != "" {
+		reloader, err = tlsreload.New(tlsreload.Options{
+			Name: "api", CertFile: cfg.API.TLSCertFile, KeyFile: cfg.API.TLSKeyFile, Logger: logger,
+			OnEvent: eventAppender(st, logger),
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	l, err := net.Listen("tcp", cfg.API.Listen)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	srv := api.NewServer(cfg.API.Listen, a, logger)
+	if reloader != nil {
+		srv.TLSConfig = &tls.Config{GetCertificate: reloader.GetCertificate, MinVersion: tls.VersionTLS12}
+		l = tls.NewListener(l, srv.TLSConfig)
+	}
+	return srv, l, reloader, nil
 }
 
 // eventAppender writes certificate reload events to the event log, so they

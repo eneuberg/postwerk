@@ -218,7 +218,7 @@ func TestServe(t *testing.T) {
 	addrs := make(chan [3]net.Addr, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, cfg, logger, &out, func(s, h, a net.Addr) { addrs <- [3]net.Addr{s, h, a} })
+		done <- serve(ctx, cfg, logger, &out, func(s, h, a, _ net.Addr) { addrs <- [3]net.Addr{s, h, a} })
 	}()
 	var a [3]net.Addr
 	select {
@@ -426,7 +426,7 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(runCtx, cfg, testutil.Logger(&out), &out, func(net.Addr, net.Addr, net.Addr) { close(started) })
+		done <- serve(runCtx, cfg, testutil.Logger(&out), &out, func(net.Addr, net.Addr, net.Addr, net.Addr) { close(started) })
 	}()
 	select {
 	case <-started:

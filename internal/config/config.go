@@ -194,6 +194,8 @@ type Config struct {
 
 	// Admin is the admin listener with the UI (U1–U4).
 	Admin Admin
+	// API is the JSON query API listener (H2); off by default.
+	API API
 
 	// Sentry configures the Sentry-protocol sink (A4); nil when it is off.
 	Sentry *Sentry
@@ -315,6 +317,7 @@ func (c *Config) Warnings() []string {
 		w = append(w, envAdminListen+" is not a loopback address ("+envAdminAllowNonLoopback+"=true): "+
 			"publish the port on the host's loopback only and never expose it (docs/ui.md)")
 	}
+	w = append(w, c.apiWarnings()...)
 	return w
 }
 
@@ -468,6 +471,7 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	l.retention(c)
 	l.admin(c)
 	l.sentry(c)
+	l.api(c)
 
 	for _, name := range laterPhase {
 		if l.env[name] != "" {
@@ -497,6 +501,9 @@ func (l *loader) unknownVars(targets []string, targetsOK bool) {
 		known[k] = true
 	}
 	for _, k := range laterPhase {
+		known[k] = true
+	}
+	for _, k := range apiVars {
 		known[k] = true
 	}
 	for _, name := range targets {
