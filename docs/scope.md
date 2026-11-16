@@ -131,7 +131,7 @@ What it costs:
 | Queue | rows in one SQLite file | files in the queue directory | its own queue module |
 | Inbound mail, MX, mailboxes | no | yes | yes |
 | DKIM signing | no (provider does it) | via milter (e.g. OpenDKIM) | built in |
-| Upstream login rejected (`535`) | queue held, retried, error event at once | deferred and retried by default (`smtp_sasl_auth_soft_bounce = yes`) | in our reading of the v0.9.7 source, treated as a permanent failure (not retried) on the SMTP downstream |
+| Upstream login rejected (`535`) | queue held, one error event at once, login probed with backoff | deferred and retried by default (`smtp_sasl_auth_soft_bounce = yes`) | in our reading of the v0.9.7 source, treated as a permanent failure (not retried) on the SMTP downstream |
 | Several destinations per mail | list of targets, each with its own status | extra recipients via `always_bcc` or `recipient_bcc_maps`; not tracked as separate deliveries for audit | several `deliver_to` targets possible per the docs |
 | Per-mail status lookup | internal UI and a JSON query API by id, sender reference, `Message-ID` or address, plus the event log | log files and `postqueue` | logs |
 | Provider status after hand-off | planned, polled (Mailjet first) | no | no |
@@ -184,7 +184,9 @@ needs.
 - Your application's "sent" flag now means "Postwerk has stored it". It does not mean delivered. For delivery, read the
   events (stdout, Sentry) or ask the query API ([api.md](api.md)).
 - Postwerk removes every `X-Postwerk-*` header you set before it stores the mail. Towards the targets it adds
-  `X-Postwerk-Id` and, for Mailjet targets, `X-MJ-CustomID`. A `ref` that contains `@` is not stored.
+  `X-Postwerk-Id` and, for Mailjet targets, `X-MJ-CustomID` and (unless `MAILJET_TRACKING=account`)
+  `X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0`, so Mailjet does not rewrite your links. A `ref` that
+  contains `@` is not stored.
 
 **Duplicates.** Postwerk avoids sending twice towards its targets. It cannot see duplicates created before it. If your
 application's mail library retries after a timeout, and the first attempt did reach Postwerk, you get two mails. To
@@ -216,8 +218,8 @@ trail matters to you, keep the event lines from stdout in your log system as wel
 volume.
 
 **Secrets.** Sender password hashes, target credentials, the encryption key and the hash key live in secret files, not
-in environment variables or images. Rotate target credentials before they expire; a rejected login holds the queue and
-raises an error.
+in environment variables or images. Rotate target credentials before they expire; a rejected login takes the target down: the
+queue is held, one `target.down` error is raised, and the login is probed with backoff until it works.
 
 **Privacy and retention.** Recipient addresses are personal data. Postwerk keeps them in its records and replaces them
 with a keyed hash after a configurable period (default 30 days). A hash with a key is pseudonymized, not anonymous. The

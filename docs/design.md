@@ -103,11 +103,16 @@ A rejected login (`535`) or a target that cannot be reached (connecting, TLS, th
 nothing about the mail; it is the target that is broken. On the first such failure the target goes **down** (D45):
 
 - Its worker stops sending. Queued mails wait; new mails are accepted and queued as usual.
-- A probe runs instead: connect, `EHLO`, `AUTH` if the target has credentials, `QUIT`. Never a mail. The first probe
+- A probe runs instead: connect, `EHLO`, `STARTTLS` (or implicit TLS) as the URL says, `EHLO` again, `AUTH` if the
+  target has credentials, `QUIT`. Never a mail. The first probe
   comes after `POSTWERK_PROBE_INTERVAL` (30 s), each failed probe doubles the wait up to `POSTWERK_PROBE_MAX_INTERVAL`
   (5 min). With wrong credentials the provider sees one login per probe, not one per queued mail, so it has no
   reason to lock the account.
-- When a probe succeeds the target is **up** again and the queue resumes in its usual order.
+- When a probe succeeds the target is **up** again, and every queued delivery of the target becomes due at once:
+  the mails that waited go out now, not after the rest of their own backoff (up to an hour after a long outage).
+  The same happens when Postwerk starts, so after fixing the credentials and restarting, the queue goes out at once.
+  The rule is simply "on contact, everything queued is due"; it also brings forward a mail that waited for a `4xx`,
+  which costs one early attempt at most.
 - One `target.down` event (`error`, `warn` for an optional target) when it goes down, with the reason (`auth` or
   `unreachable`) and the redacted reply or error; one `target.recovered` event (`info`) when it comes back, with how
   long it was down. The mail whose attempt found the problem gets a `delivery.retry` (`warn`) like any temporary

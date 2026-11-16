@@ -206,7 +206,8 @@ temporary failure, then `target.down` is appended. While down, the worker claims
 the queued recipients whose retry window is over (`store.ExpireQueued`, `delivery.failed`, at most 200 deliveries
 per transaction), then sleeps until the next probe (wake signals are ignored) or runs it: `connect` and `AUTH`
 through the same code as a send, then `QUIT`. A failed probe doubles the wait up to the maximum; a good one sets the
-target up and appends `target.recovered`. `Manager.Health` returns the states for the UI and the API
+target up, moves the next attempt of every queued delivery of the target to now (`store.MakeDue`) and appends
+`target.recovered`. The worker calls `MakeDue` once at start as well, after the recovery of interrupted deliveries. `Manager.Health` returns the states for the UI and the API
 (`query.Options.Health`, wired in `cmd/postwerk`); `query` does not import `delivery`.
 
 **Mailjet tracking and CA files.** For a `STATUS=mailjet` target with `MAILJET_TRACKING=off`, `headersFor` adds

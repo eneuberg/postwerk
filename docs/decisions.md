@@ -589,6 +589,11 @@ and the alert said the same thing seven times.
 - **Down on the first failure, also for `unreachable`.** Waiting for a second failure would mean one more login with
   a wrong password, and for a network blip it saves only one event pair. A blip now gives `target.down` and, 30 s
   later, `target.recovered`; an error tracker can group or mute that pair, which is its job, not Postwerk's.
+- **On contact, everything queued is due.** When a probe succeeds, and when a worker starts, every queued delivery
+  of the target gets its next attempt now. A live test against Mailjet showed a mail waiting the rest of its backoff
+  after the credentials were fixed and Postwerk restarted, up to an hour after a long outage. Telling the mails that
+  waited for the outage apart from those in backoff for a `4xx` would need a stored reason; bringing all of them
+  forward costs at most one early attempt each and is one rule for both cases.
 - **The retry window still ends.** While down, the worker claims nothing, so it fails the queued recipients whose
   window is over itself (`delivery.failed`). Otherwise a mail could wait for days and go out after the target came
   back, which the retry window exists to prevent.

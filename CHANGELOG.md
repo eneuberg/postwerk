@@ -18,8 +18,16 @@ No version has been released yet. This section lists what exists today.
   `250 2.0.0 queued as pw_…` comes only after the mail is stored durably in one SQLite file.
 - Delivery to a fixed list of targets (`smtps://`, `smtp://` with STARTTLS, `smtp+plain://`), each target and each
   recipient tracked on its own, with derived statuses including `partial`.
-- Retries with backoff within a retry window; a rejected target login (`535`) keeps mails queued and raises an error
-  at once.
+- Retries with backoff within a retry window.
+- Target health: a rejected login (`535`) or an unreachable target takes the target down. Mails stay queued, one
+  `target.down` event is raised, and the target is probed (log in, no mail) from 30 s up to every 5 minutes
+  (`POSTWERK_PROBE_INTERVAL`, `POSTWERK_PROBE_MAX_INTERVAL`) until `target.recovered`; then, and after every
+  start, the queued mails go out at once. The UI and the API overview
+  show each target as up or down.
+- `delivery.rejected` (warn) for a recipient address the target refuses, apart from `delivery.failed` (error).
+- A mail's state comes from its required targets only; optional targets keep their own delivery state.
+- Mailjet open and click tracking switched off per mail by default (`POSTWERK_TARGET_<NAME>_MAILJET_TRACKING`).
+- `POSTWERK_TARGET_<NAME>_CA_FILE` for a target with a private CA.
 - Per-target settings: optional targets, retry window, the policy for an unclear outcome (`hold`, `retry`) and a
   recipient allow-list. Headers `X-Postwerk-Ref` and `X-Postwerk-Skip` for senders.
 - Envelope parameters passed on: `SMTPUTF8`, `8BITMIME` and `SIZE`, with `delivery.unsupported` and

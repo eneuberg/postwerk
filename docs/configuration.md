@@ -215,7 +215,8 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 `EHLO` fails), Postwerk stops sending to it and writes one `target.down` event (`error`, `warn` for an optional
 target). Mails stay queued. It then probes the target (connect, `EHLO`, `AUTH`, `QUIT`; no mail) after
 `POSTWERK_PROBE_INTERVAL`, doubling up to `POSTWERK_PROBE_MAX_INTERVAL`. The first probe that works writes
-`target.recovered` and sending resumes. A provider that locks an account after repeated failed logins sees at most one
+`target.recovered`, and every queued mail of that target is due at once, whatever its backoff; the same happens at
+every start, so after fixing credentials and restarting the queue goes out immediately. A provider that locks an account after repeated failed logins sees at most one
 login per probe. Mails whose retry window ends meanwhile become `failed`. The state is kept in memory only: after a
 restart the first attempt finds a broken target again. Fix the credentials file and restart, or wait for the probe if
 the provider was down.
