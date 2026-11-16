@@ -69,7 +69,7 @@ through a tunnel (`kubectl port-forward`, `ssh -L`), so it binds to the loopback
 
 Create a token with `postwerk gen-token <name>`: it prints a random token (32 bytes, base64url) on the first line and
 the tokens-file line on the second. Postwerk keeps only the hash. Log in with it once, create accounts with passwords
-under **Accounts**, then remove the line or the file if you like ([ui.md](ui.md#2-accounts-and-login)). Accounts with
+under **Settings**, then remove the line or the file if you like ([ui.md](ui.md#2-accounts-and-login)). Accounts with
 passwords live in the database (`POSTWERK_DATA`), not in a variable. With the admin listener on and neither a tokens
 file nor an account in the database, Postwerk does not start. `POSTWERK_UI_TOKENS_FILE`, `POSTWERK_ADMIN_HOSTS` or
 `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` set while the admin listener is `off` is a configuration error (ambiguous).

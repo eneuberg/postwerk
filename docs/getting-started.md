@@ -37,10 +37,10 @@ target's result is recorded later as an event.
 Open http://localhost:8081 and log in with the name `ops` and the token `example-ui-token-local-only` (from
 [examples/ui-tokens.example](../examples/ui-tokens.example), a public example: never use it elsewhere). The overview
 shows each target with what is queued and what happened in the last 24 hours; **Mails** lists every mail with its
-status per target; **Search** finds a mail by its id, `X-Postwerk-Ref`, `Message-ID` or a recipient address. The UI
-never shows message content.
+status per target, and its search form finds a mail by its id, `X-Postwerk-Ref`, `Message-ID` or a recipient
+address. The UI never shows message content.
 
-The tokens file is for the first login. Under **Accounts**, create an account for yourself with a password (at least 15
+The tokens file is for the first login. Under **Settings**, create an account for yourself with a password (at least 15
 characters; confirm with the token), log out and log in with it. Accounts with passwords are kept in Postwerk's
 database; on a real install, remove the token line afterwards or keep it safely as break-glass access.
 

@@ -74,7 +74,7 @@ Accounts come from two places:
 |---|---|---|
 | Where | `POSTWERK_UI_TOKENS_FILE`, one `name:admin:<hash>` line each | table `ui_accounts` in the SQLite file |
 | Secret | a random token from `postwerk gen-token <name>` | a password chosen in the UI |
-| Managed | in the file; read once at start | on the **Accounts** pages, by any logged-in account |
+| Managed | in the file; read once at start | under **Settings**, by any logged-in account |
 | Meant for | the first login and break-glass access | everyday use |
 
 The tokens file is optional once the database has an account. A line with role `read` (from an older file) is a
@@ -86,14 +86,14 @@ tokens file and without an account in the database, Postwerk does not start (U23
 1. Make a token: `postwerk gen-token ops` prints the token, then the line for the tokens file. Put the line in the
    file (or the Kubernetes Secret), keep the token.
 2. Start Postwerk, open the UI and log in with the name `ops` and the token.
-3. Under **Accounts**, create one account per person with a password; you confirm each with the token. Give each
-   person their password through a safe channel; they change it on their account page.
+3. Under **Settings**, create one account per person with a password; you confirm each with the token. Give each
+   person their password through a safe channel; they change it under **Settings** (their own account page).
 4. Log in with your own account. Then remove the `ops` line, or the whole file (in Helm: `secrets.uiTokens.name=""`),
    and restart; or keep it, stored safely, as break-glass access.
 
 If every password is lost, add a token line again and restart.
 
-**Changing accounts.** On the **Accounts** page: create an account (name, password, the password again). On an
+**Changing accounts.** On the **Settings** page: create an account (name, password, the password again). On an
 account's page: set a new password, or delete it. Every change asks for your own current password, is a `POST` with a
 CSRF token, and is written to the event log in the same transaction. Setting a password or deleting an account ends
 all of that account's sessions at once, yours included when it is your own account. The last account in the database
@@ -169,12 +169,15 @@ A status is always written out as text, colour only supports it.
 |---|---|---|
 | Login | `GET /login`, `POST /login` | name and password or token |
 | Overview | `GET /` | per target: recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial`) |
-| Mails | `GET /mails` | list with filters (state, target, received from and to), newest first, 50 per page |
-| Search | `GET /search`, `POST /search` | find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address; the query goes in the request body only and the results come back in the same response, so it never lands in a URL, the browser history or an access log |
+| Mails | `GET /mails` | the search form; list with filters (state, target, received from and to), newest first, 50 per page |
+| Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
 | Mail | `GET /mails/{id}` | id, received time, sending application, size, ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; per target the derived status (including `partial`), attempts, next attempt, last reply, and a table with each recipient's status and reply; the event timeline. Opening it writes `ui.view` |
-| Accounts | `GET /accounts`, `POST /accounts` | every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
-| Account | `GET /accounts/{name}`, `POST /accounts/{name}/password`, `POST /accounts/{name}/delete` | set a new password (your own: change it), delete the account |
+| Settings | `GET /settings`, `POST /settings/accounts` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
+| Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
 | Logout | `POST /logout` | |
+
+The navigation is Overview, Mails, Settings. The old account addresses `GET /accounts` and `GET /accounts/{name}`
+redirect to their pages under `/settings`; the query of a redirected request is dropped.
 
 The state filter and every status shown are the derived summaries of architecture.md (`queued`, `sending`,
 `unknown`, `handed_off`, `failed`, `partial`, `skipped`); with a target filter they are the state at that target.
@@ -194,7 +197,7 @@ Mail records are read-only for now. Resend and close (D13) will come as `POST` f
 |---|---|
 | `internal/store` | the SQL for every read (lists, counts, events of a mail) and for the accounts table; still the only package that speaks SQL |
 | `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
-| `internal/ui` | HTTP handlers, sessions, login and throttling, account pages, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
+| `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
 | `internal/auth` | token file parsing, password rules and the equal-cost checker, on top of the sender password hashes |
 
 For design work, `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m` serves made-up data,

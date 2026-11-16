@@ -390,7 +390,7 @@ Any local port works (`9000:8081`, then `http://localhost:9000`). The forwarded 
 machine while the command runs, which is why the UI still asks for a password; stop the command when you are done.
 
 **First login and accounts.** Sign in once with the name and token from the tokens Secret (`ops` above). Under
-**Accounts**, create one account per person with a password (15 to 128 characters), confirming with the token. The
+**Settings**, create one account per person with a password (15 to 128 characters), confirming with the token. The
 accounts are kept in Postwerk's database on the volume, so they survive restarts and upgrades. Then either keep the
 tokens Secret, stored safely, as break-glass access, or remove it: delete the line (an empty file is fine) or set
 `secrets.uiTokens.name=""`, and upgrade or restart. If every password is lost, put a token line back and restart.
