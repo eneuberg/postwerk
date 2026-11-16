@@ -4,8 +4,9 @@ What Postwerk should do, what it should not do, how it differs from other ways t
 setup. It starts from the ideal and compares it with the current [design](design.md) at the end.
 
 Status: early development. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
-event log on stdout, retention and encryption at rest, the internal UI and the read-only query API); provider status
-and the external sinks are planned. Nothing here is measured production behavior yet.
+event log on stdout and to Sentry or GlitchTip, retention and encryption at rest, the internal UI and the read-only
+query API); provider status and the OpenTelemetry and webhook sinks are planned. Nothing here is measured production
+behavior yet.
 
 ## 1. The ideal in one paragraph
 
@@ -44,8 +45,8 @@ person. An allow-list such as `*@example.test, qa-*@your-domain` per target is a
 access, and protects against a mistake that is hard to undo. Mailpit offers a similar setting for its own relay
 feature, which shows the need is real. It is built as the per-target setting `ALLOW_RECIPIENTS`.
 
-Built so far: items 1 to 7, 11 to 13 and 15, item 9 for stdout and item 10 for the UI. Planned: items 8 and 14, the
-lookup API of item 10, and item 9 for OpenTelemetry, the error tracker and webhooks.
+Built so far: items 1 to 7, 10 (the UI and the read-only query API), 11 to 13 and 15, and item 9 for stdout and
+the error tracker (Sentry protocol). Planned: items 8 and 14, and item 9 for OpenTelemetry and webhooks.
 
 ### Should not do
 
@@ -64,6 +65,26 @@ lookup API of item 10, and item 9 for OpenTelemetry, the error tracker and webho
 | Handle newsletters, list management or unsubscribe | Bulk mail has different rules and volumes. Use a provider's marketing tools. |
 | Offer priority classes or complex routing rules | Every rule is a moving part. A fixed target list is easy to reason about. |
 | Run as a highly available cluster | That needs a shared store and leader election. See the costs in section 3. |
+
+### What stays with you
+
+Postwerk takes on as little as it can. It stores, forwards and records; everything around that stays with the
+operator:
+
+| Task | Where it belongs |
+|---|---|
+| Deciding which events are alerts, who gets paged, and alerting when Postwerk itself is down | your monitoring: GlitchTip or Sentry rules, log alerts, health checks |
+| What happened after hand-off: delivered, bounced, blocked, marked as spam | the provider's dashboard and API; Postwerk's record ends at `handed_off` |
+| Bounce suppression, and what an application does about a bounce | the provider's suppression list and the application. Postwerk sends no bounce mails (DSN) and passes the envelope sender to the target unchanged, so bounces go where the provider sends them |
+| Backups of the data volume and the key files, and restore tests | you ([kubernetes.md](kubernetes.md#8-backups)) |
+| SPF, DKIM, DMARC and the sending domain | DNS and the provider |
+| Provider account, sending limits, contract and data processing agreement | you and the provider |
+| Issuing and renewing TLS certificates | cert-manager or your CA; Postwerk only reloads the files |
+| Who can reach SMTP, the UI and the API | NetworkPolicy, firewall, RBAC for `port-forward` |
+| Making, storing and rotating secrets: sender passwords, target credentials, keys, tokens | your secret store |
+| Retention periods in your records of processing, and requests from data subjects | the organisation that runs Postwerk ([privacy-and-security.md](privacy-and-security.md)) |
+| Retrying when Postwerk is briefly unreachable, and not sending the same mail twice | the sending application (section 6) |
+| Upgrading to new releases | you ([versioning.md](versioning.md)) |
 
 ## 3. What makes it lightweight
 
@@ -161,7 +182,7 @@ needs.
 - Set `X-Postwerk-Ref: <your id>` (for example the id of your own notification record). You can look the mail up by it
   later. Postwerk also returns its own id in the reply: `250 2.0.0 queued as pw_…`.
 - Your application's "sent" flag now means "Postwerk has stored it". It does not mean delivered. For delivery, read the
-  events (stdout today; the status API and webhook events are planned).
+  events (stdout, Sentry) or ask the query API ([api.md](api.md)).
 - Postwerk removes every `X-Postwerk-*` header you set before it stores the mail. Towards the targets it adds
   `X-Postwerk-Id` and, for Mailjet targets, `X-MJ-CustomID`. A `ref` that contains `@` is not stored.
 
@@ -180,7 +201,7 @@ SQLite file at a time.
 
 **Network.**
 
-- Egress: to each target (for Mailjet, SMTP on port 587 and the HTTPS API for status).
+- Egress: to each target (for Mailjet, SMTP on port 587; later also its HTTPS API for status).
 - Ingress: SMTP and HTTP only from inside your network. Never expose the UI or API to the internet.
 - `AUTH` on ingress needs STARTTLS with a certificate. Cleartext `AUTH` must be allowed explicitly
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`); do that only on a local machine or if your network encrypts traffic
@@ -190,8 +211,9 @@ SQLite file at a time.
 
 **Storage and backups.** Use a local disk or block volume, not a network file system. Size it for the raw messages of
 a long target outage (mail size × mails per day × days). A copied SQLite file of a running process may be inconsistent;
-use SQLite's online backup (for example `VACUUM INTO`). If the audit trail matters to you, export events to
-OpenTelemetry as well, so they survive the loss of the volume.
+take a volume snapshot, or stop Postwerk and copy the file ([kubernetes.md](kubernetes.md#8-backups)). If the audit
+trail matters to you, keep the event lines from stdout in your log system as well, so they survive the loss of the
+volume.
 
 **Secrets.** Sender password hashes, target credentials, the encryption key and the hash key live in secret files, not
 in environment variables or images. Rotate target credentials before they expire; a rejected login holds the queue and
@@ -283,7 +305,9 @@ not change the design until they are accepted there.
 10. **No backup or restore story.**
     *Suggestion:* a `postwerk backup <file>` command that uses SQLite's online backup, and a short restore guide. Note
     that events exported to sinks are a second copy of the audit trail.
-    *Status:* open.
+    *Status:* in part: [kubernetes.md](kubernetes.md#8-backups) describes volume snapshots, a copy with Postwerk
+    stopped, and restoring before a downgrade ([versioning.md](versioning.md#4-upgrades-and-the-database)). Backups
+    stay with the operator; a `backup` command is open.
 
 11. **Events are hard to map back in applications.** Events carry no recipient address (correct) but also no sender
     reference. An application that wants to react to `provider.bounced` must call the API for each event.
@@ -293,7 +317,8 @@ not change the design until they are accepted there.
 
 12. **Secret rotation needs a restart.** Fixing a `535` means new credentials, and a restart closes the ingress.
     *Suggestion:* re-read secret files when they change (mounted secrets in Kubernetes update in place).
-    *Status:* open.
+    *Status:* in part: the STARTTLS and API certificates are re-read every minute (D38). Senders, target credentials,
+    keys and tokens are still read once at start.
 
 13. **Senders can use any envelope sender.** A compromised application could send mail with another application's
     address.
@@ -304,7 +329,8 @@ not change the design until they are accepted there.
 14. **Bounces and envelope sender are not described.** The design does not say that Postwerk sends no bounce mails
     (DSN) to senders, or which envelope sender it passes to the target.
     *Suggestion:* state both: no DSN, envelope sender passed through unchanged, bounce handling belongs to the provider.
-    *Status:* open in the docs. Postwerk sends no bounce mails (DSN).
+    *Status:* built: no DSN, envelope sender passed through unchanged, bounces stay with the provider
+    ([What stays with you](#what-stays-with-you)).
 
 15. **Dependency weight is not yet bounded.** The OpenTelemetry and Sentry SDKs bring many indirect dependencies, and
     the planned feature list (four sinks, status adapter, API, UI) is large for a "thin" relay.
@@ -312,5 +338,5 @@ not change the design until they are accepted there.
     first release with ingress, store, delivery, retry policy, stdout events and the lookup API; add the rest after it
     runs.
     *Status:* in part: the foundation (ingress, store, delivery, retry policy, stdout events, health checks) was built
-    first with three direct dependencies. The Sentry-protocol sink uses the standard library, no SDK (decision D30).
-    The lookup API and the same choice for the OpenTelemetry sink are open.
+    first with three direct dependencies. The Sentry-protocol sink (D30), the UI and the query API use the standard
+    library and added none. The same choice for the OpenTelemetry sink is open.
