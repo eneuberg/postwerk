@@ -143,6 +143,9 @@ func detail(m query.MailDetail) mailDetail {
 		d.Deliveries = append(d.Deliveries, x)
 	}
 	for _, e := range m.Events {
+		if e.Actor != "" {
+			continue // caused by a person or a token (api.view, ui.view): not part of the mail's history
+		}
 		d.Events = append(d.Events, event{
 			Seq: e.Seq, Time: utc(e.Time), Kind: e.Kind, Level: e.Level, Target: e.Target, Recipient: e.Recipient,
 			Attempt: e.Attempt, Code: e.Code, Text: e.Text,

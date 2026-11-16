@@ -54,7 +54,7 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
   person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
                                                          └── tx: ui.login / ui.search events ▶┘
   other pod ──▶ API listener (POSTWERK_API_LISTEN) ── api ── query ── reads ───────────▶│
-                                                       └── tx: api.request / api.auth_failed ▶┘
+                                                       └── tx: api.request / api.view events ▶┘
 ```
 
 Ingress wakes the workers through a non-blocking signal after each commit; workers also poll on a timer, so a missed
@@ -143,6 +143,7 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `ui.search` | info | a UI search; `actor` is the token name, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
 | `api.request` | info | a query API request; `actor` is the token name, text the endpoint, search kind, HTTP status and number of mails (`search by=address status=200 results=1`), never the query |
 | `api.forbidden` | warn | an API token asked for an endpoint its role may not use; text the endpoint |
+| `api.view` | info | a mail's detail was returned through the API; `actor` is the token name, `mail_id` the mail; no text |
 | `api.auth_failed` | warn | a missing, malformed or wrong API token; `actor` only if the name is in the tokens file |
 
 The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.

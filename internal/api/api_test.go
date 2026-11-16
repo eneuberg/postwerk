@@ -223,7 +223,7 @@ func (h *harness) apiEvents() []string {
 	var out []string
 	for _, e := range h.events() {
 		if strings.HasPrefix(e.Kind, "api.") {
-			out = append(out, strings.TrimSpace(e.Kind+" "+e.Actor+" "+e.Text))
+			out = append(out, strings.Join(strings.Fields(e.Kind+" "+e.Actor+" "+e.MailID+" "+e.Text), " "))
 		}
 	}
 	return out
@@ -311,8 +311,8 @@ func TestRoles(t *testing.T) {
 	want := []string{
 		"api.request support search by=address status=200 results=1",
 		"api.request support.admin search by=address status=200 results=1",
-		"api.request support mail status=200 results=1",
-		"api.request support.admin mail status=200 results=1",
+		"api.view support pw_01",
+		"api.view support.admin pw_01",
 		"api.forbidden support mails",
 		"api.forbidden support mails",
 		"api.forbidden support overview",
@@ -497,10 +497,21 @@ func TestNoContentOrQueryLeak(t *testing.T) {
 	if err := rep.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	var views []string
 	for _, e := range h.events() {
 		if !strings.HasPrefix(e.Kind, "api.") {
 			continue
 		}
+		// Only a view names its mail, by id and nothing else (H7).
+		if e.Kind == KindView {
+			views = append(views, e.MailID)
+			if e.Text != "" {
+				t.Errorf("api.view with text: %+v", e)
+			}
+		} else if e.MailID != "" {
+			t.Errorf("%s names a mail: %+v", e.Kind, e)
+		}
+		e.MailID = ""
 		s := fmt.Sprintf("%+v", e)
 		for _, leak := range []string{"canary", "CANARY", "kanarien", "order-", "shop.example", "pw_0"} {
 			if strings.Contains(s, leak) {
@@ -508,12 +519,22 @@ func TestNoContentOrQueryLeak(t *testing.T) {
 			}
 		}
 	}
+	if want := []string{"pw_01", "pw_02", "pw_01", "pw_02", "pw_01"}; !slices.Equal(views, want) {
+		t.Errorf("views = %v, want %v", views, want)
+	}
 	for name, text := range map[string]string{"logs": h.logs.String(), "stdout": out.String()} {
 		for _, leak := range []string{"canary-leak", "CANARY", "kanarienvögel"} {
 			if strings.Contains(text, leak) {
 				t.Errorf("%s holds %q", name, leak)
 			}
 		}
+	}
+	if !strings.Contains(out.String(), `"kind":"api.view","mail_id":"pw_01","sender":"shop","actor":"support"`) {
+		t.Errorf("stdout lacks the view event:\n%s", out.String())
+	}
+	// A view is not part of the mail's own history.
+	if r := h.do("GET", "/v1/mails/pw_01", adminBearer, ""); strings.Contains(r.body, "api.view") {
+		t.Errorf("the timeline shows api.view: %s", r.body)
 	}
 	if !strings.Contains(out.String(), `"kind":"api.request","actor":"support","text":"search by=address status=200 results=1"`) {
 		t.Errorf("stdout lacks the request event:\n%s", out.String())

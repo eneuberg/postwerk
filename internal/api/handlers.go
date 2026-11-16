@@ -104,7 +104,7 @@ func (a *API) mail(r *http.Request, c caller) result {
 		a.opts.Logger.Error("api: reading the store failed", "endpoint", "mail", "err", err)
 		return failed(http.StatusInternalServerError, "internal", "The store could not be read. Details are in the log.")
 	}
-	return result{status: http.StatusOK, count: 1, body: detail(m)}
+	return result{status: http.StatusOK, count: 1, viewed: m.ID, body: detail(m)}
 }
 
 type listResponse struct {

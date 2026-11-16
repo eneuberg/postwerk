@@ -135,7 +135,8 @@ The id is not personal data, so it may be in the URL. Example for a `read` token
 
 An address `state` is `full` (admin), `masked` (read), `pseudonymized` (no address) or `null_sender` (`MAIL FROM:<>`).
 Recipients are numbered by their position in the envelope, from 0, as in the events. SMTP texts are stored redacted.
-At most 500 events are returned. An unknown id gets `404`.
+At most 500 events are returned. An unknown id gets `404`. Every detail returned is an `api.view` event with the
+token name and the mail id (section 5).
 
 ### List: `GET /v1/mails` (admin)
 
@@ -212,11 +213,15 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | Kind | Level | Carries |
 |---|---|---|
 | `api.request` | info | `actor`: the token name; `text`: endpoint, search kind, HTTP status and number of mails, for example `search by=address status=200 results=1` |
+| `api.view` | info | `actor`: the token name, `mail_id`: the mail whose detail was returned; no text. Written instead of `api.request` for a successful `GET /v1/mails/{id}`, like the UI's `ui.view` |
 | `api.forbidden` | warn | `actor`: the token name; `text`: the endpoint |
 | `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file; no text |
 
-Never the search term, a mail id, a ref or an address. A request is answered only after its `api.request` event is
-written; if that fails, the client gets `503` and no data. Requests over a rate limit write no event.
+Never the search term, a ref, a Message-ID or an address; a mail id only in `api.view`, for a mail that was returned
+(a lookup of an unknown id is an `api.request` with status `404` and no id). So the event log answers "who looked at
+this mail?" without becoming a list of what was searched for. A request is answered only after its event is
+written; if that fails, the client gets `503` and no data. Requests over a rate limit write no event. Events caused
+by a token or a person (`api.view`, `ui.view`) are not part of a mail's own timeline in the detail response.
 
 ## 6. Code
 

@@ -176,7 +176,8 @@ use of the secret allows lookup tables to be built
 paras. 107–109, version for public consultation). So: the hash key lives in its own key file, not in the store or the
 image, and address lookups are logged and rate-limited: every UI search is a `ui.search` event with the token name
 (never the query), and each token name may search at most 30 times a minute; every API request is an `api.request`
-event with the token name and the number of mails returned, at most 60 per minute per token.
+event with the token name and the number of mails returned, and every mail detail returned is an `api.view` event
+with the token name and the mail id; at most 60 requests per minute per token.
 
 Key rotation: new hashes use the newest key; old keys stay in the key file for lookups until the operator removes them.
 Removing an old key is a deliberate step that makes the old hashes unsearchable for Postwerk.
@@ -261,7 +262,7 @@ establishment, exercise or defence of legal claims. Whether a delivery record mu
 |---|---|---|---|---|
 | Holder of a `read` UI token | no | masked only; can test whether an address got mail by searching for it | yes | masked addresses (change 9, built), searches by `POST` and logged with the token name (change 8, built), 30 searches per minute; reaching the UI needs a tunnel as well (`pods/portforward` or SSH) |
 | Holder of an `admin` UI token | no; later can trigger a resend | yes | yes | few holders, named tokens, every login and search is an event; a tunnel is needed as well |
-| Holder of a `read` API token (a calling application) | no | masked only; can test whether an address got mail by searching for it | the mails it looks up, at most 20 per search; no list or overview | exact-match lookups only, every request an `api.request` event with the token name and result count, 60 requests per minute per token; its pod must be in `api.allowFrom`; TLS by default in the chart |
+| Holder of a `read` API token (a calling application) | no | masked only; can test whether an address got mail by searching for it | the mails it looks up, at most 20 per search; no list or overview | exact-match lookups only, every request an `api.request` event with the token name and result count, every detail an `api.view` event with the mail id, 60 requests per minute per token; its pod must be in `api.allowFrom`; TLS by default in the chart |
 | Holder of an `admin` API token | no | yes, until pseudonymization | yes, including lists and the overview | give it only to an operator's own tooling; same events, limits and network rule |
 | Shell or exec in the container | **yes**, plus key files and memory | yes | yes | the image has no shell; restrict exec and debug rights; encryption does not help here |
 | Copy of the volume or a backup | **no**, unless the key file is in the same copy | yes until hashed; hashes are useless without the hash key | yes | keep key files out of volume backups; backups encrypted and short-lived ([scope.md gap 10](scope.md#7-gaps-between-the-ideal-and-the-current-design)) |

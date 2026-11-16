@@ -363,6 +363,10 @@ The purpose is "what happened to the mail for this address, id or ref", not a co
   up how much, without the log itself becoming a list of addresses. A failed token and a role refusal are `warn`
   events. Requests over a rate limit write no event, so a flood cannot fill the log; the global limit counts requests
   before the token check, so a flood of wrong tokens is bounded too.
+- **A returned detail names its mail.** The owner decided that opening a mail is an audit event, in the UI
+  (`ui.view`) and the API alike: `api.view` carries the token name and the mail id, so "who looked at this mail?"
+  has an answer. The id is random and not personal data; search terms still never reach the log. An unknown id
+  gets no id in its event, so a mistyped or guessed id leaves no trace of the guess.
 - **Limits are fixed for now**: 60 requests per minute per token and 600 in all. They can become settings once real
   use shows the need.
 

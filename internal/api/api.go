@@ -52,6 +52,10 @@ const (
 	// KindAuthFailed is a missing, malformed or wrong token (warn). The
 	// actor is the token name only if it is in the tokens file.
 	KindAuthFailed = "api.auth_failed"
+	// KindView is a mail's detail returned to a token: the token name as
+	// actor and the mail's id, like ui.view. It takes the place of
+	// api.request for that response; it has no text.
+	KindView = "api.view"
 )
 
 // Defaults (H8).
@@ -241,6 +245,8 @@ type result struct {
 	status int
 	count  int
 	by     query.SearchBy
+	// viewed is the id of the mail whose detail is returned (2xx only).
+	viewed string
 	body   any
 }
 
@@ -285,12 +291,15 @@ func (a *API) handle(e endpoint) http.HandlerFunc {
 			return
 		}
 		res := e.fn(r, c)
-		text := e.name
-		if res.by != "" {
-			text += " by=" + string(res.by)
+		ev := store.Event{Time: a.opts.Now(), Kind: KindView, Level: store.Info, Actor: c.name, MailID: res.viewed}
+		if res.viewed == "" {
+			ev.Kind, ev.Text = KindRequest, e.name
+			if res.by != "" {
+				ev.Text += " by=" + string(res.by)
+			}
+			ev.Text += " status=" + strconv.Itoa(res.status) + " results=" + strconv.Itoa(res.count)
 		}
-		text += " status=" + strconv.Itoa(res.status) + " results=" + strconv.Itoa(res.count)
-		if err := a.event(r.Context(), KindRequest, store.Info, c.name, text); err != nil {
+		if err := a.opts.Events.Append(r.Context(), ev); err != nil {
 			a.opts.Logger.Error("api: writing the request event failed; nothing returned", "endpoint", e.name, "err", err)
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable, "unavailable",
