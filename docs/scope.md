@@ -45,7 +45,7 @@ person. An allow-list such as `*@example.test, qa-*@your-domain` per target is a
 access, and protects against a mistake that is hard to undo. Mailpit offers a similar setting for its own relay
 feature, which shows the need is real. It is built as the per-target setting `ALLOW_RECIPIENTS`.
 
-Built so far: items 1 to 7, 10 (the UI and the read-only query API), 11 to 13 and 15, and item 9 for stdout and
+Built so far: items 1 to 7, 10 (the UI and the query API, read-only except for an admin's close and resend), 11 to 13 and 15, and item 9 for stdout and
 the error tracker (Sentry protocol). Planned: items 8 and 14, and item 9 for OpenTelemetry and webhooks.
 
 ### Should not do

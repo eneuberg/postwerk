@@ -47,7 +47,10 @@ No version has been released yet. This section lists what exists today.
   deleted after 90 days; all configurable.
 - Internal web UI on a loopback admin listener: overview per target, mail list with search, one mail with its
   timeline, and accounts with passwords under Settings. A tokens file gives first and break-glass access.
-- Read-only JSON query API under `/v1/` on its own listener, with `read` and `admin` bearer tokens.
+- JSON query API under `/v1/` on its own listener, with `read` and `admin` bearer tokens.
+- Close and resend of a delivery by an admin, in the UI and with `admin` API tokens: close as `confirmed` or
+  `given_up` (a closed `unknown` no longer turns `failed` when its message expires), resend while the message is
+  still stored, with explicit consent for a possible duplicate.
 - STARTTLS and API certificates reloaded from their files without a restart, with `tls.*` events before they expire:
   a warning from 14 days, an error from 7 days.
 - Commands `hash-password`, `gen-key`, `gen-token`, `gen-api-token` and `version`.
@@ -63,7 +66,8 @@ No version has been released yet. This section lists what exists today.
 - Login hardening on SMTP and the UI: PBKDF2 at equal cost for every check, a limit on concurrent checks, login
   deadlines and throttling of failed UI logins.
 - UI protected against cross-site attacks: CSRF tokens, a `Host` check against DNS rebinding, strict security headers,
-  no JavaScript. Every login, search, opened mail and account change is an event.
+  no JavaScript. Every login, search, opened mail, account change, close and resend is an event; close and resend ask
+  for the account's password again.
 - Query API tokens stored as SHA-256; addresses and the `Message-ID` masked for `read` tokens; rate limits; every
   request and failed authentication is an event.
 - Helm chart closed by default: one replica, ClusterIP only, NetworkPolicy, non-root, read-only root file system, no
