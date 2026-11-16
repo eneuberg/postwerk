@@ -121,7 +121,7 @@ its default is listed in [configuration.md](configuration.md).
 |---|---|---|
 | H1 | Separate HTTP listener, default `127.0.0.1:8080`. `/healthz` (alive) and `/readyz` (store reachable, workers running). | F |
 | H2 | Read-only JSON query API with bearer tokens (`read`, `admin`), every use logged, on its own listener (H4), on top of the query layer (U15): H4–H9 below, [api.md](api.md). Resend and close for admins come later. | F |
-| H3 | Small read-only UI, server-rendered, no content: U1–U16 below, [ui.md](ui.md). | F |
+| H3 | Small UI, server-rendered, no content, mail records read-only: U1–U24 below, [ui.md](ui.md). | F |
 | H4 | The API has its own listener `POSTWERK_API_LISTEN`, default `off`; it may bind a pod address and must differ from the health, SMTP and admin listeners. Optional TLS (`POSTWERK_API_TLS_CERT_FILE`, `POSTWERK_API_TLS_KEY_FILE`), re-read while running; without TLS on a non-loopback address, a warning at every start. | F |
 | H5 | Tokens from `POSTWERK_API_TOKENS_FILE` in the format of U4, sent as `Authorization: Bearer <name>.<token>`; `postwerk gen-api-token <name> <role>` prints both. Checks as U5: the strongest hash for every name, at most `GOMAXPROCS` at once, 5 s wait for a slot, then `503`. A token that passed once costs one HMAC. | F |
 | H6 | `read`: `POST /v1/search` (id, `X-Postwerk-Ref`, `Message-ID`, address through K3; at most 20 mails) and `GET /v1/mails/{id}`, addresses masked (U12); no list, no overview (`403`). `admin`: also `GET /v1/mails` (filters, pages) and `GET /v1/overview`, addresses in full, searches up to 100 mails. Never content, subject or headers other than `Message-ID`. | F |
@@ -131,26 +131,34 @@ its default is listed in [configuration.md](configuration.md).
 
 ## UI and admin listener
 
-Details and reasons: [ui.md](ui.md), decision D29.
+Details and reasons: [ui.md](ui.md), decisions D29, D35, D36 and D37.
 
 | ID | Requirement | Phase |
 |---|---|---|
 | U1 | A separate admin listener `POSTWERK_ADMIN_LISTEN` (default `127.0.0.1:8081`) serves the UI; it is never the health listener (the query API has its own, H4). `off` or empty turns it off. | F |
 | U2 | The admin listener must be a loopback address (`127.0.0.0/8`, `::1`, `localhost`). Another address is a configuration error unless `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true` (for Docker port publishing); then a warning is logged at every start. | F |
 | U3 | No Service port, Ingress or NetworkPolicy rule for the admin listener; people reach it with `kubectl port-forward` or an SSH tunnel. | F |
-| U4 | `POSTWERK_UI_TOKENS_FILE` is required while the admin listener is on: `name:role:<PBKDF2 hash>` per line, role `read` or `admin`. `postwerk gen-token <name> <role>` prints a random 32-byte base64url token and its line. | F |
-| U5 | Login by `POST` with name and token; every check costs the strongest hash in the file (as I12); at most `GOMAXPROCS` checks at once, 5 s wait for a slot, then a fixed "try again" reply (as I13). | F |
+| U4 | `POSTWERK_UI_TOKENS_FILE` (optional, U23): `name:admin:<PBKDF2 hash>` per line; a `read` line is a configuration error. `postwerk gen-token <name>` prints a random 32-byte base64url token and its line. | F |
+| U5 | Login by `POST` with name and password or token; every check costs one PBKDF2 at the same count for file accounts, database accounts and unknown names (as I12); at most `GOMAXPROCS` checks at once, 5 s wait for a slot, then a fixed "try again" reply (as I13). | F |
 | U6 | Server-side sessions in memory: 32 random bytes, idle timeout 30 min, absolute 8 h, new id at login, deleted at logout. Cookie `HttpOnly; SameSite=Strict; Path=/`, `Secure` only over TLS. | F |
 | U7 | Requests whose `Host` is not `localhost`, `127.0.0.1` or `[::1]` (any port) or a name in `POSTWERK_ADMIN_HOSTS` get `403` (DNS rebinding). | F |
 | U8 | Every `POST` form carries a CSRF token (session-bound; on the login form bound to a short-lived cookie); missing or wrong → `403`. Cross-site `POST`s are refused by `Sec-Fetch-Site`/`Origin` as well. | F |
 | U9 | Every response carries `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Frame-Options: DENY`. No JavaScript. | F |
 | U10 | Pages: overview (per target: last 24 h by recipient status, queued count, age of the oldest queued; recent `failed`/`unknown`/`partial` mails), mail list (filters state, target, time range; pagination), search, mail detail (record, envelope parameters, per target and recipient status, event timeline). | F |
 | U11 | Search by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address, by `POST` only; addresses are found after pseudonymization through K3. The query never appears in a URL, log line or event. | F |
-| U12 | Addresses: full for `admin`, masked for `read` (`j•••@e•••.com`), "pseudonymized" for everyone after S8. | F |
-| U13 | Events `ui.login`, `ui.login_failed`, `ui.search` name the token in a new `actor` field (on a failed login only if the name is known); never the query or an address. | F |
-| U14 | No message content on any page. Read-only; resend and close come later, for `admin` only. | F |
+| U12 | One kind of account, admin (D35): addresses in full, "pseudonymized" after S8. | F |
+| U13 | Events `ui.login`, `ui.login_failed`, `ui.login_throttled`, `ui.search`, `ui.view` and the account events name the account in a new `actor` field (on a failed login only if the name is an account); never the query, an address or a password. | F |
+| U14 | No message content on any page. Mail records read-only; resend and close come later. | F |
 | U15 | Read logic lives in `internal/query` on top of the store (SQL stays in the store), so the JSON API (H2) reuses it, masking included. | F |
-| U16 | At most 30 searches per minute per token name; more get `429`. | F |
+| U16 | At most 30 searches per minute per account; more get `429`. | F |
+| U17 | Accounts in the database (`ui_accounts`): name, PBKDF2 hash as for senders (D15), created and last changed with who did it; never the password. Pages to list and create accounts, set a password and delete. | F |
+| U18 | Every account change needs the acting account's current password, is a `POST` with a CSRF token and writes its event (`ui.account_created`, `ui.password_set`, `ui.account_deleted`, `actor` and the account's name) in the same transaction. Every account can change its own password. | F |
+| U19 | Passwords: 15 to 128 Unicode code points, no composition rules, not the account name, typed twice (NIST SP 800-63B-4, D36). | F |
+| U20 | The last account in the database cannot be deleted. | F |
+| U21 | Setting a password or deleting an account ends all its sessions at once. | F |
+| U22 | Failed password checks are throttled in memory: per name 5 free, then 1 minute doubling to 15 minutes, forgotten after 24 h or a good login; per source address 20 free, forgotten after 1 h. Unknown names alike. A waiting login gets `429` without a check; `ui.login_throttled` when a wait starts. | F |
+| U23 | The tokens file is start and break-glass access: optional, its accounts shown as "tokens file" and not editable, it wins on a name clash (warning at start). Without the file and without a database account, Postwerk does not start (D37). | F |
+| U24 | Opening a mail's page writes `ui.view` (`actor`, `mail_id`) before the page is shown; the mail's timeline leaves out events with an `actor`. | F |
 
 ## Operations and supply chain
 
@@ -162,6 +170,6 @@ Details and reasons: [ui.md](ui.md), decision D29.
 | O4 | Direct dependencies kept to the SMTP library, its SASL package and the SQLite driver for the foundation. Every new dependency needs a reason in decisions.md. | F |
 | O5 | CI: format check, vet, tests with the race detector, vulnerability scan, container build, Helm chart lint, render and schema check. | F |
 | O6 | Helm chart `deploy/helm/postwerk`: one replica with `Recreate`, ClusterIP Service only (no Ingress, `LoadBalancer` or `NodePort`), PVC, existing Secrets mounted as files (`0440`, `fsGroup` 65532), non-root uid/gid 65532, read-only root file system, all capabilities dropped, seccomp `RuntimeDefault`, no service account token, no service links, probes on `/healthz` and `/readyz`, grace period 120 s, resource requests and limits, every retention setting as a value with its recommended default. Guide: [kubernetes.md](kubernetes.md). | F |
-| O7 | NetworkPolicy on by default: SMTP only from configured peers, HTTP only from configured sources (probes come from the node), egress only DNS and the target ports 587/465 (any address by default, configurable CIDRs). Optional cert-manager `Certificate` for STARTTLS. The UI listens on the pod's loopback with its tokens from an existing Secret, and has no Service port or policy rule (U3). The query API is off by default; with `api.enabled` it gets a Service port, TLS by default and an ingress rule only from `api.allowFrom` (empty: nobody). | F |
+| O7 | NetworkPolicy on by default: SMTP only from configured peers, HTTP only from configured sources (probes come from the node), egress only DNS and the target ports 587/465 (any address by default, configurable CIDRs). Optional cert-manager `Certificate` for STARTTLS. The UI listens on the pod's loopback, with the tokens file from an existing Secret (optional once accounts exist), and has no Service port or policy rule (U3). The query API is off by default; with `api.enabled` it gets a Service port, TLS by default and an ingress rule only from `api.allowFrom` (empty: nobody). | F |
 | O8 | Release: a tag `v<semver>` builds `ghcr.io/eneuberg/postwerk:<semver>` for `linux/amd64` and `linux/arm64` (cross-compiled, no emulation), with an SBOM and BuildKit provenance, signs the index digest keyless with cosign (GitHub OIDC) and verifies the signature. No `latest` tag. The tag must match the chart's `appVersion`. Actions pinned by commit, job permissions `contents: read`, `packages: write`, `id-token: write` only. | F |
 | O9 | The Helm chart defaults to `ghcr.io/eneuberg/postwerk` with the chart's `appVersion` as tag; `image.repository`, `image.tag` and `image.digest` override it. Signature check documented with the exact identity and issuer. | F |

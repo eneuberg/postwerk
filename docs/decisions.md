@@ -275,7 +275,8 @@ reuses access control that already exists and is already audited.
   reaches a URL, the browser history or an access log. Events record who searched and by what kind of key, never the
   query (privacy-and-security.md, changes 8 and 10).
 - **Masking in the query layer.** `read` sees `j•••@e•••.com`, `admin` the full address. The masking happens where the
-  data is read (`internal/query`), not in the templates, so the later JSON API cannot forget it.
+  data is read (`internal/query`), not in the templates, so the later JSON API cannot forget it. The UI later dropped
+  the `read` role (D35); the masking stays for the API.
 
 ## D38 TLS certificates reload from their files, checked every minute
 
@@ -430,3 +431,64 @@ or computing it.
   messages too. Dots added for transparency do not count (RFC 1870).
 - The SMTP library's `DATA` reader refuses a message of exactly the offered `SIZE`; the largest one through `DATA` is
   one byte less. That errs on the safe side, so Postwerk leaves it.
+
+## D35 One kind of UI account: admin, and every opened mail is an event
+
+The UI first had two roles, `read` with masked addresses and `admin`. It now has one: every account sees all pages and
+every address in full, and may manage accounts.
+
+- **Who reaches the UI.** Only people who can port-forward into Postwerk's pod or log in to its host (D29). They can
+  already read the logs, the secrets or the volume, so a second, weaker role inside the UI protects little. Giving
+  support staff that cluster access just to look up a mail would be the wrong trade.
+- **Support belongs on the API.** Looking up what happened to one mail, without browsing all mails, is a job for a
+  small tool on top of the JSON API (H2), which keeps its own `read` and `admin` tokens and the masking in
+  `internal/query` (`query.Mask`). One role keeps the UI's code and its tests small.
+- **The tokens file** keeps its format, `name:role:hash`, so old files and the API's parsing stay the same, but the UI
+  accepts `admin` lines only. A `read` line is a configuration error rather than silently becoming admin.
+  `postwerk gen-token <name>` makes admin lines; `gen-token <name> admin` still works.
+- **Opened mails are events.** With one role, the audit is the counterweight: opening a mail's page writes `ui.view`
+  with the account and the mail id before the page is shown, like searches (privacy-and-security.md, change 8). The
+  mail's own timeline leaves out events with an actor, so viewing it does not change it.
+
+## D36 Passwords for UI accounts, kept in the database and set in the UI
+
+Generating tokens into a file and restarting for every new person is clumsy, and nobody can choose or change their
+own secret. Accounts with passwords now live in the SQLite file (`ui_accounts`, migration 0006) and are managed on
+the UI's account pages.
+
+- **Same hash as senders** (D15): PBKDF2-SHA256, 600,000 iterations, from the standard library; no new dependency
+  (O4). Never the password itself, in the table, a log or an event.
+- **Password rules from NIST SP 800-63B-4** (August 2025, section 3.1.1.2, <https://doi.org/10.6028/NIST.SP.800-63B-4>):
+  passwords used as a single factor "SHALL" have at least 15 characters; verifiers "SHALL NOT impose other composition
+  rules" and "SHOULD permit a maximum password length of at least 64 characters"; each Unicode code point counts as
+  one character. Postwerk takes 15 to 128 code points and refuses the account name, the context-specific word the
+  guideline names. Not built: a check against a list of breached passwords (it needs a shipped list or a network call)
+  and Unicode normalization (it needs `golang.org/x/text`); a password typed in another normalization form fails.
+- **Re-entering your own password for every change**, so a session left open on a laptop cannot add an account or take
+  one over. The check counts towards the same throttle as logins.
+- **Changes end sessions.** Setting a password or deleting an account ends all of its sessions at once, so an old
+  password or a removed person loses access immediately. The last account in the database cannot be deleted.
+- **Throttling, not lockout.** NIST asks for rate limiting (section 3.2.2: no more than 100 consecutive failures on
+  one account). A hard lockout would let anyone who reaches the login lock out every admin by name. Postwerk slows
+  down instead, in memory: 5 free failures per name, then waits of 1 minute doubling to 15, about 100 tries a day; 20
+  per source address, since everybody behind `kubectl port-forward` is `127.0.0.1`. Unknown names are throttled the
+  same way and every check costs the same (D26), so neither the time nor the throttle tells which names exist. A
+  restart forgets the counts, which an attacker cannot cause from the login page.
+
+## D37 The tokens file stays as start and break-glass access
+
+A fresh install has no accounts in its database, so the first admin has to come from somewhere. Options:
+
+- **A `postwerk set-password` command** run with `kubectl exec deploy/postwerk -- /postwerk …`. Rejected: it is a
+  second process writing the SQLite file while the server runs (D6 assumes one writer), it cannot end the server's
+  in-memory sessions, it needs exec rights in the pod, and the password would travel through a terminal and maybe a
+  shell history.
+- **A setup page that lets the first visitor create an admin.** Rejected: whoever reaches the port first wins,
+  including another container in the pod.
+- **The existing tokens file.** Chosen. It exists already, as a Secret in the Helm chart, and needs nothing new. Log in
+  once with a token, create accounts with passwords, then remove the line or the file, or keep it stored safely to get
+  back in if every password is lost. Its accounts are shown as "tokens file" and cannot be changed in the UI. On a
+  name in both places the file wins, with a warning at start.
+
+With the admin listener on and neither a tokens file nor an account in the database, Postwerk does not start, with a
+message that says what to do; a UI nobody can log in to would be a silent misconfiguration (O1).

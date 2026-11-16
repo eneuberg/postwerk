@@ -40,6 +40,10 @@ shows each target with what is queued and what happened in the last 24 hours; **
 status per target; **Search** finds a mail by its id, `X-Postwerk-Ref`, `Message-ID` or a recipient address. The UI
 never shows message content.
 
+The tokens file is for the first login. Under **Accounts**, create an account for yourself with a password (at least 15
+characters; confirm with the token), log out and log in with it. Accounts with passwords are kept in Postwerk's
+database; on a real install, remove the token line afterwards or keep it safely as break-glass access.
+
 The example publishes the UI on your machine's loopback only (`127.0.0.1:8081`). On a server, keep it that way and
 open it through an SSH tunnel (`ssh -L 8081:127.0.0.1:8081 your-server`); in Kubernetes, use `kubectl port-forward`.
 Details: [ui.md](ui.md).
@@ -53,8 +57,8 @@ printf '%s' 'your-password' | docker run --rm -i postwerk:dev hash-password
 # Create a new key for a key file (encryption at rest, address hashing).
 docker run --rm postwerk:dev gen-key
 
-# Create a UI token: prints the token, then the line for the UI tokens file.
-docker run --rm postwerk:dev gen-token alice admin
+# Create a UI token for the first login: prints the token, then the line for the UI tokens file.
+docker run --rm postwerk:dev gen-token ops
 ```
 
 Use separate key files for the store key and the hash key. Never use the example keys outside a local machine.
@@ -106,7 +110,7 @@ POSTWERK_SMTP_TLS_KEY_FILE=/run/secrets/tls.key
 POSTWERK_TARGETS=mailjet
 POSTWERK_TARGET_MAILJET_URL=smtp://in-v3.mailjet.com:587    # STARTTLS required
 POSTWERK_TARGET_MAILJET_CREDENTIALS_FILE=/run/secrets/mailjet
-POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens               # the UI on 127.0.0.1:8081, or POSTWERK_ADMIN_LISTEN=off
+POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-tokens               # first UI login (127.0.0.1:8081), or POSTWERK_ADMIN_LISTEN=off
 # plus the key files for encryption at rest and address hashing, see configuration.md
 ```
 

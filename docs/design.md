@@ -1,7 +1,7 @@
 # Postwerk design
 
 Status: foundation built. SMTP ingress, the store, per-target delivery with the retry policy, the event log with the
-stdout output and the Sentry-protocol sink, retention, encryption at rest, a read-only internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
+stdout output and the Sentry-protocol sink, retention, encryption at rest, an internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
 details may change. The code layout is in [architecture.md](architecture.md), every setting in
 [configuration.md](configuration.md), and whether Postwerk fits a given setup in [scope.md](scope.md).
 
@@ -34,7 +34,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Reporter | event log → sinks, each with its own cursor and loop | built for stdout and Sentry protocol; other sinks planned | standard library |
 | Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
-| UI | read-only HTML pages on the loopback admin listener: overview, mails, search, one mail | built | standard library, `html/template` |
+| UI | HTML pages on the loopback admin listener: overview, mails, search, one mail, accounts | built | standard library, `html/template` |
 | Query API | read-only JSON API on its own listener for other applications ([api.md](api.md)); admin-only resend and close later | built (read-only) | standard library |
 
 One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
@@ -250,7 +250,7 @@ Kinds written today:
 | `tls.reloaded` | info | a renewed STARTTLS certificate is served |
 | `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
 | `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; once a day |
-| `ui.login`, `ui.login_failed`, `ui.search` | info, warn, info | someone used the UI; the event carries `"actor"` (the token name) and `"text"` (the role, or what was searched by), never a query or an address |
+| `ui.login`, `ui.login_failed`, `ui.login_throttled`, `ui.search`, `ui.view`, `ui.account_created`, `ui.password_set`, `ui.account_deleted` | info (failures and throttling: warn) | someone used the UI; the event carries `"actor"` (the account) and `"text"` (where the account is kept, what was searched by, or the changed account's name), and `ui.view` the mail id; never a query, an address or a password ([ui.md](ui.md#4-audit-of-the-ui-itself)) |
 
 Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.delivered`, `provider.bounced`,
 `provider.blocked`, `provider.complained`, `provider.stuck`, `queue.stale`. The retention job's own events are listed in
@@ -307,16 +307,18 @@ not stored, because a reference must be an opaque id, not an address. Postwerk a
 
 ## 11. UI
 
-Built: a small, read-only web UI ([ui.md](ui.md)). It runs on its own admin listener, `127.0.0.1:8081` by default,
-loopback only, and is opened through `kubectl port-forward` or an SSH tunnel; it never shares the health listener and
-is never on a Service or Ingress. People log in with a name and a token from the UI tokens file (role `read` or
-`admin`) and get an in-memory session. Pages: an overview per target (last 24 hours by recipient status, queued now,
-oldest queued, recent problems), the mail list with filters, a search by id, ref, `Message-ID` or address, and one
-mail with its deliveries, recipients and events. `admin` sees addresses in full, `read` masked; after
-pseudonymization nobody does. Server-rendered HTML, no JavaScript, no message content; a Host check, CSRF tokens and a
-strict Content-Security-Policy guard against attacks through the browser. Every login and search is an event.
+Built: a small web UI ([ui.md](ui.md)), read-only for mail records. It runs on its own admin listener,
+`127.0.0.1:8081` by default, loopback only, and is opened through `kubectl port-forward` or an SSH tunnel; it never
+shares the health listener and is never on a Service or Ingress. Every account is an admin (D35). People log in with
+a name and a password from an account kept in the database and managed on the UI's account pages, or, for the first
+login and break-glass access, with a token from the UI tokens file (D37); they get an in-memory session. Pages: an
+overview per target (last 24 hours by recipient status, queued now, oldest queued, recent problems), the mail list
+with filters, a search by id, ref, `Message-ID` or address, one mail with its deliveries, recipients and events, and
+the accounts. Addresses are shown in full; after pseudonymization nobody sees them. Server-rendered HTML, no
+JavaScript, no message content; a Host check, CSRF tokens and a strict Content-Security-Policy guard against attacks
+through the browser. Every login, search, opened mail and account change is an event.
 
-Planned: resend and close (D13) as forms for `admin` only.
+Planned: resend and close (D13) as forms.
 
 ## 12. Provider status (planned)
 
@@ -341,7 +343,7 @@ serves the `check` policy in section 6.
   `SIZE` Mailjet offers, minus Postwerk's own header lines), recipients per message (default 50), line length, read and write timeouts.
 - The client only ever sees fixed reply texts; internal errors are logged, never sent.
 - The HTTP listener is separate from ingress, defaults to `127.0.0.1:8080` and is meant for an internal network only.
-- The UI has its own admin listener on loopback (`127.0.0.1:8081`), reached only through a tunnel, with a token login,
+- The UI has its own admin listener on loopback (`127.0.0.1:8081`), reached only through a tunnel, with a password login,
   sessions, a Host allow-list, CSRF tokens and strict headers ([ui.md](ui.md)).
 - The container image is built from `scratch` (binary and CA certificates only, no shell) and runs as uid 65532 with a
   read-only root file system except for the data volume. No extra capabilities, no host network, no cluster API access.

@@ -11,7 +11,7 @@ internal/config       environment + secret files → validated Config (O1); refe
 internal/id           mail ids: "pw_" + 26 chars, time-ordered, crypto random
 internal/message      header handling: read Ref/Skip/Message-ID, strip X-Postwerk-*, prepend own headers (I8, D10)
 internal/redact       remove mail addresses from free text such as SMTP replies (S5)
-internal/auth         sender password hashes and UI tokens (name:role:hash) with equal-cost verification (I2, I12, U4)
+internal/auth         sender password hashes, UI tokens (name:admin:hash), UI password rules and the equal-cost checker (I2, I12, U4, U19)
 internal/keys         key file format (<key-id>:<base64>), active key + old keys, gen-key (E5)
 internal/seal         AES-256-GCM sealing of the stored message, keyed by the key id in each blob (E1–E4)
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
@@ -23,7 +23,7 @@ internal/retention    runs the store's retention at start and every 10 minutes, 
 internal/report       event cursor loop per sink, the stdout and Sentry-protocol sinks (A2, A3, A6–A9)
 internal/httpapi      health endpoints on the health listener (H1)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
-internal/ui           the internal web UI on the admin listener: login, sessions, CSRF, Host check, pages (H3, U1–U16)
+internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts (H3, U1–U24)
 internal/api          the read-only JSON query API on its own listener: bearer tokens, limits, events, JSON (H2, H4–H9)
 internal/testutil     helpers for tests only (self-signed certificates, polling, buffers); never imported by code
 ```
@@ -52,7 +52,7 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
      Sentry ◀──HTTPS──┘                                                                 │
                                                                                         │
   person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
-                                                         └── tx: ui.login / ui.search events ▶┘
+                                                         └── tx: ui.* events, ui_accounts ────▶┘
   other pod ──▶ API listener (POSTWERK_API_LISTEN) ── api ── query ── reads ───────────▶│
                                                        └── tx: api.request / api.view events ▶┘
 ```
@@ -67,7 +67,7 @@ One `*sql.DB` with a single open connection. All access is serialized; at transa
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
 
-Tables (version 5):
+Tables (version 6):
 
 | Table | Holds | Notes |
 |---|---|---|
@@ -75,8 +75,9 @@ Tables (version 5):
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
 | `deliveries` | mail id, target, attempts, next attempt, `data_sent_at`, last code and redacted text of the attempt, updated time | what one SMTP transaction shares; primary key (mail id, target); next attempt is set while a recipient is queued; partial index on (target, next attempt) |
 | `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth |
-| `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login, actor (token name of a UI event) | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
+| `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login, actor (account name of a UI event) | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
 | `cursors` | sink name, last seq | one row per sink |
+| `ui_accounts` | name, PBKDF2 hash, created and updated time and by whom | UI accounts managed in the panel (U17); never a password |
 | `event_retention` | one row: `cutoff` (Unix ms) | events older than the cutoff may be deleted; triggers refuse lowering it, deleting the row or inserting another (S10) |
 
 Migrations: `0001_init.sql` creates the tables above except `event_retention`, with a trigger that refuses every update
@@ -89,7 +90,7 @@ the MAIL parameters as the sender declared them: `body` (`7BIT`, `8BITMIME` or N
 `declared_size` (NULL if not given). `0004_recipient_status.sql` adds `delivery_recipients`, fills it with each
 delivery's status for every recipient, drops `deliveries.status` (and the unused provider columns; provider status will
 be kept per recipient) and adds `events.recipient`. `0005_ui.sql` adds partial indexes on `mails.ref` and
-`mails.message_id` for lookups, and `events.actor`.
+`mails.message_id` for lookups, and `events.actor`. `0006_ui_accounts.sql` adds `ui_accounts`.
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -138,9 +139,12 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `tls.reloaded` | info | a changed certificate and key pair loaded and is served from the next handshake; text names the listener, subject and expiry |
 | `tls.reload_failed` | error | a changed pair did not load (unreadable, no match, expired), also after a second read 2 s later; the old one stays. Once per content |
 | `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; at most once a day |
-| `ui.login` | info | someone logged in to the UI; `actor` is the token name, text the role |
-| `ui.login_failed` | warn | a failed UI login; `actor` only if the name is in the tokens file |
-| `ui.search` | info | a UI search; `actor` is the token name, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
+| `ui.login` | info | someone logged in to the UI; `actor` is the account, text `file` or `database` |
+| `ui.login_failed` | warn | a failed password check; `actor` only if the name is an account; text empty for a login, `confirm` for the password asked for a change |
+| `ui.login_throttled` | warn | failed checks started a wait; `actor` as above, text `account` or `source` |
+| `ui.search` | info | a UI search; `actor` is the account, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
+| `ui.view` | info | someone opened the mail's page; `actor` is the account; left out of the mail's timeline |
+| `ui.account_created`, `ui.password_set`, `ui.account_deleted` | info | an account change; `actor` made it, text is the account's name |
 | `api.request` | info | a query API request; `actor` is the token name, text the endpoint, search kind, HTTP status and number of mails (`search by=address status=200 results=1`), never the query |
 | `api.forbidden` | warn | an API token asked for an endpoint its role may not use; text the endpoint |
 | `api.view` | info | a mail's detail was returned through the API; `actor` is the token name, `mail_id` the mail; no text |

@@ -4,7 +4,7 @@ What Postwerk stores, for how long, who can read it, and how an operator meets d
 describes what is built, marks what is planned, and ends with the list of privacy changes and their status.
 
 Status: the foundation is built, including address redaction, retention, encryption at rest and the internal UI with
-its access control and address masking, the read-only query API ([api.md](api.md)) and the Sentry-protocol sink.
+its accounts and access control, the read-only query API ([api.md](api.md)) and the Sentry-protocol sink.
 The OpenTelemetry and webhook sinks, the provider status adapter, and resend and close are planned; what this page
 says about them is intent. The exact
 schema is in [architecture.md](architecture.md#store), every setting in [configuration.md](configuration.md).
@@ -85,7 +85,7 @@ the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, 
 | Webhook *(planned)* | signed events | as stdout; with [scope.md gap 11](scope.md#7-gaps-between-the-ideal-and-the-current-design) also `ref` | no | whoever runs the receiving endpoint |
 | Query API | `read` tokens: the summary of the mails one search finds (at most 20) and one mail's detail, addresses masked; `admin` tokens: also lists and the overview, addresses in full until pseudonymization; never content. Search terms only in `POST` bodies, so they stay out of access logs | yes | no | holders of an API token whose pod may connect (`api.allowFrom`) |
 | Access logs of a proxy or the calling application | Postwerk's API puts no address into a URL (change 8); what the calling application logs about its own users is up to it | only if the caller logs it | no | whoever reads those logs |
-| UI | metadata of every mail; addresses in full for `admin` tokens, masked for `read` (`j•••@e•••.com`), none after pseudonymization; never content. Searches are `POST`s, never echoed back, so addresses stay out of URLs, browser history and logs | yes | no | token holders who can open a tunnel to the admin listener ([ui.md](ui.md)) |
+| UI | metadata of every mail; addresses in full, none after pseudonymization; never content. Searches are `POST`s, never echoed back, so addresses stay out of URLs, browser history and logs; every opened mail is a `ui.view` event | yes | no | UI accounts (all admin) who can open a tunnel to the admin listener ([ui.md](ui.md)) |
 | SQLite free pages and WAL file | deleted rows until overwritten; `secure_delete` overwrites them, a checkpoint clears the WAL | yes, briefly | encrypted only | anyone with the volume |
 | Backups | a full copy of the store at that time | yes | encrypted; readable only with the key file | anyone with the backup and the key |
 | Provider | the full message, addresses, its own event history | yes | yes | provider staff and systems, under the provider's retention |
@@ -174,8 +174,8 @@ lookup, can test guesses. The EDPB names keyed one-way functions such as HMACs a
 use of the secret allows lookup tables to be built
 ([EDPB Guidelines 01/2025](https://www.edpb.europa.eu/our-work-tools/documents/public-consultations/2025/guidelines-012025-pseudonymisation_en),
 paras. 107–109, version for public consultation). So: the hash key lives in its own key file, not in the store or the
-image, and address lookups are logged and rate-limited: every UI search is a `ui.search` event with the token name
-(never the query), and each token name may search at most 30 times a minute; every API request is an `api.request`
+image, and address lookups are logged and rate-limited: every UI search is a `ui.search` event with the account name
+(never the query), and each account may search at most 30 times a minute; every API request is an `api.request`
 event with the token name and the number of mails returned, and every mail detail returned is an `api.view` event
 with the token name and the mail id; at most 60 requests per minute per token.
 
@@ -260,8 +260,7 @@ establishment, exercise or defence of legal claims. Whether a delivery record mu
 
 | Actor | Content | Addresses | Metadata | Mitigation |
 |---|---|---|---|---|
-| Holder of a `read` UI token | no | masked only; can test whether an address got mail by searching for it | yes | masked addresses (change 9, built), searches by `POST` and logged with the token name (change 8, built), 30 searches per minute; reaching the UI needs a tunnel as well (`pods/portforward` or SSH) |
-| Holder of an `admin` UI token | no; later can trigger a resend | yes | yes | few holders, named tokens, every login and search is an event; a tunnel is needed as well |
+| UI account (every account is an admin) | no; later can trigger a resend | yes; can test whether an address got mail by searching for it | yes | reaching the UI needs a tunnel first (`pods/portforward` or SSH), so only people who run Postwerk; one named account per person; every login, search, opened mail and account change is an event with the account name; searches by `POST` (change 8), 30 a minute; failed logins throttled |
 | Holder of a `read` API token (a calling application) | no | masked only; can test whether an address got mail by searching for it | the mails it looks up, at most 20 per search; no list or overview | exact-match lookups only, every request an `api.request` event with the token name and result count, every detail an `api.view` event with the mail id, 60 requests per minute per token; its pod must be in `api.allowFrom`; TLS by default in the chart |
 | Holder of an `admin` API token | no | yes, until pseudonymization | yes, including lists and the overview | give it only to an operator's own tooling; same events, limits and network rule |
 | Shell or exec in the container | **yes**, plus key files and memory | yes | yes | the image has no shell; restrict exec and debug rights; encryption does not help here |
@@ -331,15 +330,21 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   and `tls.reload_failed` and `tls.expiring` events report it before clients fail (D38).
 - **TLS on egress.** `smtps://` or `smtp://` with STARTTLS required; cleartext only with `smtp+plain://`, which refuses
   credentials.
-- **Tokens** (built for the UI). Stored as PBKDF2 hashes in `POSTWERK_UI_TOKENS_FILE`, one named token per person or
-  team (`postwerk gen-token`), so the `actor` of an event means something. Logins cost the same for every name and are
-  limited to one check per CPU at once, as for senders. Events carry the token name, never a query or an address.
+- **UI accounts** (built, D35–D37). One kind of account, admin. Everyday accounts are kept in the database with a
+  password chosen in the UI (15 to 128 characters, no composition rules, not the name; NIST SP 800-63B-4), stored as
+  PBKDF2-SHA256 hashes with 600,000 iterations; the tokens file (`POSTWERK_UI_TOKENS_FILE`, `postwerk gen-token`) is
+  start and break-glass access, also as hashes. One named account per person, so the `actor` of an event means
+  something. Every check costs the same for every name, wherever it is kept, and at most one runs per CPU at once.
+  Failed checks are throttled per name and per source address, in memory; names that do not exist are throttled the
+  same way, so the throttle reveals no names. Every account change needs the acting account's current password, ends
+  the sessions of the changed account and is an event. Events carry the account name, never a password, query or
+  address.
 - **UI** (built, [ui.md](ui.md)). On its own listener on the loopback interface, reached only through `kubectl
   port-forward` or an SSH tunnel; never on a Service, Ingress or public address. Every page needs a login; sessions
   live in memory (30 minutes idle, 8 hours at most). Every `POST` carries a CSRF token, cross-site `POST`s are refused,
   a Host allow-list stops DNS rebinding, and every response carries a strict Content-Security-Policy, `nosniff`,
-  `no-referrer`, `no-store` and `DENY` for framing; there is no JavaScript. A login or search that cannot be written to
-  the event log is refused.
+  `no-referrer`, `no-store` and `DENY` for framing; there is no JavaScript. A login, search, opened mail or account
+  change that cannot be written to the event log is refused.
 - **Query API** (built, [api.md](api.md)). Off by default; on its own listener, for other pods. Bearer tokens
   `<name>.<token>` from `POSTWERK_API_TOKENS_FILE`, hashed and checked like the UI tokens (`postwerk gen-api-token`);
   a token that passed once costs one HMAC. `read` tokens can only look up one mail or one search at a time (at most
@@ -391,10 +396,10 @@ is usually not one, but an operator relaying mail for third parties should check
 | Free text from targets | addresses redacted before storing or exporting | built |
 | Provider status | stored as a fixed word | planned with the adapter |
 | Subject | not stored | built |
-| UI | token required for every page; addresses masked for `read`; address lookups by request body, logged and rate-limited; loopback listener | built |
+| UI | login required for every page; one role, admin; address lookups by request body, logged and rate-limited; opened mails logged; loopback listener | built |
 | Query API | off by default; token required; addresses masked for `read`, no lists for `read`; search terms in request bodies, every request logged and rate-limited; NetworkPolicy and TLS in the chart | built |
 | Deleted data | SQLite `secure_delete` on; checkpoint after purges | built |
-| Secrets | sender passwords, UI and API tokens as hashes; hash key and encryption key in separate key files | built |
+| Secrets | sender passwords, UI passwords and UI and API tokens as hashes; hash key and encryption key in separate key files | built |
 | Sinks | no addresses; no SDK breadcrumbs or request data | stdout and Sentry built; others planned |
 | Capture targets | none in production; if used: no sensitive mails, UI authentication, retention of a day or less | recommendation ([README](../README.md#mailpit-recommended-for-development-and-testing-not-for-production)) |
 
@@ -413,8 +418,8 @@ Proposed in an earlier review of the design. Related gaps in
 | 6 | Encrypt the raw message at rest | built, as direct AES-256-GCM per row with key id (section 6.2), not envelope encryption; encrypting addresses too is open |
 | 7 | SQLite `secure_delete`, checkpoint after each retention run | built |
 | 8 | Keep addresses out of URLs and logs: `POST /v1/mails/search` instead of `GET /v1/mails?to=…`; token-use events record the call and the token id, not its parameters | built for the UI (search by `POST`, `ui.search` with the token name and search kind only) and the query API (`POST /v1/search`, `api.request` with the token name, endpoint, status and count only) |
-| 9 | Mask addresses for `read` tokens (`u***@example.com`), full address for `admin` | built in the query layer (`j•••@e•••.com`), shared by the UI and the API |
-| 10 | Token required for the UI, tokens stored as hashes, CSRF protection for admin actions | built: token login, PBKDF2 hashes, CSRF tokens on every form, Host check, strict headers, loopback listener |
+| 9 | Mask addresses for `read` tokens (`u***@example.com`), full address for `admin` | built in the query layer (`query.Mask`, `j•••@e•••.com`) and used by the API; the UI has no `read` role any more (D35): only people with a tunnel reach it, and each opened mail is an event |
+| 10 | Login required for the UI, secrets stored as hashes, CSRF protection for admin actions | built: password and token login, PBKDF2 hashes, throttling, re-entered password for account changes, CSRF tokens on every form, Host check, strict headers, loopback listener |
 | 11 | Hash sender passwords; refuse `AUTH` without TLS unless explicitly allowed | built, as PBKDF2-SHA256 and `AUTH PLAIN` only (decisions D15, D16) |
 | 12 | Sentry sink without SDK defaults: each error event built from the event record only, no breadcrumbs, no request data | built (section 2.4, decision D30): no SDK, fixed fields, reply text redacted again, leak test on the request body |
 | 13 | `ref` must be opaque; a `ref` with `@` is rejected | built (such a `ref` is not stored) |

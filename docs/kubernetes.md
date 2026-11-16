@@ -90,10 +90,10 @@ docker run --rm "$IMG" gen-key > hash-key
 # Target credentials: one line username:password (for Mailjet: API key and secret key).
 printf '%s:%s\n' "$MJ_APIKEY_PUBLIC" "$MJ_APIKEY_PRIVATE" > mailjet-credentials
 
-# UI tokens: one name:role:hash line per person or team (role read or admin).
-# gen-token prints the token (first line: give it to the person) and the line (second line).
-docker run --rm "$IMG" gen-token alice admin   # token, then alice:admin:pbkdf2-sha256$600000$…
-echo 'alice:admin:pbkdf2-sha256$600000$…' > ui-tokens
+# UI tokens file: start and break-glass access to the UI, one name:admin:hash line.
+# gen-token prints the token (first line: keep it for the first login) and the line (second line).
+docker run --rm "$IMG" gen-token ops   # token, then ops:admin:pbkdf2-sha256$600000$…
+echo 'ops:admin:pbkdf2-sha256$600000$…' > ui-tokens
 
 kubectl -n mail create secret generic postwerk-senders --from-file=senders=senders
 kubectl -n mail create secret generic postwerk-store-key --from-file=store-key=store-key
@@ -116,9 +116,10 @@ created by cert-manager (section 6) or by you: `kubectl -n mail create secret tl
 
 For error reports to Sentry or GlitchTip, the DSN is one more Secret (section 7.2).
 
-To add a sender or a UI token later, add a line to its file, update the Secret and restart Postwerk
-(`kubectl -n mail rollout restart deploy/<release>-postwerk`): secret files are read once at start. Without the UI,
-set `ui.enabled=false`; then the tokens Secret is not needed.
+To add a sender later, add a line to its file, update the Secret and restart Postwerk
+(`kubectl -n mail rollout restart deploy/<release>-postwerk`): secret files are read once at start. UI accounts for
+people are created in the UI itself, with passwords (section 7.1); the tokens Secret is only needed for the first
+login. Without the UI, set `ui.enabled=false`; then the tokens Secret is not needed either.
 
 ## 4. Install
 
@@ -189,7 +190,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `retention.recordRetention` | `90d` (**recommended**) | `POSTWERK_RECORD_RETENTION`. |
 | `retention.eventRetention` | `90d` (**recommended**) | `POSTWERK_EVENT_RETENTION`. |
 | `retention.secureDelete` | `on` (**recommended**) | `POSTWERK_SECURE_DELETE`. |
-| `ui.enabled` | `true` | The internal UI on `127.0.0.1:<ui.port>` in the pod (`POSTWERK_ADMIN_LISTEN`), with the tokens from `secrets.uiTokens`. `false` sets `POSTWERK_ADMIN_LISTEN=off`. |
+| `ui.enabled` | `true` | The internal UI on `127.0.0.1:<ui.port>` in the pod (`POSTWERK_ADMIN_LISTEN`), with the tokens file from `secrets.uiTokens` (an empty `secrets.uiTokens.name` leaves it out once accounts exist). `false` sets `POSTWERK_ADMIN_LISTEN=off`. |
 | `ui.port` | `8081` | Loopback port of the UI; not 2525 or 8080. It is never added to the Service. |
 | `ui.hosts` | `[]` | Extra host names the UI answers to (`POSTWERK_ADMIN_HOSTS`); not needed with port-forward. |
 | `api.enabled` | `false` | The query API ([api.md](api.md)) on `:<api.port>` in the pod and on the Service, with the tokens from `secrets.apiTokens`. |
@@ -382,15 +383,23 @@ way in, and the only one:
 
 ```sh
 kubectl -n mail port-forward deploy/postwerk 8081:8081
-# open http://localhost:8081 and sign in with your name and token
+# open http://localhost:8081 and sign in with your name and password
 ```
 
 Any local port works (`9000:8081`, then `http://localhost:9000`). The forwarded port is open to every process on your
-machine while the command runs, which is why the UI still asks for a token; stop the command when you are done.
+machine while the command runs, which is why the UI still asks for a password; stop the command when you are done.
+
+**First login and accounts.** Sign in once with the name and token from the tokens Secret (`ops` above). Under
+**Accounts**, create one account per person with a password (15 to 128 characters), confirming with the token. The
+accounts are kept in Postwerk's database on the volume, so they survive restarts and upgrades. Then either keep the
+tokens Secret, stored safely, as break-glass access, or remove it: delete the line (an empty file is fine) or set
+`secrets.uiTokens.name=""`, and upgrade or restart. If every password is lost, put a token line back and restart.
+Postwerk refuses to start with the UI on and neither a tokens file nor an account in the database.
 
 Who may open the UI is decided by Kubernetes RBAC: the `create` verb on `pods/portforward` in Postwerk's namespace
 (plus `get` on pods and deployments to find the pod). Grant it to the people who may see mail records, and to nobody
-else; with `admin` tokens they see recipient addresses in full.
+else: every UI account sees recipient addresses in full and may manage accounts. Support staff who only need to look
+up single mails should get a tool on top of the query API ([api.md](api.md)) instead, not cluster access.
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -416,8 +425,9 @@ subjects:
 ```
 
 The tunnel travels inside the API server's TLS connection. Do not add a Service port, an Ingress, a
-NetworkPolicy rule or a sidecar proxy for the UI: each would make it reachable from the cluster network. Every login
-and search is an event in the pod log (`ui.login`, `ui.login_failed`, `ui.search`, with the token name as `actor`).
+NetworkPolicy rule or a sidecar proxy for the UI: each would make it reachable from the cluster network. Every login,
+search, opened mail and account change is an event in the pod log (`ui.login`, `ui.login_failed`, `ui.search`,
+`ui.view`, `ui.account_created`, …, with the account name as `actor`).
 
 ### 7.2 Errors to Sentry or GlitchTip
 

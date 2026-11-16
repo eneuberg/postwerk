@@ -64,17 +64,20 @@ through a tunnel (`kubectl port-forward`, `ssh -L`), so it binds to the loopback
 |---|---|---|---|
 | `POSTWERK_ADMIN_LISTEN` | `127.0.0.1:8081` (**recommended**) | a loopback address (`127.0.0.0/8`, `[::1]`, `localhost`) with a port; `off` or empty turns it off | Address of the admin listener. Another address is a configuration error unless the next variable is `true`. Must differ from the health and SMTP listeners. |
 | `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` | `false` (**recommended**) | `true`, `false` | Allow a non-loopback admin address. Needed only inside a Docker container whose port is published on the host's loopback (`127.0.0.1:8081:8081`): Docker's port publishing cannot reach the container's own loopback. A warning is logged at every start. |
-| `POSTWERK_UI_TOKENS_FILE` | required while the admin listener is on | path | Who may log in. One line per person or team: `name:role:pbkdf2-sha256$<iterations>$<salt>$<key>`, role `read` (addresses masked) or `admin` (addresses in full). Names: `[a-z0-9][a-z0-9._-]{0,63}`. Empty lines and `#` lines are ignored. Secret file. |
+| `POSTWERK_UI_TOKENS_FILE` | none; needed until the UI has an account in the database | path | Start and break-glass access to the UI. One line per account: `name:admin:pbkdf2-sha256$<iterations>$<salt>$<key>`; every UI account is an admin, a `read` line is an error. Names: `[a-z0-9][a-z0-9._-]{0,63}`. Empty lines and `#` lines are ignored. Read once at start. Secret file. |
 | `POSTWERK_ADMIN_HOSTS` | none | comma-separated host names or IP addresses, no port | Host names the UI answers to besides `localhost`, `127.0.0.1` and `[::1]` (any port). Every other `Host` gets `403`, against DNS rebinding. Needed only if people reach the UI under another name, for example through a jump host. |
 
-Create a token with `postwerk gen-token <name> <read|admin>`: it prints a random token (32 bytes, base64url) on the
-first line and the tokens-file line on the second. Give the token to the person; Postwerk keeps only the hash.
-`POSTWERK_UI_TOKENS_FILE`, `POSTWERK_ADMIN_HOSTS` or `POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` set while the admin listener
-is `off` is a configuration error (ambiguous).
+Create a token with `postwerk gen-token <name>`: it prints a random token (32 bytes, base64url) on the first line and
+the tokens-file line on the second. Postwerk keeps only the hash. Log in with it once, create accounts with passwords
+under **Accounts**, then remove the line or the file if you like ([ui.md](ui.md#2-accounts-and-login)). Accounts with
+passwords live in the database (`POSTWERK_DATA`), not in a variable. With the admin listener on and neither a tokens
+file nor an account in the database, Postwerk does not start. `POSTWERK_UI_TOKENS_FILE`, `POSTWERK_ADMIN_HOSTS` or
+`POSTWERK_ADMIN_ALLOW_NON_LOOPBACK` set while the admin listener is `off` is a configuration error (ambiguous).
 
-Fixed, not configurable: sessions end after 30 minutes without a request and 8 hours after the login; at most one
-token check per CPU at once (a login waits up to 5 s, then gets "try again"); at most 30 searches per minute per token
-name.
+Fixed, not configurable: sessions end after 30 minutes without a request and 8 hours after the login; passwords have
+15 to 128 characters; at most one password check per CPU at once (a login waits up to 5 s, then gets "try again");
+after 5 failed checks for one name (20 from one address) further logins wait 1 minute, doubling up to 15 minutes; at
+most 30 searches per minute per account.
 
 ## Query API
 
@@ -326,7 +329,7 @@ non-empty value stops the start.
 | `postwerk` or `postwerk serve` | Run the relay. |
 | `postwerk hash-password` | Read one password from stdin, print the value for the senders file. |
 | `postwerk gen-key` | Print a new key line for a store or hash key file. |
-| `postwerk gen-token <name> <read\|admin>` | Print a new UI token and its line for `POSTWERK_UI_TOKENS_FILE`. |
+| `postwerk gen-token <name>` | Print a new UI token and its line for `POSTWERK_UI_TOKENS_FILE` (always role `admin`; `gen-token <name> admin` works too). |
 | `postwerk gen-api-token <name> <read\|admin>` | Print a new API bearer value (`<name>.<token>`) and its line for `POSTWERK_API_TOKENS_FILE`. |
 | `postwerk version` | Print the version. |
 
@@ -345,8 +348,8 @@ non-empty value stops the start.
 - [ ] **No capture target in production.**
 - [ ] **HTTP listener** reachable only by the probes (`:8080` inside the container, never published).
 - [ ] **Admin listener** on loopback (`127.0.0.1:8081`, the default) and opened only through `kubectl port-forward` or
-      an SSH tunnel; no Service port, Ingress or public address. A tokens file with one named token per person,
-      `admin` only for those who need full addresses. Or `POSTWERK_ADMIN_LISTEN=off`.
+      an SSH tunnel; no Service port, Ingress or public address. One account with a password per person, created in
+      the UI; the tokens file removed or kept safely as break-glass access. Or `POSTWERK_ADMIN_LISTEN=off`.
 - [ ] **Query API** off (the default), or on with TLS, one token per calling application, `read` unless full
       addresses or the lists are needed, and in Kubernetes `api.allowFrom` naming only those applications.
 - [ ] **In Kubernetes:** the chart's NetworkPolicy on, SMTP only from the sending pods, no Ingress, `LoadBalancer` or
