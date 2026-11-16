@@ -21,6 +21,15 @@ UI, from your machine only (needs the RBAC right to port-forward to pods here):
   The UI listens on the pod's loopback only; never add a Service port or Ingress for it.
 
 {{ end -}}
+{{ if .Values.api.enabled -}}
+Query API (docs/api.md), for the pods in api.allowFrom only:
+  {{ if .Values.api.tls.enabled }}https{{ else }}http{{ end }}://{{ include "postwerk.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.api.port }}/v1/
+  Authorization: Bearer <name>.<token> from postwerk gen-api-token, lines in the Secret {{ .Values.secrets.apiTokens.name }}
+  {{- if not .Values.api.allowFrom }}
+  api.allowFrom is empty: the NetworkPolicy lets no pod in yet.
+  {{- end }}
+
+{{ end -}}
 Events (one JSON line each) are in the pod log:
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "postwerk.fullname" . }} -f
 

@@ -62,6 +62,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail "ui.port must be a free port between 1 and 65535, not 2525 (SMTP) or 8080 (health)" }}
 {{- end }}
 {{- end }}
+{{- if .Values.api.enabled }}
+{{- $port := int .Values.api.port }}
+{{- if or (lt $port 1) (gt $port 65535) (eq $port 2525) (eq $port 8080) (and .Values.ui.enabled (eq $port (int .Values.ui.port))) }}
+{{- fail "api.port must be a free port between 1 and 65535, not 2525 (SMTP), 8080 (health) or ui.port" }}
+{{- end }}
+{{- if and .Values.api.tls.enabled (not .Values.api.tls.secretName) (not .Values.tls.enabled) }}
+{{- fail "api.tls.enabled needs api.tls.secretName, or tls.enabled=true to share the SMTP certificate" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.targets }}
 {{- fail "targets: at least one target is required" }}
 {{- end }}
@@ -73,6 +82,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail (printf "targets: %s needs a url" .name) }}
 {{- end }}
 {{- end }}
+{{- end }}
+
+{{/* Host names for POSTWERK_API_HOSTS: the Service names and api.hosts. */}}
+{{- define "postwerk.apiHosts" -}}
+{{- $svc := include "postwerk.fullname" . }}
+{{- $ns := .Release.Namespace }}
+{{- $hosts := list $svc (printf "%s.%s" $svc $ns) (printf "%s.%s.svc" $svc $ns) (printf "%s.%s.svc.%s" $svc $ns .Values.clusterDomain) }}
+{{- range .Values.api.hosts }}{{ $hosts = append $hosts (lower .) }}{{ end }}
+{{- join "," $hosts }}
 {{- end }}
 
 {{/* Comma-separated target names for POSTWERK_TARGETS. */}}

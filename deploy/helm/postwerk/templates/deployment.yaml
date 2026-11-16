@@ -68,6 +68,11 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.api.enabled }}
+            - name: api
+              containerPort: {{ int .Values.api.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: POSTWERK_SMTP_LISTEN
               value: ":2525"
@@ -90,6 +95,21 @@ spec:
             {{- else }}
             - name: POSTWERK_ADMIN_LISTEN
               value: "off"
+            {{- end }}
+            {{- if .Values.api.enabled }}
+            # The query API on the pod address, for the pods in api.allowFrom.
+            - name: POSTWERK_API_LISTEN
+              value: {{ printf ":%d" (int .Values.api.port) | quote }}
+            - name: POSTWERK_API_TOKENS_FILE
+              value: /run/secrets/api-tokens/tokens
+            - name: POSTWERK_API_HOSTS
+              value: {{ include "postwerk.apiHosts" . | quote }}
+            {{- if .Values.api.tls.enabled }}
+            - name: POSTWERK_API_TLS_CERT_FILE
+              value: /run/secrets/api-tls/tls.crt
+            - name: POSTWERK_API_TLS_KEY_FILE
+              value: /run/secrets/api-tls/tls.key
+            {{- end }}
             {{- end }}
             {{- with .Values.hostname }}
             - name: POSTWERK_HOSTNAME
@@ -207,6 +227,16 @@ spec:
               mountPath: /run/secrets/ui-tokens
               readOnly: true
             {{- end }}
+            {{- if .Values.api.enabled }}
+            - name: api-tokens
+              mountPath: /run/secrets/api-tokens
+              readOnly: true
+            {{- if .Values.api.tls.enabled }}
+            - name: api-tls
+              mountPath: /run/secrets/api-tls
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- range .Values.targets }}
             {{- if .credentialsSecret }}
             - name: target-{{ .name | replace "_" "-" }}
@@ -278,6 +308,26 @@ spec:
             items:
               - key: {{ .Values.secrets.uiTokens.key }}
                 path: tokens
+        {{- end }}
+        {{- if .Values.api.enabled }}
+        - name: api-tokens
+          secret:
+            secretName: {{ .Values.secrets.apiTokens.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.apiTokens.key }}
+                path: tokens
+        {{- if .Values.api.tls.enabled }}
+        - name: api-tls
+          secret:
+            secretName: {{ .Values.api.tls.secretName | default .Values.tls.secretName }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
         {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls

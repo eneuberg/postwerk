@@ -49,6 +49,10 @@ secrets:
   uiTokens:
     name: postwerk-ui-tokens
     key: tokens
+  # API tokens file (postwerk gen-api-token). Required while api.enabled.
+  apiTokens:
+    name: postwerk-api-tokens
+    key: tokens
 
 # STARTTLS on ingress. Recommended: on. Most SMTP clients (Go's net/smtp,
 # gomail, PHPMailer, nodemailer with requireTLS) refuse to send a password
@@ -130,6 +134,27 @@ ui:
   # Extra host names the UI answers to besides localhost, 127.0.0.1 and
   # [::1] (POSTWERK_ADMIN_HOSTS). Not needed with port-forward.
   hosts: []
+
+# JSON query API (docs/api.md) for other applications in the cluster: look
+# up what happened to one mail. Off by default. When on, it listens on the
+# pod address, gets a port on the ClusterIP Service, and the NetworkPolicy
+# lets in only the pods in api.allowFrom (empty: nobody).
+api:
+  enabled: false
+  port: 8082
+  # NetworkPolicy peers allowed to call the API, for example
+  #   - podSelector: {matchLabels: {app: support-tool}}
+  allowFrom: []
+  # Host names the API answers to (POSTWERK_API_HOSTS), besides the
+  # Service names, which are always allowed.
+  hosts: []
+  # TLS on the API (bearer tokens cross the pod network). Recommended: on.
+  # The certificate comes from a kubernetes.io/tls Secret; empty secretName
+  # means the SMTP one (tls.secretName), whose names are the Service names.
+  # It is reloaded when the Secret changes.
+  tls:
+    enabled: true
+    secretName: ""
 
 service:
   # Expose the HTTP port (8080, /healthz and /readyz) on the Service too, for

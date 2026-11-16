@@ -29,6 +29,14 @@ spec:
         - port: 8080
           protocol: TCP
     {{- end }}
+    # The API only from the configured callers; none by default.
+    {{- if and .Values.api.enabled .Values.api.allowFrom }}
+    - from:
+        {{- toYaml .Values.api.allowFrom | nindent 8 }}
+      ports:
+        - port: {{ int .Values.api.port }}
+          protocol: TCP
+    {{- end }}
   egress:
     {{- if $np.egress.dns.enabled }}
     - to:

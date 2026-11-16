@@ -19,6 +19,12 @@ spec:
       port: 2525
       targetPort: smtp
       protocol: TCP
+    {{- if .Values.api.enabled }}
+    - name: api
+      port: {{ int .Values.api.port }}
+      targetPort: api
+      protocol: TCP
+    {{- end }}
     {{- if .Values.service.exposeHTTP }}
     - name: http
       port: 8080

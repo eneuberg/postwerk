@@ -21,6 +21,16 @@ targets:
 ui:
   port: 9081
   hosts: [relay.example.test]
+api:
+  enabled: true
+  allowFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: support
+      podSelector:
+        matchLabels:
+          app: support-tool
+  hosts: [Postwerk.example.test]
 extraEnv: []
 service:
   exposeHTTP: true
