@@ -159,3 +159,41 @@ func TestRunWakes(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// stuck blocks every export until its context ends.
+type stuck struct{ calls chan struct{} }
+
+func (s *stuck) Name() string { return "stuck" }
+func (s *stuck) Export(ctx context.Context, _ store.Event) error {
+	select {
+	case s.calls <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestStuckSinkDoesNotHoldUpOthers(t *testing.T) {
+	s := openStore(t)
+	var buf testutil.SafeBuffer
+	st := &stuck{calls: make(chan struct{}, 1)}
+	r := New(Options{Store: s, Sinks: []Sink{st, NewStdout(&buf, "")}, Interval: time.Hour})
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	addMail(t, s, "pw_1")
+	r.Wake()
+	<-st.calls
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(buf.String(), "delivery.skipped") {
+		if time.Now().After(deadline) {
+			t.Fatal("stdout waited for the stuck sink")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if c, _ := s.Cursor(context.Background(), "stuck"); c != 0 {
+		t.Fatalf("stuck cursor = %d", c)
+	}
+}
