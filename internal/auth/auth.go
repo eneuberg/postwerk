@@ -164,9 +164,7 @@ func newSenders(users map[string]hash) *Senders {
 	}
 	// Checking against the dummy costs as much as the most expensive real
 	// hash. Its key is random, so no password matches it.
-	s.dummy = hash{iterations: maxIter, salt: make([]byte, saltLen), key: make([]byte, keyLen)}
-	_, _ = rand.Read(s.dummy.salt)
-	_, _ = rand.Read(s.dummy.key)
+	s.dummy = newDummy(maxIter)
 	return s
 }
 
@@ -232,6 +230,8 @@ func (s *Senders) Cached(name, password string) bool {
 	s.mu.Unlock()
 	return cached != nil && hmac.Equal(cached, s.mac(password))
 }
+
+func fillRandom(b []byte) { _, _ = rand.Read(b) }
 
 // derive is PBKDF2-SHA256; tests count the iterations through it.
 var derive = func(password string, salt []byte, iterations, keyLength int) ([]byte, error) {

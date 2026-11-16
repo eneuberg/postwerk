@@ -90,11 +90,21 @@ const (
 	// delivery is failed and nothing was sent.
 	KindDecryptFailed = "store.decrypt_failed"
 
-	// Events of people using the UI (U13). They name the token in Actor and
-	// never carry a search query or an address.
+	// Events of people using the UI (U13). They name the account in Actor
+	// and never carry a search query, an address or a password.
 	KindUILogin       = "ui.login"
 	KindUILoginFailed = "ui.login_failed"
 	KindUISearch      = "ui.search"
+	// KindUILoginThrottled: failed logins for one name or from one source
+	// started a wait (U22); the text is "account" or "source".
+	KindUILoginThrottled = "ui.login_throttled"
+	// KindUIView: someone opened the detail page of the event's mail (U24).
+	KindUIView = "ui.view"
+	// Account changes in the admin panel (U17–U21); the text is the name
+	// of the account changed, Actor the account that changed it.
+	KindUIAccountCreated = "ui.account_created"
+	KindUIAccountDeleted = "ui.account_deleted"
+	KindUIPasswordSet    = "ui.password_set"
 )
 
 // ErrNotSending is returned when a recipient that should be in "sending" is

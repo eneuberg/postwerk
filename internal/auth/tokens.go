@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -86,6 +88,17 @@ func (t *Tokens) Known(name string) bool {
 	_, ok := t.roles[name]
 	return ok
 }
+
+// Iterations returns the cost of one Verify: the strongest iteration count
+// in the file. Callers that also check other hashes pad those to the same
+// cost (Checker).
+func (t *Tokens) Iterations() int { return t.check.dummy.iterations }
+
+// Names returns the names in the file, sorted.
+func (t *Tokens) Names() []string { return slices.Sorted(maps.Keys(t.roles)) }
+
+// Role returns the role of name, empty if name is not in the file.
+func (t *Tokens) Role(name string) Role { return t.roles[name] }
 
 // Len returns the number of tokens.
 func (t *Tokens) Len() int { return len(t.roles) }
