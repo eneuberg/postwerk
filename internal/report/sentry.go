@@ -395,14 +395,13 @@ func (s *Sentry) envelope(e store.Event, now time.Time) ([]byte, error) {
 	if e.Recipient != nil {
 		ev.Extra["recipient"] = *e.Recipient // position, never the address
 	}
-	if e.Actor == "" {
-		if e.Code != 0 {
-			ev.Extra["smtp_code"] = e.Code
-		}
+	switch {
+	case FromSMTPReply(e):
+		ev.Extra["smtp_code"] = e.Code
 		if text != "" {
 			ev.Extra["smtp_text"] = text
 		}
-	} else if text != "" {
+	case text != "":
 		ev.Extra["text"] = text
 	}
 	payload, err := marshal(ev)

@@ -206,6 +206,17 @@ func TestSentryEnvelope(t *testing.T) {
 	if EventID("prod", e3) == id {
 		t.Fatal("ids collide across databases")
 	}
+
+	// A text without a reply code is no SMTP reply: "text", no smtp_*.
+	tlsEvent := store.Event{Seq: 7, Time: e.Time, Kind: "tls.expiring", Level: store.Error,
+		Text: "smtp: the served certificate expires in 6 days"}
+	if err := s.Export(ctx, tlsEvent); err != nil {
+		t.Fatal(err)
+	}
+	extra, _ = marshal(parseEnvelope(t, f.last()).event["extra"])
+	if string(extra) != `{"seq":7,"text":"smtp: the served certificate expires in 6 days"}` {
+		t.Fatalf("extra of a non-SMTP event %s", extra)
+	}
 }
 
 func TestSentryLevels(t *testing.T) {

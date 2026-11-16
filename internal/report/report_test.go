@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,8 +75,9 @@ func TestStdoutLine(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &m); err != nil {
 		t.Fatal(err)
 	}
+	// Its text is no SMTP reply: "text", not "smtp".
 	if m["kind"] != "delivery.skipped" || m["target"] != "t" || m["recipient"] != float64(0) ||
-		m["smtp"].(map[string]any)["text"] != "skipped" {
+		m["text"] != "skipped" || m["smtp"] != nil {
 		t.Fatalf("second line = %s", lines[1])
 	}
 	if strings.Contains(buf.String(), "@") {
@@ -99,6 +101,28 @@ func TestStdoutLine(t *testing.T) {
 	want = `{"seq":3,"time":"2025-11-13T02:13:20.123Z","level":"info","kind":"ui.login","actor":"ops","text":"admin","instance":"prod"}`
 	if got := strings.TrimSpace(buf.String()); got != want {
 		t.Fatalf("line:\n%s\nwant\n%s", got, want)
+	}
+
+	// "smtp" only for an event with a reply code; any other text is "text".
+	buf.Reset()
+	for _, e := range []store.Event{
+		{Time: at, MailID: "pw_1", Target: "t", Kind: store.KindDeliveryRetry, Level: store.Warn, Code: 451, Text: "4.3.0 try later"},
+		{Time: at, Kind: "tls.expiring", Level: store.Error, Text: "api: the served certificate expires in 6 days"},
+	} {
+		if err := s.Append(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	wantLines := []string{
+		`{"seq":4,"time":"2025-11-13T02:13:20.123Z","level":"warn","kind":"delivery.retry","mail_id":"pw_1","target":"t","smtp":{"code":451,"text":"4.3.0 try later"},"sender":"app","instance":"prod"}`,
+		`{"seq":5,"time":"2025-11-13T02:13:20.123Z","level":"error","kind":"tls.expiring","text":"api: the served certificate expires in 6 days","instance":"prod"}`,
+	}
+	if !slices.Equal(got, wantLines) {
+		t.Fatalf("lines:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wantLines, "\n"))
 	}
 }
 
