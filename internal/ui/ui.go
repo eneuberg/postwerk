@@ -7,7 +7,8 @@
 // token and must not come from another site. There is one kind of account,
 // admin: from the tokens file (start and break-glass access) or from the
 // database (managed on the settings pages). The pages read through
-// internal/query; nothing here touches message content. Searches are POSTs,
+// internal/query; an admin's close or resend of a delivery goes through
+// internal/resolve. Nothing here touches message content. Searches are POSTs,
 // and neither the query, an address nor a password is ever logged or
 // written to an event.
 package ui
@@ -28,6 +29,7 @@ import (
 
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/query"
+	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -82,6 +84,8 @@ type AccountStore interface {
 // Options configure the UI.
 type Options struct {
 	Query *query.Service
+	// Resolve runs the admin actions on a delivery: close and resend.
+	Resolve *resolve.Service
 	// Tokens are the accounts of the tokens file; nil without one.
 	Tokens   Verifier
 	Accounts AccountStore
@@ -124,8 +128,8 @@ type UI struct {
 
 // New returns the UI.
 func New(opts Options) (*UI, error) {
-	if opts.Query == nil || opts.Accounts == nil || opts.Events == nil {
-		return nil, errors.New("ui: Query, Accounts and Events are required")
+	if opts.Query == nil || opts.Resolve == nil || opts.Accounts == nil || opts.Events == nil {
+		return nil, errors.New("ui: Query, Resolve, Accounts and Events are required")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)

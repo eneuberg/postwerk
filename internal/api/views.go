@@ -72,8 +72,11 @@ type params struct {
 type deliveryRecipient struct {
 	Position int          `json:"position"`
 	Status   store.Status `json:"status"`
-	LastCode int          `json:"last_code,omitempty"`
-	LastText string       `json:"last_text,omitempty"`
+	// Resolution is set when an admin closed the recipient: confirmed
+	// (status handed_off) or given_up (status failed).
+	Resolution store.Resolution `json:"resolution,omitempty"`
+	LastCode   int              `json:"last_code,omitempty"`
+	LastText   string           `json:"last_text,omitempty"`
 }
 
 type delivery struct {
@@ -97,6 +100,9 @@ type event struct {
 	Attempt   int         `json:"attempt,omitempty"`
 	Code      int         `json:"code,omitempty"`
 	Text      string      `json:"text,omitempty"`
+	// Actor names the account or token of a close or resend; only for
+	// admin tokens.
+	Actor string `json:"actor,omitempty"`
 }
 
 type mailDetail struct {
@@ -118,7 +124,8 @@ type mailDetail struct {
 	EventsTruncated bool         `json:"events_truncated"`
 }
 
-func detail(m query.MailDetail) mailDetail {
+// detail is the JSON of one mail; full is set for admin tokens.
+func detail(m query.MailDetail, full bool) mailDetail {
 	d := mailDetail{
 		ID: m.ID, ReceivedAt: utc(m.ReceivedAt), Sender: m.Sender, Size: m.Size, Ref: m.Ref, MessageID: m.MessageID,
 		EnvelopeFrom: addr(m.EnvelopeFrom),
@@ -131,27 +138,36 @@ func detail(m query.MailDetail) mailDetail {
 		d.Recipients = append(d.Recipients, recipient{Position: i, address: addr(r)})
 	}
 	for _, dl := range m.Deliveries {
-		x := delivery{
-			Target: dl.Target, Status: dl.Status, Attempts: dl.Attempts, NextAttempt: optTime(dl.NextAttempt),
-			DataSentAt: optTime(dl.DataSent), LastCode: dl.LastCode, LastText: dl.LastText,
-			Recipients: []deliveryRecipient{},
-		}
-		for _, r := range dl.Recipients {
-			x.Recipients = append(x.Recipients, deliveryRecipient{
-				Position: r.Position, Status: r.Status, LastCode: r.LastCode, LastText: r.LastText})
-		}
-		d.Deliveries = append(d.Deliveries, x)
+		d.Deliveries = append(d.Deliveries, deliveryView(dl))
 	}
 	for _, e := range m.Events {
-		if e.Actor != "" {
+		admin := e.Kind == store.KindDeliveryClosed || e.Kind == store.KindDeliveryResend
+		if e.Actor != "" && !admin {
 			continue // caused by a person or a token (api.view, ui.view): not part of the mail's history
 		}
-		d.Events = append(d.Events, event{
+		ev := event{
 			Seq: e.Seq, Time: utc(e.Time), Kind: e.Kind, Level: e.Level, Target: e.Target, Recipient: e.Recipient,
 			Attempt: e.Attempt, Code: e.Code, Text: e.Text,
-		})
+		}
+		if full {
+			ev.Actor = e.Actor
+		}
+		d.Events = append(d.Events, ev)
 	}
 	return d
+}
+
+func deliveryView(dl query.DeliveryDetail) delivery {
+	x := delivery{
+		Target: dl.Target, Status: dl.Status, Attempts: dl.Attempts, NextAttempt: optTime(dl.NextAttempt),
+		DataSentAt: optTime(dl.DataSent), LastCode: dl.LastCode, LastText: dl.LastText,
+		Recipients: []deliveryRecipient{},
+	}
+	for _, r := range dl.Recipients {
+		x.Recipients = append(x.Recipients, deliveryRecipient{
+			Position: r.Position, Status: r.Status, Resolution: r.Resolution, LastCode: r.LastCode, LastText: r.LastText})
+	}
+	return x
 }
 
 type targetOverview struct {

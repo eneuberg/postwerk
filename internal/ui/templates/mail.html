@@ -1,5 +1,7 @@
 {{define "content"}}
-{{$m := .Data}}
+{{$m := .Data.Mail}}
+{{$v := .Data}}
+{{$csrf := .CSRF}}
 <div class="page-head">
   <h1>Mail <span class="mono id">{{$m.ID}}</span></h1>
   <span class="st {{statusClass $m.Status}}">{{status $m.Status}}</span>
@@ -26,11 +28,14 @@
   </ol>
 </section>
 
-{{range $m.Deliveries}}
-<section class="card delivery">
+{{range $i, $d := $m.Deliveries}}
+{{$a := index $v.Actions $i}}
+<section class="card delivery" id="target-{{.Target}}">
   <header class="delivery-head">
     <h2>{{.Target}}</h2>
     <span class="st {{statusClass .Status}}">{{status .Status}}</span>
+    {{if $a.Confirmed}}<span class="tag tag-closed">closed: confirmed{{if gt (len .Recipients) 1}} ({{$a.Confirmed}}){{end}}</span>{{end}}
+    {{if $a.GivenUp}}<span class="tag tag-closed">closed: given up{{if gt (len .Recipients) 1}} ({{$a.GivenUp}}){{end}}</span>{{end}}
   </header>
   <dl class="facts">
     <div><dt>Attempts</dt><dd class="num">{{.Attempts}}</dd></div>
@@ -46,13 +51,14 @@
     <tr>
       <td class="r num">{{.Position}}</td>
       <td>{{template "addr" .Address}}</td>
-      <td><span class="st {{statusClass .Status}}">{{status .Status}}</span></td>
+      <td><span class="st {{statusClass .Status}}">{{status .Status}}</span>{{with .Resolution}} <span class="muted small-inline">closed: {{resolution .}}</span>{{end}}</td>
       <td>{{if .LastCode}}<span class="mono">{{.LastCode}}</span> {{end}}<span class="break">{{.LastText}}</span></td>
     </tr>
     {{end}}
     </tbody>
   </table>
   </div>
+  {{template "actions" (actions $d $a $v.MaxNote $csrf $m.ID $i)}}
 </section>
 {{end}}
 
@@ -66,7 +72,7 @@
     {{range $m.Events}}
     <tr class="{{levelClass .Level}}">
       <td class="nowrap">{{when .Time}}</td>
-      <td class="nowrap"><span class="lv" title="level {{.Level}}">{{.Level}}</span> <span class="mono">{{.Kind}}</span></td>
+      <td class="nowrap"><span class="lv" title="level {{.Level}}">{{.Level}}</span> <span class="mono">{{.Kind}}</span>{{with .Actor}} <span class="muted">by {{.}}</span>{{end}}</td>
       <td>{{.Target}}</td>
       <td class="r num">{{if .Recipient}}{{deref .Recipient}}{{end}}</td>
       <td class="r num">{{if .Attempt}}{{.Attempt}}{{end}}</td>
@@ -77,4 +83,56 @@
   </table>
   </div>
 </section>
+{{end}}
+
+{{define "actions"}}
+{{$d := .Delivery}}{{$a := .Actions}}
+{{if $a.Show}}
+<div class="actions" aria-label="Admin actions for {{$d.Target}}">
+  <h3>Resolve</h3>
+  {{with $a.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+  <div class="action-row">
+  {{if $a.Resend.OK}}
+  <details class="action"{{if eq $a.Failed "resend"}} open{{end}}>
+    <summary>Resend…</summary>
+    <form method="post" action="/mails/{{.MailID}}/targets/{{$d.Target}}/resend" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <p>Queues the {{$a.Resend.Recipients}} {{if eq $a.Resend.Recipients 1}}recipient that is{{else}}recipients that are{{end}} failed or unknown at {{$d.Target}} again and sends at once, with the retries left in the retry window. Recipients that were handed off are not sent again.</p>
+      {{if $a.Resend.Duplicate}}
+      <p class="notice notice-warn">An unknown recipient may already have this mail: the connection broke after the message was sent. Check at the target first; if it has the mail, close the delivery as confirmed instead.</p>
+      <label class="check"><input type="checkbox" name="duplicate" value="yes" required> Resend anyway; it may arrive twice.</label>
+      {{end}}
+      <label for="resend-current-{{.Index}}">Your current password</label>
+      <input id="resend-current-{{.Index}}" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit">Resend to {{$d.Target}}</button></div>
+    </form>
+  </details>
+  {{else}}
+  <p class="action-off"><button type="button" disabled>Resend</button> <span class="muted">{{$a.Resend.Reason}}</span></p>
+  {{end}}
+  {{if $a.Close.OK}}
+  <details class="action"{{if eq $a.Failed "close"}} open{{end}}>
+    <summary>Close…</summary>
+    <form method="post" action="/mails/{{.MailID}}/targets/{{$d.Target}}/close" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <p>Ends the delivery for its {{$a.Close.Recipients}} open {{if eq $a.Close.Recipients 1}}recipient{{else}}recipients{{end}} (queued, unknown or failed): nothing is sent any more, and retention no longer turns them into failed. The stored message is removed at once if no other delivery needs it. This cannot be undone.</p>
+      <fieldset>
+        <legend>Resolution</legend>
+        <label class="check"><input type="radio" name="resolution" value="confirmed"{{if not $a.Close.ConfirmOK}} disabled{{end}}> Confirmed: I checked at the target, it has the mail <span class="muted">(shown as handed off)</span></label>
+        {{if not $a.Close.ConfirmOK}}<p class="muted small-inline">Not for queued recipients: they were never handed to the target.</p>{{end}}
+        <label class="check"><input type="radio" name="resolution" value="given_up" required> Given up: nobody sends it <span class="muted">(shown as failed)</span></label>
+      </fieldset>
+      <label for="close-note-{{.Index}}">Note <span class="muted">(optional, at most {{.MaxNote}} characters; addresses are removed)</span></label>
+      <input id="close-note-{{.Index}}" name="note" type="text" maxlength="{{.MaxNote}}">
+      <label for="close-current-{{.Index}}">Your current password</label>
+      <input id="close-current-{{.Index}}" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit" class="danger">Close delivery to {{$d.Target}}</button></div>
+    </form>
+  </details>
+  {{else}}
+  <p class="action-off"><button type="button" disabled>Close</button> <span class="muted">{{$a.Close.Reason}}</span></p>
+  {{end}}
+  </div>
+</div>
+{{end}}
 {{end}}

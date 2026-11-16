@@ -19,6 +19,9 @@ func (u *UI) pageRoutes(mux *http.ServeMux) {
 	// The search form is on the mails page and posts to it.
 	mux.HandleFunc("POST /mails", u.authed(u.search))
 	mux.HandleFunc("GET /mails/{id}", u.authed(u.mail))
+	// The admin actions on one delivery (D53–D55).
+	mux.HandleFunc("POST /mails/{id}/targets/{target}/close", u.authed(u.resolveAction(actionClose)))
+	mux.HandleFunc("POST /mails/{id}/targets/{target}/resend", u.authed(u.resolveAction(actionResend)))
 	// The old search page; its query, if any, is dropped.
 	mux.HandleFunc("GET /search", u.authed(redirectTo("/mails")))
 }
@@ -136,24 +139,7 @@ func (u *UI) mail(w http.ResponseWriter, r *http.Request, sess session) {
 		u.fail(w, r, http.StatusNotFound, "There is no mail with this id.")
 		return
 	}
-	m, err := u.opts.Query.Mail(r.Context(), id, query.Full)
-	if errors.Is(err, query.ErrNotFound) {
-		u.fail(w, r, http.StatusNotFound, "There is no mail with this id. It may have been deleted by retention.")
-		return
-	}
-	if err != nil {
-		u.queryFailed(w, r, "mail", err)
-		return
-	}
-	err = u.opts.Events.Append(r.Context(), store.Event{
-		Time: u.opts.Now(), Kind: store.KindUIView, Level: store.Info, MailID: m.ID, Actor: sess.name,
-	})
-	if err != nil {
-		u.opts.Logger.Error("ui: writing the view event failed; page not shown", "err", err)
-		u.fail(w, r, http.StatusServiceUnavailable, "Opening the mail could not be recorded, so it is not shown. Please try again later.")
-		return
-	}
-	u.render(w, r, http.StatusOK, "mail", pageView(sess, "mails", "Mail "+m.ID, m))
+	u.showMail(w, r, sess, id, http.StatusOK, nil)
 }
 
 type searchKind struct {

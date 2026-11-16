@@ -475,6 +475,8 @@ type RecipientDetail struct {
 	Status   store.Status
 	LastCode int
 	LastText string
+	// Resolution is set when an admin closed the recipient (D53).
+	Resolution store.Resolution
 }
 
 // DeliveryDetail is one delivery of a mail.
@@ -542,7 +544,8 @@ func (s *Service) Mail(ctx context.Context, id string, access Access) (MailDetai
 			DataSent: dl.DataSent, LastCode: dl.LastCode, LastText: dl.LastText,
 		}
 		for _, r := range dl.Recipients {
-			rd := RecipientDetail{Position: r.Position, Status: r.Status, LastCode: r.LastCode, LastText: r.LastText}
+			rd := RecipientDetail{Position: r.Position, Status: r.Status, LastCode: r.LastCode, LastText: r.LastText,
+				Resolution: r.Resolution}
 			if r.Position >= 0 && r.Position < len(d.Recipients) {
 				rd.Address = d.Recipients[r.Position]
 			}

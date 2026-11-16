@@ -1,5 +1,6 @@
-// Package api serves Postwerk's read-only JSON query API on its own
-// listener (H2, H4–H9; docs/api.md).
+// Package api serves Postwerk's JSON query API on its own listener (H2,
+// H4–H9; docs/api.md): lookups, and for admin tokens the close and resend
+// of a delivery (D53–D55).
 //
 // Another application in the cluster asks "what happened to the mail for
 // this id, ref, Message-ID or address?" with a bearer token. A read token can
@@ -35,6 +36,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/fold"
 	"github.com/eneuberg/postwerk/internal/query"
+	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -94,9 +96,12 @@ type EventLog interface {
 
 // Options configure the API.
 type Options struct {
-	Query  *query.Service
-	Tokens Verifier
-	Events EventLog
+	Query *query.Service
+	// Resolve runs the admin actions on a delivery: close and resend
+	// (admin tokens only).
+	Resolve *resolve.Service
+	Tokens  Verifier
+	Events  EventLog
 	// Hosts, if not empty, are the only Host names (without port) the API
 	// answers to (POSTWERK_API_HOSTS). Empty: any.
 	Hosts  []string
@@ -121,8 +126,8 @@ type API struct {
 
 // New returns the API handler.
 func New(opts Options) (*API, error) {
-	if opts.Query == nil || opts.Tokens == nil || opts.Events == nil {
-		return nil, errors.New("api: Query, Tokens and Events are required")
+	if opts.Query == nil || opts.Resolve == nil || opts.Tokens == nil || opts.Events == nil {
+		return nil, errors.New("api: Query, Resolve, Tokens and Events are required")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -249,7 +254,11 @@ type result struct {
 	by     query.SearchBy
 	// viewed is the id of the mail whose detail is returned (2xx only).
 	viewed string
-	body   any
+	// recorded: the endpoint changed a delivery and wrote its own events
+	// with the token name as actor, in the same transaction (2xx only);
+	// they take the place of api.request.
+	recorded bool
+	body     any
 }
 
 func failed(status int, code, msg string) result {
@@ -293,6 +302,10 @@ func (a *API) handle(e endpoint) http.HandlerFunc {
 			return
 		}
 		res := e.fn(r, c)
+		if res.recorded {
+			writeJSON(w, res.status, res.body)
+			return
+		}
 		ev := store.Event{Time: a.opts.Now(), Kind: KindView, Level: store.Info, Actor: c.name, MailID: res.viewed}
 		if res.viewed == "" {
 			ev.Kind, ev.Text = KindRequest, e.name

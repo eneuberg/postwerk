@@ -22,6 +22,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/keys"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/report"
+	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
 )
@@ -93,7 +94,11 @@ type harness struct {
 	logs   *testutil.SafeBuffer
 	tokens *countingVerifier
 	hasher *addrhash.Hasher
+	// wakes counts the wake signals a resend gave the workers.
+	wakes atomic.Int32
 }
+
+func (h *harness) wake() { h.wakes.Add(1) }
 
 func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	t.Helper()
@@ -113,11 +118,12 @@ func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	h := &harness{t: t, st: st, clock: &clock{t: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		logs: &testutil.SafeBuffer{}, tokens: &countingVerifier{Verifier: tokens}, hasher: addrhash.New(ring)}
 	o := Options{
-		Query:  query.New(query.Options{Store: st, Hasher: h.hasher, Targets: []string{"mailjet"}, Now: h.clock.Now}),
-		Tokens: h.tokens,
-		Events: st,
-		Logger: testutil.Logger(h.logs),
-		Now:    h.clock.Now,
+		Query:   query.New(query.Options{Store: st, Hasher: h.hasher, Targets: []string{"mailjet"}, Now: h.clock.Now}),
+		Resolve: resolve.New(resolve.Options{Store: st, Targets: []string{"mailjet"}, Wake: h.wake, Now: h.clock.Now}),
+		Tokens:  h.tokens,
+		Events:  st,
+		Logger:  testutil.Logger(h.logs),
+		Now:     h.clock.Now,
 	}
 	for _, f := range opts {
 		f(&o)
@@ -157,8 +163,11 @@ func (h *harness) seed(id string, at time.Time, rcpts []string, results []store.
 		Text: "2.0.0 OK", NextAttempt: at.Add(time.Hour)}
 	for i, s := range results {
 		code, text, kind, level := 250, "2.0.0 OK", store.KindDeliveryHandedOff, store.Info
-		if s == store.Failed {
+		switch s {
+		case store.Failed:
 			code, text, kind, level = 550, "5.1.1 <"+rcpts[i]+">: mailbox unavailable", store.KindDeliveryFailed, store.Error
+		case store.Unknown:
+			code, text, kind, level = 0, "connection reset after the message", store.KindDeliveryUnknown, store.Error
 		}
 		res.Recipients = append(res.Recipients, store.RecipientResult{
 			Position: i, Status: s, Code: code, Text: text, Kind: kind, Level: level})

@@ -38,6 +38,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/keys"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/report"
+	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/retention"
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
@@ -357,7 +358,9 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	var adminSrv *http.Server
 	var adminL net.Listener
 	if cfg.Admin.Listen != "" {
-		q := query.New(queryOptions(cfg, st, mgr))
+		qo := queryOptions(cfg, st, mgr)
+		q := query.New(qo)
+		rs := resolve.New(resolve.Options{Store: st, Targets: qo.Targets, Wake: mgr.Wake})
 		var tokens ui.Verifier // nil without a tokens file
 		if cfg.Admin.Tokens != nil {
 			tokens = cfg.Admin.Tokens
@@ -366,7 +369,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		var u *ui.UI
 		if err == nil {
 			u, err = ui.New(ui.Options{
-				Query: q, Tokens: tokens, Accounts: st, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
+				Query: q, Resolve: rs, Tokens: tokens, Accounts: st, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
 				Logger: logger,
 			})
 		}
@@ -550,8 +553,11 @@ func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, log
 	if cfg.API.Listen == "" {
 		return nil, nil, nil, nil, nil
 	}
-	q := query.New(queryOptions(cfg, st, mgr))
-	a, err := api.New(api.Options{Query: q, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts, Logger: logger})
+	qo := queryOptions(cfg, st, mgr)
+	q := query.New(qo)
+	rs := resolve.New(resolve.Options{Store: st, Targets: qo.Targets, Wake: mgr.Wake})
+	a, err := api.New(api.Options{Query: q, Resolve: rs, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts,
+		Logger: logger})
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

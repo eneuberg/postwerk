@@ -60,6 +60,16 @@ func TestDemo(t *testing.T) {
 		map[string][]store.Status{"mailjet": nil, "capture": ok})
 	h.seedMail("pw_01KDEMOQUEUED00000000000002", now.Add(-3*time.Minute), []string{"later@example.com"},
 		map[string][]store.Status{"mailjet": nil})
+	// Admin actions (D53–D55): an unknown delivery that can be resent or
+	// closed, one an admin closed already, and one whose message retention
+	// removed (it turned failed; close only).
+	h.sender = "auth-service"
+	h.seedMail("pw_01KDEMOUNKNOWN000000000001", now.Add(-2*time.Hour), []string{"nina@example.com", "ole@example.org"},
+		map[string][]store.Status{"mailjet": {store.Unknown, store.Unknown}, "capture": {store.HandedOff, store.HandedOff}})
+	h.seedMail("pw_01KDEMOCLOSED0000000000001", now.Add(-5*time.Hour), []string{"paul@example.com"},
+		map[string][]store.Status{"mailjet": {store.Unknown}})
+	h.seedMail("pw_01KDEMOEXPIRED000000000001", now.Add(-4*24*time.Hour), []string{"rita@example.com"},
+		map[string][]store.Status{"mailjet": {store.Unknown}})
 	if _, err := h.st.Retain(context.Background(), store.RetainPolicy{
 		RawMaxAge: 7 * 24 * time.Hour, RawKeepAfterFailure: 72 * time.Hour, PseudonymizeAfter: 48 * time.Hour, RecordRetention: 90 * 24 * time.Hour,
 		EventRetention: 90 * 24 * time.Hour, Pseudonymize: hs.Hash,
@@ -68,6 +78,11 @@ func TestDemo(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	if _, err := h.st.CloseDelivery(ctx, store.Close{MailID: "pw_01KDEMOCLOSED0000000000001", Target: "mailjet",
+		Resolution: store.Confirmed, Note: "found as sent in the provider's message log", Actor: "alice", Via: "ui",
+		At: now.Add(-4 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 	for _, a := range []struct{ name, by string }{{"alice", "ops"}, {"bob.support", "alice"}} {
 		hash, err := auth.Hash("demo-password-"+a.name, auth.MinIterations)
 		if err != nil {

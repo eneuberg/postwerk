@@ -107,6 +107,21 @@ var funcs = template.FuncMap{
 	"dec":         func(n int) int { return n - 1 },
 	"deref":       func(p *int) int { return *p },
 	"levelClass":  func(l store.Level) string { return "lv-" + string(l) },
+	"resolution":  func(r store.Resolution) string { return strings.ReplaceAll(string(r), "_", " ") },
+	"actions": func(d query.DeliveryDetail, a deliveryActions, maxNote int, csrf, mailID string, i int) actionsData {
+		return actionsData{Delivery: d, Actions: a, MaxNote: maxNote, CSRF: csrf, MailID: mailID, Index: i}
+	},
+}
+
+// actionsData is what the "actions" template of the mail page gets for one
+// delivery.
+type actionsData struct {
+	Delivery query.DeliveryDetail
+	Actions  deliveryActions
+	MaxNote  int
+	CSRF     string
+	MailID   string
+	Index    int
 }
 
 // formatTime shows a time in UTC to the second, or a dash.

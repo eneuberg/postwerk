@@ -20,6 +20,11 @@ func (a *API) routes(mux *http.ServeMux) {
 	// Lists, for admin tokens only (H6).
 	mux.Handle("/v1/mails", a.handle(endpoint{name: "mails", method: http.MethodGet, admin: true, fn: a.mails}))
 	mux.Handle("/v1/overview", a.handle(endpoint{name: "overview", method: http.MethodGet, admin: true, fn: a.overview}))
+	// Changes, for admin tokens only (D53–D55).
+	mux.Handle("/v1/mails/{id}/targets/{target}/close",
+		a.handle(endpoint{name: "close", method: http.MethodPost, admin: true, fn: a.closeDelivery}))
+	mux.Handle("/v1/mails/{id}/targets/{target}/resend",
+		a.handle(endpoint{name: "resend", method: http.MethodPost, admin: true, fn: a.resendDelivery}))
 }
 
 func access(c caller) query.Access {
@@ -85,7 +90,10 @@ func (a *API) search(r *http.Request, c caller) result {
 	return res
 }
 
-var mailIDRe = regexp.MustCompile(`^pw_[0-9A-Za-z_]{1,64}$`)
+var (
+	mailIDRe = regexp.MustCompile(`^pw_[0-9A-Za-z_]{1,64}$`)
+	targetRe = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+)
 
 // mail returns one mail (H5): addresses in full only for admin.
 func (a *API) mail(r *http.Request, c caller) result {
@@ -104,7 +112,7 @@ func (a *API) mail(r *http.Request, c caller) result {
 		a.opts.Logger.Error("api: reading the store failed", "endpoint", "mail", "err", err)
 		return failed(http.StatusInternalServerError, "internal", "The store could not be read. Details are in the log.")
 	}
-	return result{status: http.StatusOK, count: 1, viewed: m.ID, body: detail(m)}
+	return result{status: http.StatusOK, count: 1, viewed: m.ID, body: detail(m, c.role == auth.RoleAdmin)}
 }
 
 type listResponse struct {

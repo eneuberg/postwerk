@@ -18,6 +18,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/addrhash"
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/query"
+	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
 )
@@ -96,7 +97,11 @@ type harness struct {
 	sender string // of seeded mails; default "shop"
 	// setupEvents is the number of events the harness wrote itself.
 	setupEvents int
+	// wakes counts the wake signals a resend gave the workers.
+	wakes atomic.Int32
 }
+
+func (h *harness) wake() { h.wakes.Add(1) }
 
 func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	t.Helper()
@@ -124,6 +129,7 @@ func newHarnessWithHasher(t *testing.T, hs *addrhash.Hasher, opts ...func(*Optio
 	h.setupEvents = len(h.events())
 	o := Options{
 		Query:      query.New(query.Options{Store: st, Hasher: hs, Targets: []string{"mailjet", "capture"}, Now: h.clock.Now}),
+		Resolve:    resolve.New(resolve.Options{Store: st, Targets: []string{"mailjet", "capture"}, Wake: h.wake, Now: h.clock.Now}),
 		Tokens:     h.tokens,
 		Accounts:   st,
 		Iterations: auth.MinIterations,
