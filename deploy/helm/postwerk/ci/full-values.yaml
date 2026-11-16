@@ -32,6 +32,9 @@ api:
           app: support-tool
   hosts: [Postwerk.example.test]
 extraEnv: []
+sentry:
+  enabled: true
+  minLevel: warn
 service:
   exposeHTTP: true
 networkPolicy:
@@ -40,6 +43,8 @@ networkPolicy:
         matchLabels:
           kubernetes.io/metadata.name: monitoring
   egress:
+    sentry:
+      cidrs: [192.0.2.0/24]
     extra:
       - to:
           - namespaceSelector:

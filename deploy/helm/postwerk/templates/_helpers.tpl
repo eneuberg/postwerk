@@ -71,6 +71,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail "api.tls.enabled needs api.tls.secretName, or tls.enabled=true to share the SMTP certificate" }}
 {{- end }}
 {{- end }}
+{{- if .Values.sentry.enabled }}
+{{- if not (has (toString .Values.sentry.minLevel) (list "error" "warn")) }}
+{{- fail "sentry.minLevel must be error or warn" }}
+{{- end }}
+{{- if not .Values.secrets.sentryDsn.name }}
+{{- fail "sentry.enabled needs secrets.sentryDsn (an existing Secret with the DSN)" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.targets }}
 {{- fail "targets: at least one target is required" }}
 {{- end }}

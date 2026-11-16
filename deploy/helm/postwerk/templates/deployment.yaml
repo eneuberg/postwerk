@@ -167,6 +167,16 @@ spec:
               value: {{ .Values.retention.eventRetention | toString | quote }}
             - name: POSTWERK_SECURE_DELETE
               value: {{ .Values.retention.secureDelete | toString | quote }}
+            {{- if .Values.sentry.enabled }}
+            - name: POSTWERK_SENTRY_DSN_FILE
+              value: /run/secrets/sentry/dsn
+            - name: POSTWERK_SENTRY_MIN_LEVEL
+              value: {{ .Values.sentry.minLevel | quote }}
+            {{- if .Values.sentry.allowHTTP }}
+            - name: POSTWERK_SENTRY_ALLOW_HTTP
+              value: "true"
+            {{- end }}
+            {{- end }}
             - name: POSTWERK_TARGETS
               value: {{ include "postwerk.targetNames" . | quote }}
             {{- range .Values.targets }}
@@ -236,6 +246,11 @@ spec:
               mountPath: /run/secrets/api-tls
               readOnly: true
             {{- end }}
+            {{- end }}
+            {{- if .Values.sentry.enabled }}
+            - name: sentry-dsn
+              mountPath: /run/secrets/sentry
+              readOnly: true
             {{- end }}
             {{- range .Values.targets }}
             {{- if .credentialsSecret }}
@@ -328,6 +343,15 @@ spec:
               - key: tls.key
                 path: tls.key
         {{- end }}
+        {{- end }}
+        {{- if .Values.sentry.enabled }}
+        - name: sentry-dsn
+          secret:
+            secretName: {{ .Values.secrets.sentryDsn.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.sentryDsn.key }}
+                path: dsn
         {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls

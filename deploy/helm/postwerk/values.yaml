@@ -53,6 +53,10 @@ secrets:
   apiTokens:
     name: postwerk-api-tokens
     key: tokens
+  # Sentry or GlitchTip DSN, one line. Required while sentry.enabled.
+  sentryDsn:
+    name: postwerk-sentry
+    key: dsn
 
 # STARTTLS on ingress. Recommended: on. Most SMTP clients (Go's net/smtp,
 # gomail, PHPMailer, nodemailer with requireTLS) refuse to send a password
@@ -156,6 +160,19 @@ api:
     enabled: true
     secretName: ""
 
+# Error events to Sentry or a Sentry-compatible tool such as GlitchTip
+# (docs/kubernetes.md, "Errors to Sentry or GlitchTip"). The DSN comes from
+# secrets.sentryDsn. Events carry ids, target, sender login and SMTP code,
+# never addresses or content.
+sentry:
+  enabled: false
+  # error (recommended) or warn; warn adds retries, unreachable targets and
+  # failed UI logins.
+  minLevel: error
+  # Accept an http:// DSN, for a GlitchTip inside the cluster on a network
+  # that encrypts traffic between nodes. Never for a DSN on the internet.
+  allowHTTP: false
+
 service:
   # Expose the HTTP port (8080, /healthz and /readyz) on the Service too, for
   # monitoring. Probes do not need it.
@@ -210,6 +227,13 @@ networkPolicy:
     # ports to any address; narrow targetCIDRs if your provider publishes ranges.
     targetPorts: [587, 465]
     targetCIDRs: [0.0.0.0/0]
+    # Sentry or GlitchTip on HTTPS, only while sentry.enabled. NetworkPolicy
+    # knows no host names: narrow the CIDRs to the addresses of your Sentry
+    # host if it has fixed ones. For a GlitchTip inside the cluster, use
+    # extra instead.
+    sentry:
+      port: 443
+      cidrs: [0.0.0.0/0]
     # More egress rules, for example to an in-cluster capture tool.
     extra: []
 

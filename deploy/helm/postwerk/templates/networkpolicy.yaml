@@ -59,6 +59,17 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
+    {{- if .Values.sentry.enabled }}
+    # The Sentry-protocol sink: HTTPS to the Sentry host.
+    - to:
+        {{- range $np.egress.sentry.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: {{ $np.egress.sentry.port }}
+          protocol: TCP
+    {{- end }}
     {{- with $np.egress.extra }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
