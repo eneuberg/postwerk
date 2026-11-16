@@ -28,8 +28,10 @@ const maxInput = 4096
 // The token ends at white space (ASCII or Unicode), brackets, quotes and
 // common separators; every other character, including non-ASCII letters of
 // an internationalized address (RFC 6531), belongs to it. A quoted local
-// part ("jane doe"@example.com) counts as part of the token.
-var addrRe = regexp.MustCompile(`<?(?:"[^"]*"|[^\s\p{Z}<>"'(),;:\[\]]*)@[^\s\p{Z}<>"'(),;:\[\]]*>?`)
+// part ("jane doe"@example.com, 'jane'@example.com) counts as part of the
+// token. The "@" may also be URL-encoded (%40) or a full-width or small
+// commercial at, as in a link or a reply that echoes an address that way.
+var addrRe = regexp.MustCompile(`<?(?:"[^"]*"|'[^'\s]*'|[^\s\p{Z}<>"'(),;:\[\]]*)(?:@|%40|\x{FF20}|\x{FE6B})[^\s\p{Z}<>"'(),;:\[\]]*>?`)
 
 // Text returns s with addresses replaced, control characters removed, runs of
 // white space collapsed and the length cut to MaxLen bytes.

@@ -72,7 +72,9 @@ becomes `<redacted>`, control characters are removed, and the length is capped a
 enhanced status code (`5.1.1`) stay, because they carry the useful information. Events are append-only and exported to
 every sink, so an address that got in once would be copied everywhere; redaction at write time prevents that.
 Internationalized addresses (UTF-8, such as `jörg@exämple.test`) are redacted the same way: an address token ends only
-at white space (ASCII or Unicode), brackets, quotes or separators, so non-ASCII letters are part of it. A leak test in
+at white space (ASCII or Unicode), brackets, quotes or separators, so non-ASCII letters are part of it. A quoted
+local part (`"jane doe"@…`, `'jane'@…`) belongs to the token, and an `@` written as `%40`, `＠` (full width) or `﹫`
+counts as one. An address written without any of them (`jane at example.com`) is not recognized. A leak test in
 the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, change 14).
 
 ### 2.2 Outside the store

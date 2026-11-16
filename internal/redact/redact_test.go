@@ -29,6 +29,11 @@ func TestText(t *testing.T) {
 		{"用户@例子.广告 rejected", "<redacted> rejected"},
 		{"to\u00a0用户@例子.广告\u3000rejected", "to <redacted> rejected"},
 		{"кто-то@пример.рф,ünï@b.test", "<redacted>,<redacted>"},
+		{"550 user 'jane'@example.com unknown", "550 user <redacted> unknown"},
+		{"550 see https://x.test/?rcpt=jane%40example.com", "550 see https:<redacted>"},
+		{"550 <jane\uff20example.com> unknown", "550 <redacted> unknown"},
+		{"550 jane\ufe6bexample.com unknown", "550 <redacted> unknown"},
+		{"it's 100% done, 'ok'", "it's 100% done, 'ok'"},
 	}
 	for _, tt := range tests {
 		if got := Text(tt.in); got != tt.want {
