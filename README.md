@@ -27,8 +27,8 @@ one, and tests can read them through Mailpit's API.
 
 **Production:** leave Mailpit out. It keeps every mail in full, including password reset links, which is a privacy
 problem. Rely on Postwerk's audit log instead: it records what happened to each mail without keeping its content.
-Errors, such as a rejected provider login, are reported as events: JSON on stdout, and to Sentry or GlitchTip
-(Sentry protocol) if you set a DSN. OpenTelemetry and webhooks are planned.
+Errors, such as a rejected provider login, are reported as events (JSON on stdout today; OpenTelemetry, Sentry protocol
+and webhooks are planned).
 
 ## How the SMTP relay works
 
@@ -37,7 +37,7 @@ delivers one copy to each configured target (a provider such as Mailjet, a captu
 server) and retries temporary failures. Every step goes into an append-only event log. The raw message is removed once
 every target has it.
 
-![Architecture diagram: senders deliver mail over SMTP to the ingress, which stores it; delivery sends one copy to each target; a reporter turns the event log into reports. Provider status and the OpenTelemetry and webhook reports are planned, not built; the UI, the query API and the stdout and Sentry reports are built.](docs/architecture.svg)
+![Architecture diagram: senders deliver mail over SMTP to the ingress, which stores it; delivery sends one copy to each target; a reporter turns the event log into reports; a support tool or an admin asks the query API or the UI whether a mail got through. The UI, the query API and the stdout and Sentry reports are built; provider status and the OpenTelemetry and webhook reports are planned.](docs/architecture.svg)
 
 ## Postwerk compared with Postfix and maddy
 

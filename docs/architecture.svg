@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 490" width="960" height="490" role="img" aria-labelledby="title desc">
   <title id="title">Postwerk architecture</title>
-  <desc id="desc">Senders deliver finished mails over SMTP to the ingress. The ingress stores each mail, then replies 250. Delivery fetches due mails from the store and sends one copy to each target: a provider such as Mailjet, a capture tool such as Mailpit, or any SMTP server. Provider status polls the provider's API and writes the result to the store. The reporter reads the event log and reports to stdout, OpenTelemetry, Sentry protocol and webhooks. The query API and UI read from the store and answer over HTTP. Planned, not built yet: provider status, and the OpenTelemetry and webhook sinks. The UI, the query API and the stdout and Sentry sinks are built.</desc>
+  <desc id="desc">Senders deliver finished mails over SMTP to the ingress. The ingress stores each mail, then replies 250. Delivery fetches due mails from the store and sends one copy to each target: a provider such as Mailjet, a capture tool such as Mailpit, or any SMTP server. Provider status polls the provider's API and writes the result to the store. The reporter reads the event log and reports to stdout, OpenTelemetry, Sentry protocol and webhooks. The query API and the UI read from the store and answer over HTTP: a support tool or an admin asks whether a mail got through. Built: ingress, store, delivery, the reporter with the stdout and Sentry-protocol sinks, the query API and the UI. Planned, not built yet: provider status and the OpenTelemetry and webhook sinks.</desc>
   <style>
     svg { --ink: #18212b; --muted: #5a6573; --accent: #0e6f68; }
     @media (prefers-color-scheme: dark) { svg { --ink: #e5eaf0; --muted: #9aa6b3; --accent: #4cc2b3; } }
@@ -35,7 +35,7 @@
   <text class="s c" x="110" y="318">finished mails over SMTP,</text>
   <text class="s c" x="110" y="334">login per sender</text>
   <rect class="box" x="20" y="372" width="180" height="52" rx="8"/>
-  <text class="h c" x="110" y="396">Admin, scripts</text>
+  <text class="h c" x="110" y="396">Support tool, admin</text>
   <text class="s c" x="110" y="413">"did mail X get through?"</text>
 
   <line class="ar" x1="200" y1="106" x2="278" y2="120"/>
