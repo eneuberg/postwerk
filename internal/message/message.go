@@ -20,6 +20,11 @@ const (
 	HeaderSkip = "X-Postwerk-Skip"
 	// HeaderMailjetCustomID is Mailjet's tracking header.
 	HeaderMailjetCustomID = "X-MJ-CustomID"
+	// HeaderMailjetTrackOpen and HeaderMailjetTrackClick switch Mailjet's
+	// open and click tracking for one message ("0" off, "1" on), over the
+	// account's setting (dev.mailjet.com/smtp-relay/custom-headers).
+	HeaderMailjetTrackOpen  = "X-Mailjet-TrackOpen"
+	HeaderMailjetTrackClick = "X-Mailjet-TrackClick"
 )
 
 const (

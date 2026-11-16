@@ -122,7 +122,7 @@ func TestNoUTF8AddressLeaks(t *testing.T) {
 	// Both replies went to Sentry as well; the leak check at cleanup
 	// searches those envelopes too.
 	h.stop()
-	for _, want := range []string{`"delivery.failed at rejecting: 550 5.1.1 <redacted>: unknown user <redacted>"`,
+	for _, want := range []string{`"delivery.rejected at rejecting: 550 5.1.1 <redacted>: unknown user <redacted>"`,
 		`"delivery.retry at later: 451 4.2.0 mailbox <redacted> busy"`} {
 		if !strings.Contains(h.sentry.String(), want) {
 			t.Fatalf("sentry has no %s:\n%s", want, h.sentry.String())
@@ -188,12 +188,16 @@ func TestSizeBoundaryLeavesRoomForOwnHeaders(t *testing.T) {
 	other := newTarget(t, plain, nil, "", "")
 	other.set(func(b *behavior) { b.size = strconv.Itoa(configured) })
 	targets := []config.Target{
-		target("mj", mj, plain, func(t *config.Target) { t.Status = config.StatusMailjet }),
+		target("mj", mj, plain, func(t *config.Target) {
+			t.Status, t.MailjetTracking = config.StatusMailjet, config.TrackingOff
+		}),
 		target("other", other, plain),
 	}
 	added := MaxAddedBytes(targets)
-	// X-Postwerk-Id and X-MJ-CustomID, each "Name: pw_<26>\r\n".
-	if want := len("X-Postwerk-Id: \r\n") + id.Len + len("X-MJ-CustomID: \r\n") + id.Len; added != want {
+	// X-Postwerk-Id and X-MJ-CustomID, each "Name: pw_<26>\r\n", and the
+	// two tracking switches (D47).
+	if want := len("X-Postwerk-Id: \r\n") + id.Len + len("X-MJ-CustomID: \r\n") + id.Len +
+		len("X-Mailjet-TrackOpen: 0\r\n") + len("X-Mailjet-TrackClick: 0\r\n"); added != want {
 		t.Fatalf("MaxAddedBytes = %d, want %d", added, want)
 	}
 	if n := MaxAddedBytes(targets[1:]); n != len("X-Postwerk-Id: \r\n")+id.Len {

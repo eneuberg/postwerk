@@ -12,6 +12,10 @@ targets:
     url: smtp://in-v3.mailjet.com:587
     credentialsSecret: {name: postwerk-target-mailjet, key: credentials}
     status: mailjet
+    mailjetTracking: "off"
+  - name: relay
+    url: smtps://relay.internal.test
+    caConfigMap: {name: relay-ca}
   - name: capture_test
     url: smtp+plain://mailpit.mailpit.svc:1025
     optional: true

@@ -75,6 +75,7 @@ type fakeTarget struct {
 	mu       sync.Mutex
 	b        behavior
 	received []received
+	auths    int // AUTH attempts
 }
 
 type scheme int
@@ -160,6 +161,12 @@ func (f *fakeTarget) set(fn func(b *behavior)) {
 	fn(&f.b)
 }
 
+func (f *fakeTarget) authCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.auths
+}
+
 func (f *fakeTarget) got() []received {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -186,6 +193,7 @@ func (s *fakeSession) Auth(string) (sasl.Server, error) {
 	return sasl.NewPlainServer(func(_, user, pass string) error {
 		s.f.mu.Lock()
 		fail := s.f.b.authFail
+		s.f.auths++
 		s.f.mu.Unlock()
 		if fail || user != s.f.user || pass != s.f.pass {
 			return &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "authentication failed"}
@@ -366,9 +374,10 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 
 	opts := Options{
 		Store: st, Sealer: ho.workerSealer, Targets: targets, Logger: logger, HeloName: "postwerk.test",
-		Backoff:      func(int) time.Duration { return 20 * time.Millisecond },
-		PollInterval: 50 * time.Millisecond,
-		DialTimeout:  2 * time.Second, CommandTimeout: 2 * time.Second, SubmissionTimeout: 3 * time.Second,
+		Backoff:       func(int) time.Duration { return 20 * time.Millisecond },
+		PollInterval:  50 * time.Millisecond,
+		ProbeInterval: 20 * time.Millisecond, ProbeMaxInterval: 80 * time.Millisecond,
+		DialTimeout: 2 * time.Second, CommandTimeout: 2 * time.Second, SubmissionTimeout: 3 * time.Second,
 	}
 	if ho.rootCAs != nil {
 		opts.rootCAs = ho.rootCAs.Pool
@@ -522,6 +531,23 @@ func (h *harness) eventsOf(mailID string) []store.Event {
 	return out
 }
 
+// targetEvents returns the events of one kind about the target itself, not
+// about a mail.
+func (h *harness) targetEvents(target, kind string) []store.Event {
+	h.t.Helper()
+	evs, err := h.store.EventsAfter(context.Background(), 0, 10000)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var out []store.Event
+	for _, e := range evs {
+		if e.Target == target && e.Kind == kind && e.MailID == "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func kinds(evs []store.Event, target string) []string {
 	var out []string
 	for _, e := range evs {
@@ -639,36 +665,102 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+// A rejected login takes the target down, not each mail (D45): one
+// target.down, no further logins but the probes, and when the login works
+// again one target.recovered and the queue goes out.
 func TestTargetAuthFailedThenFixed(t *testing.T) {
 	cert := testutil.NewCert(t)
 	mj := newTarget(t, startTLS, &cert, "apikey", "apisecret")
 	mj.set(func(b *behavior) { b.authFail = true })
 	h := startPostwerk(t, []config.Target{target("mailjet", mj, startTLS)}, harnessOpts{rootCAs: &cert})
 
-	mailID := h.send([]string{canary}, testMsg)
-	testutil.Eventually(t, timeout, "two failed attempts", func() bool {
-		return h.delivery(mailID, "mailjet").Attempts >= 2
-	})
-	d := h.delivery(mailID, "mailjet")
-	if d.Status != store.Queued && d.Status != store.Sending {
-		t.Fatalf("status = %s, want queued", d.Status)
+	first := h.send([]string{canary}, testMsg)
+	testutil.Eventually(t, timeout, "target down", func() bool { return len(h.targetEvents("mailjet", store.KindTargetDown)) == 1 })
+	var ids []string
+	for range 3 {
+		ids = append(ids, h.send([]string{canary}, testMsg))
 	}
-	evs := h.eventsOf(mailID)
-	var authEv *store.Event
-	for i := range evs {
-		if evs[i].Kind == store.KindTargetAuthFailed {
-			authEv = &evs[i]
-			break
+	// Several probes run (20 ms doubling to 80 ms); the queued mails are
+	// not attempted while the target is down.
+	time.Sleep(400 * time.Millisecond)
+	down := h.targetEvents("mailjet", store.KindTargetDown)
+	if len(down) != 1 || down[0].Level != store.Error || down[0].Code != 535 ||
+		down[0].Text != "auth: 5.7.8 authentication failed" {
+		t.Fatalf("target.down = %+v", down)
+	}
+	for _, id := range ids {
+		if d := h.delivery(id, "mailjet"); d.Attempts != 0 || d.Status != store.Queued {
+			t.Fatalf("%s attempted while the target is down: %+v", id, d)
 		}
 	}
-	if authEv == nil || authEv.Level != store.Error || authEv.Code != 535 || authEv.Text != "5.7.8 authentication failed" {
-		t.Fatalf("auth event = %+v", authEv)
+	if d := h.delivery(first, "mailjet"); d.Attempts != 1 || d.Status != store.Queued {
+		t.Fatalf("first mail = %+v", d)
+	}
+	logins := mj.authCount()
+	if logins < 3 || logins > 12 {
+		t.Fatalf("%d logins in 400 ms, want the first attempt plus a few probes", logins)
+	}
+	var retry *store.Event
+	for _, e := range h.eventsOf(first) {
+		if e.Kind == store.KindDeliveryRetry {
+			retry = &e
+		}
+		if e.Level == store.Error {
+			t.Fatalf("error event for the mail: %+v", e)
+		}
+	}
+	if retry == nil || retry.Level != store.Warn || retry.Code != 535 || !strings.Contains(retry.Text, "target down (auth)") {
+		t.Fatalf("retry event = %+v", retry)
+	}
+	if hs := h.mgr.Health(); len(hs) != 1 || !hs[0].Down || hs[0].Reason != ReasonAuth {
+		t.Fatalf("health = %+v", hs)
 	}
 
 	mj.set(func(b *behavior) { b.authFail = false })
-	d = h.waitStatus(mailID, "mailjet", store.HandedOff)
-	if d.Attempts < 2 || len(mj.got()) != 1 {
-		t.Fatalf("delivery = %+v, received %d", d, len(mj.got()))
+	for _, id := range append(ids, first) {
+		h.waitStatus(id, "mailjet", store.HandedOff)
+	}
+	rec := h.targetEvents("mailjet", store.KindTargetRecovered)
+	if len(rec) != 1 || rec[0].Level != store.Info || !strings.HasPrefix(rec[0].Text, "auth, down for ") {
+		t.Fatalf("target.recovered = %+v", rec)
+	}
+	if hs := h.mgr.Health(); hs[0].Down || hs[0].Reason != "" {
+		t.Fatalf("health after recovery = %+v", hs)
+	}
+	// One Sentry report for the outage (the sink sends warn and above here:
+	// the down event and the first mail's retry).
+	h.stop()
+	if n := strings.Count(h.sentry.String(), `"kind":"target.down"`); n != 1 {
+		t.Fatalf("%d target.down reports to sentry", n)
+	}
+}
+
+// Mails of a target that is down still fail when their retry window ends.
+func TestTargetDownRetryWindowEnds(t *testing.T) {
+	cert := testutil.NewCert(t)
+	mj := newTarget(t, startTLS, &cert, "apikey", "apisecret")
+	mj.set(func(b *behavior) { b.authFail = true })
+	h := startPostwerk(t, []config.Target{target("mailjet", mj, startTLS, func(t *config.Target) {
+		t.RetryWindow = 600 * time.Millisecond
+	})}, harnessOpts{rootCAs: &cert})
+
+	first := h.send([]string{canary}, testMsg)
+	testutil.Eventually(t, timeout, "target down", func() bool { return len(h.targetEvents("mailjet", store.KindTargetDown)) == 1 })
+	second := h.send([]string{canary, "second@example.test"}, testMsg)
+	for _, id := range []string{first, second} {
+		h.waitStatus(id, "mailjet", store.Failed)
+	}
+	var failed []store.Event
+	for _, e := range h.eventsOf(second) {
+		if e.Kind == store.KindDeliveryFailed {
+			failed = append(failed, e)
+		}
+	}
+	if len(failed) != 2 || failed[0].Level != store.Error || !strings.Contains(failed[0].Text, "while the target was down (auth)") {
+		t.Fatalf("failed events = %+v", failed)
+	}
+	if d := h.delivery(second, "mailjet"); d.Attempts != 0 || !d.NextAttempt.IsZero() {
+		t.Fatalf("second = %+v", d)
 	}
 }
 
@@ -689,30 +781,53 @@ func TestTemporaryRetries(t *testing.T) {
 	}
 }
 
+// A permanent failure the operator must act on is delivery.failed (error,
+// warn for an optional target); a recipient address the target refuses is
+// delivery.rejected (warn), the sender's matter (D46).
 func TestPermanentFailure(t *testing.T) {
 	f := newTarget(t, plain, nil, "", "")
 	f.set(func(b *behavior) {
-		b.rcptErr = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "<" + canary + ">: Recipient address rejected"}
+		b.rcptErrs = map[string][]error{
+			canary: {
+				&smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "<" + canary + ">: Recipient address rejected"},
+				&smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "<" + canary + ">: Recipient address rejected"},
+			},
+			"relay@example.test": {
+				&smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "Relay access denied"},
+				&smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "Relay access denied"},
+			},
+		}
 	})
 	h := startPostwerk(t, []config.Target{
 		target("mailpit", f, plain),
 		target("optional", f, plain, func(t *config.Target) { t.Optional = true }),
 	}, harnessOpts{})
 
-	mailID := h.send([]string{canary}, testMsg)
+	mailID := h.send([]string{canary, "relay@example.test"}, testMsg)
 	d := h.waitStatus(mailID, "mailpit", store.Failed)
 	h.waitStatus(mailID, "optional", store.Failed)
-	if d.Attempts != 1 || d.LastCode != 550 || d.LastText != "5.1.1 <redacted>: Recipient address rejected" {
+	if d.Attempts != 1 || d.Recipients[0].LastCode != 550 ||
+		d.Recipients[0].LastText != "5.1.1 <redacted>: Recipient address rejected" {
 		t.Fatalf("delivery = %+v", d)
 	}
-	levels := map[string]store.Level{}
+	type key struct {
+		target string
+		pos    int
+	}
+	got := map[key]string{}
 	for _, e := range h.eventsOf(mailID) {
-		if e.Kind == store.KindDeliveryFailed {
-			levels[e.Target] = e.Level
+		if e.Recipient != nil && (e.Kind == store.KindDeliveryFailed || e.Kind == store.KindDeliveryRejected) {
+			got[key{e.Target, *e.Recipient}] = e.Kind + "/" + string(e.Level)
 		}
 	}
-	if levels["mailpit"] != store.Error || levels["optional"] != store.Warn {
-		t.Fatalf("levels = %v", levels)
+	want := map[key]string{
+		{"mailpit", 0}: "delivery.rejected/warn", {"mailpit", 1}: "delivery.failed/error",
+		{"optional", 0}: "delivery.rejected/warn", {"optional", 1}: "delivery.failed/warn",
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -734,20 +849,20 @@ func TestBrokenTargetDoesNotDelayOther(t *testing.T) {
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("good target took %v", time.Since(start))
 	}
-	testutil.Eventually(t, timeout, "dead target retrying", func() bool {
-		return h.delivery(ids[0], "dead").Attempts >= 2
+	testutil.Eventually(t, timeout, "dead target down", func() bool {
+		return len(h.targetEvents("dead", store.KindTargetDown)) == 1
 	})
+	// Down: the first mail was tried once, the second waits for a probe.
+	time.Sleep(200 * time.Millisecond)
+	if a := h.delivery(ids[0], "dead").Attempts + h.delivery(ids[1], "dead").Attempts; a != 1 {
+		t.Fatalf("%d attempts at a target that is down, want 1", a)
+	}
 	if s := h.delivery(ids[0], "dead").Status; s != store.Queued && s != store.Sending {
 		t.Fatalf("dead status = %s", s)
 	}
-	var unreachable bool
-	for _, e := range h.eventsOf(ids[0]) {
-		if e.Kind == store.KindTargetUnreachable && e.Target == "dead" && e.Code == 0 && e.Text != "" {
-			unreachable = true
-		}
-	}
-	if !unreachable {
-		t.Fatal("no target.unreachable event")
+	down := h.targetEvents("dead", store.KindTargetDown)
+	if len(down) != 1 || down[0].Level != store.Error || down[0].Code != 0 || !strings.HasPrefix(down[0].Text, "unreachable: ") {
+		t.Fatalf("target.down = %+v", down)
 	}
 }
 
@@ -987,7 +1102,7 @@ func TestNoAddressLeaks(t *testing.T) {
 	mailID := h.send([]string{canary}, testMsg)
 	h.waitStatus(mailID, "rejecting", store.Failed)
 	h.waitStatus(mailID, "dropping", store.Unknown)
-	testutil.Eventually(t, timeout, "auth failure", func() bool { return h.delivery(mailID, "badlogin").Attempts >= 2 })
+	testutil.Eventually(t, timeout, "auth failure", func() bool { return len(h.targetEvents("badlogin", store.KindTargetDown)) == 1 })
 	if d := h.delivery(mailID, "allowlist"); d.Status != store.Skipped {
 		t.Fatalf("allowlist = %+v", d)
 	}
@@ -1011,19 +1126,80 @@ func TestTLSIsEnforced(t *testing.T) {
 	}, harnessOpts{})
 
 	mailID := h.send([]string{canary}, testMsg)
+	texts := map[string]string{}
 	for _, name := range []string{"untrusted", "nostarttls"} {
-		testutil.Eventually(t, timeout, name+" retrying", func() bool { return h.delivery(mailID, name).Attempts >= 2 })
+		testutil.Eventually(t, timeout, name+" down", func() bool { return len(h.targetEvents(name, store.KindTargetDown)) == 1 })
+		texts[name] = h.targetEvents(name, store.KindTargetDown)[0].Text
+		if d := h.delivery(mailID, name); d.Status != store.Queued && d.Status != store.Sending {
+			t.Fatalf("%s = %+v", name, d)
+		}
 	}
+	time.Sleep(100 * time.Millisecond) // a few probes
 	if len(untrusted.got()) != 0 || len(noStartTLS.got()) != 0 {
 		t.Fatal("a message went out without verified TLS")
 	}
-	texts := map[string]string{}
-	for _, e := range h.eventsOf(mailID) {
-		if e.Kind == store.KindTargetUnreachable {
-			texts[e.Target] = e.Text
-		}
-	}
 	if !strings.Contains(texts["untrusted"], "certificate") || !strings.Contains(texts["nostarttls"], "STARTTLS") {
 		t.Fatalf("unreachable texts = %q", texts)
+	}
+}
+
+// With MAILJET_TRACKING=off, Postwerk switches open and click tracking off
+// for every mail and removes the sender's own switches; with account it
+// leaves them alone (D47). Other targets never get them.
+func TestMailjetTracking(t *testing.T) {
+	off := newTarget(t, plain, nil, "", "")
+	account := newTarget(t, plain, nil, "", "")
+	other := newTarget(t, plain, nil, "", "")
+	h := startPostwerk(t, []config.Target{
+		target("off", off, plain, func(t *config.Target) {
+			t.Status, t.MailjetTracking = config.StatusMailjet, config.TrackingOff
+		}),
+		target("account", account, plain, func(t *config.Target) {
+			t.Status, t.MailjetTracking = config.StatusMailjet, config.TrackingAccount
+		}),
+		target("other", other, plain),
+	}, harnessOpts{})
+
+	msg := "X-Mailjet-TrackClick: 1\r\nx-mailjet-trackopen: 1\r\n" + testMsg
+	mailID := h.send([]string{canary}, msg)
+	for _, name := range []string{"off", "account", "other"} {
+		h.waitStatus(mailID, name, store.HandedOff)
+	}
+	body := strings.Replace(msg, "X-Postwerk-Ref: order-42\r\n", "", 1)
+	want := map[*fakeTarget]string{
+		off: "X-Postwerk-Id: " + mailID + "\r\nX-MJ-CustomID: " + mailID + "\r\n" +
+			"X-Mailjet-TrackOpen: 0\r\nX-Mailjet-TrackClick: 0\r\n" + deliveredBody,
+		account: "X-Postwerk-Id: " + mailID + "\r\nX-MJ-CustomID: " + mailID + "\r\n" + body,
+		other:   "X-Postwerk-Id: " + mailID + "\r\n" + body,
+	}
+	for f, w := range want {
+		got := f.got()
+		if len(got) != 1 || string(got[0].data) != w {
+			t.Fatalf("received:\n%q\nwant\n%q", got[0].data, w)
+		}
+		// SIZE= is the size as sent, the tracking lines included.
+		if got[0].opts.Size != int64(len(w)) {
+			t.Fatalf("SIZE=%d, sent %d bytes", got[0].opts.Size, len(w))
+		}
+	}
+}
+
+// CA_FILE: a target whose certificate comes from a private CA is trusted
+// through its own roots, without the test-only roots of the harness (D48).
+func TestTargetCAFile(t *testing.T) {
+	cert := testutil.NewCert(t)
+	f := newTarget(t, implicitTLS, &cert, "", "")
+	other := testutil.NewCert(t)
+	g := newTarget(t, implicitTLS, &cert, "", "")
+	h := startPostwerk(t, []config.Target{
+		target("private", f, implicitTLS, func(t *config.Target) { t.RootCAs = cert.Pool }),
+		target("wrongca", g, implicitTLS, func(t *config.Target) { t.RootCAs = other.Pool }),
+	}, harnessOpts{})
+
+	mailID := h.send([]string{canary}, testMsg)
+	h.waitStatus(mailID, "private", store.HandedOff)
+	testutil.Eventually(t, timeout, "wrong CA down", func() bool { return len(h.targetEvents("wrongca", store.KindTargetDown)) == 1 })
+	if len(g.got()) != 0 {
+		t.Fatal("sent to a target whose certificate the CA file does not vouch for")
 	}
 }

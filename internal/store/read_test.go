@@ -206,3 +206,79 @@ func TestAppendWithActor(t *testing.T) {
 		t.Fatalf("event = %+v", e)
 	}
 }
+
+// A mail's state comes from its required targets only (design.md section
+// 4): a failed optional copy does not make it failed or partial, in SQL
+// (ListMails with Optional) and in MailStatus alike. A mail with no
+// required delivery is derived from all of them. Random combinations over
+// one required and one optional target, compared with MailStatus.
+func TestMailStateLeavesOutOptionalTargets(t *testing.T) {
+	s := open(t, t.TempDir(), Options{})
+	all := []Status{Queued, Sending, HandedOff, Failed, Unknown, Skipped}
+	rng := rand.New(rand.NewPCG(3, 4))
+	optional := []string{"mailpit"}
+	isOptional := func(t string) bool { return slices.Contains(optional, t) }
+	want := map[string]Status{}
+	base := time.Now().Add(-time.Hour)
+	for i := range 300 {
+		id := "pw_" + string(rune('a'+i/26/26%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
+		targets := []string{"provider", "mailpit"}
+		if i%10 == 0 {
+			targets = []string{"mailpit"} // only optional deliveries
+		}
+		m := newMail(id, base.Add(time.Duration(i)*time.Second), targets...)
+		m.Recipients = []string{"a@example.test", "b@example.test"}
+		if err := s.Accept(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		for _, tg := range targets {
+			setStatuses(t, s, id, tg, all[rng.IntN(len(all))], all[rng.IntN(len(all))])
+		}
+		ds, err := s.Deliveries(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[id] = MailStatus(ds, isOptional)
+	}
+	for _, st := range append(slices.Clone(all), Partial) {
+		rows, err := s.ListMails(ctx, MailFilter{States: []Status{st}, Optional: optional, Limit: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, w := range want {
+			if w == st {
+				n++
+			}
+		}
+		if len(rows) != n {
+			t.Errorf("state %s: %d rows, want %d", st, len(rows), n)
+		}
+		for _, r := range rows {
+			if want[r.ID] != st || r.Status != st {
+				t.Errorf("state %s: %s is %s (MailStatus %s)", st, r.ID, r.Status, want[r.ID])
+			}
+		}
+	}
+
+	// The case from the report: failed at the provider, handed off to the
+	// optional capture copy, is failed, not partial.
+	m := newMail("pw_case", base, "provider", "mailpit")
+	if err := s.Accept(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	setStatuses(t, s, "pw_case", "provider", Failed, Failed)
+	setStatuses(t, s, "pw_case", "mailpit", HandedOff, HandedOff)
+	rows, err := s.ListMails(ctx, MailFilter{States: []Status{Failed}, IDs: []string{"pw_case"}, Optional: optional, Limit: 1})
+	if err != nil || len(rows) != 1 || rows[0].Status != Failed || len(rows[0].Targets) != 2 {
+		t.Fatalf("rows = %+v, %v", rows, err)
+	}
+	// Without Optional every target counts, as before.
+	if rows, _ := s.ListMails(ctx, MailFilter{IDs: []string{"pw_case"}, Limit: 1}); rows[0].Status != Partial {
+		t.Fatalf("without optional: %s", rows[0].Status)
+	}
+	// A target filter derives from that target, optional or not.
+	if rows, _ := s.ListMails(ctx, MailFilter{Target: "mailpit", IDs: []string{"pw_case"}, Optional: optional, Limit: 1}); rows[0].Status != HandedOff {
+		t.Fatalf("target filter: %s", rows[0].Status)
+	}
+}

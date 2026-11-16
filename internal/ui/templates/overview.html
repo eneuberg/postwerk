@@ -9,6 +9,8 @@
     <header class="target-head">
       <h2><a href="/mails?target={{.Target}}">{{.Target}}</a></h2>
       {{if not .Configured}}<span class="tag tag-warn" title="Deliveries for this target are in the store, but it is not configured: nobody works on its queue.">not configured</span>{{end}}
+      {{if .Optional}}<span class="tag" title="Failures here are warnings and do not change a mail's state.">optional</span>{{end}}
+      {{with .Health}}{{if .Since.IsZero}}{{else if .Down}}<span class="tag tag-bad" title="Sending is paused; a probe (connect and log in, no mail) runs with a growing pause until it succeeds.">down ({{.Reason}}) since {{when .Since}}</span>{{else}}<span class="tag tag-ok" title="The worker sends to this target.">up since {{when .Since}}</span>{{end}}{{end}}
     </header>
     <dl class="figures">
       <div><dt>Queued now</dt><dd>{{if .Queued}}<a href="/mails?target={{.Target}}&amp;state=queued">{{.Queued}}</a>{{else}}0{{end}}</dd></div>

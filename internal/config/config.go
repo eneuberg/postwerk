@@ -9,6 +9,7 @@ package config
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"math"
@@ -133,7 +134,25 @@ type Target struct {
 	RetryWindow     time.Duration
 	OnUnknown       OnUnknown
 	AllowRecipients []string // lower-case path.Match patterns; empty: all allowed
+	// MailjetTracking is TrackingOff or TrackingAccount; set only with
+	// Status mailjet (D47).
+	MailjetTracking string
+	// RootCAs, if set, are the only certificate authorities trusted for
+	// this target (CA_FILE, D48); nil: the system roots.
+	RootCAs *x509.CertPool
+	// CAFile names the file RootCAs came from, for the start log.
+	CAFile string
 }
+
+// Values of POSTWERK_TARGET_<NAME>_MAILJET_TRACKING (D47).
+const (
+	// TrackingOff turns Mailjet's open and click tracking off for every
+	// mail and removes the sender's own tracking headers. The default.
+	TrackingOff = "off"
+	// TrackingAccount leaves tracking to the Mailjet account settings and
+	// passes the sender's tracking headers on.
+	TrackingAccount = "account"
+)
 
 // Allowed reports whether every recipient matches the target's allow-list.
 // A target without a list allows everything (D8).
@@ -177,6 +196,10 @@ type Config struct {
 	ShutdownTimeout         time.Duration
 	Instance                string
 	Targets                 []Target
+	// ProbeInterval and ProbeMaxInterval space the probes of a target
+	// that is down (D45): the first after ProbeInterval, then doubling up
+	// to ProbeMaxInterval.
+	ProbeInterval, ProbeMaxInterval time.Duration
 
 	// StoreKeys encrypts raw messages at rest; nil only with
 	// POSTWERK_STORE_ENCRYPTION=off.
@@ -386,6 +409,7 @@ var globalVars = []string{
 
 var targetSuffixes = []string{
 	"URL", "CREDENTIALS_FILE", "STATUS", "OPTIONAL", "RETRY_WINDOW", "ON_UNKNOWN", "ALLOW_RECIPIENTS",
+	"MAILJET_TRACKING", "CA_FILE",
 }
 
 var (
@@ -481,6 +505,8 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 		}
 	}
 
+	l.probe(c)
+
 	names, namesOK := l.targetNames()
 	for _, name := range names {
 		if t, ok := l.target(name, c.RetryWindow); ok {
@@ -506,6 +532,9 @@ func (l *loader) unknownVars(targets []string, targetsOK bool) {
 		known[k] = true
 	}
 	for _, k := range apiVars {
+		known[k] = true
+	}
+	for _, k := range probeVars {
 		known[k] = true
 	}
 	for _, name := range targets {
@@ -978,6 +1007,28 @@ func (l *loader) target(name string, globalWindow time.Duration) (Target, bool) 
 		t.OnUnknown = p
 	default:
 		l.errorf("%s: expected hold, retry or check", onVar)
+	}
+
+	trackVar := targetVar(name, "MAILJET_TRACKING")
+	switch tr := v("MAILJET_TRACKING"); {
+	case t.Status != StatusMailjet && tr != "":
+		l.errorf("%s: only for a target with %s=%s", trackVar, targetVar(name, "STATUS"), StatusMailjet)
+	case t.Status != StatusMailjet:
+	case tr == "" || tr == TrackingOff:
+		t.MailjetTracking = TrackingOff
+	case tr == TrackingAccount:
+		t.MailjetTracking = TrackingAccount
+	default:
+		l.errorf("%s: expected %s or %s", trackVar, TrackingOff, TrackingAccount)
+	}
+
+	if caVar := targetVar(name, "CA_FILE"); v("CA_FILE") != "" {
+		t.CAFile = v("CA_FILE")
+		if t.Scheme == SchemePlain {
+			l.errorf("%s: smtp+plain:// uses no TLS, so a CA file has no effect; remove it", caVar)
+		} else {
+			t.RootCAs = l.caFile(caVar, t.CAFile)
+		}
 	}
 
 	if a := v("ALLOW_RECIPIENTS"); a != "" {

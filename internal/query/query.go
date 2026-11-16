@@ -65,6 +65,12 @@ type Options struct {
 	Hasher *addrhash.Hasher
 	// Targets are the configured target names, in configuration order.
 	Targets []string
+	// Optional are the configured targets with OPTIONAL=true. A mail's
+	// state leaves them out (design.md section 4).
+	Optional []string
+	// Health returns the state of the configured targets (D45); nil when
+	// nobody delivers, as in tests.
+	Health func() []TargetHealth
 	// Now returns the current time; nil means time.Now.
 	Now func() time.Time
 }
@@ -100,6 +106,17 @@ var States = []store.Status{
 // ProblemStates are the derived states the overview lists as problems.
 var ProblemStates = []store.Status{store.Failed, store.Unknown, store.Partial}
 
+// TargetHealth is whether the delivery worker can send to a target.
+type TargetHealth struct {
+	Target string
+	Down   bool
+	// Since is when the target went down, or came up (or the worker
+	// started).
+	Since time.Time
+	// Reason is "auth" or "unreachable" while the target is down.
+	Reason string
+}
+
 // StatusCount is one cell of the overview.
 type StatusCount struct {
 	Status store.Status
@@ -112,6 +129,11 @@ type TargetOverview struct {
 	// Configured is false for a target that has deliveries in the store but
 	// is no longer configured: nobody works on its queue.
 	Configured bool
+	// Optional is set for a configured target with OPTIONAL=true.
+	Optional bool
+	// Health is the target's state; zero (no Since) when unknown, as for a
+	// target that is not configured.
+	Health TargetHealth
 	// Recent counts the recipients of mails received in RecentWindow, by
 	// status, in RecipientStatuses order.
 	Recent      []StatusCount
@@ -149,9 +171,16 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 			names = append(names, st.Target)
 		}
 	}
+	health := map[string]TargetHealth{}
+	if s.opts.Health != nil {
+		for _, h := range s.opts.Health() {
+			health[h.Target] = h
+		}
+	}
 	for _, n := range names {
 		st := byName[n]
-		t := TargetOverview{Target: n, Configured: slices.Contains(s.opts.Targets, n), Queued: st.QueuedMails}
+		t := TargetOverview{Target: n, Configured: slices.Contains(s.opts.Targets, n), Queued: st.QueuedMails,
+			Optional: slices.Contains(s.opts.Optional, n), Health: health[n]}
 		for _, status := range RecipientStatuses {
 			c := st.Recent[status]
 			t.Recent = append(t.Recent, StatusCount{Status: status, Count: c})
@@ -163,7 +192,8 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 		}
 		o.Targets = append(o.Targets, t)
 	}
-	o.Problems, err = s.opts.Store.ListMails(ctx, store.MailFilter{States: ProblemStates, Limit: ProblemCount})
+	o.Problems, err = s.opts.Store.ListMails(ctx, store.MailFilter{States: ProblemStates, Limit: ProblemCount,
+		Optional: s.opts.Optional})
 	return o, err
 }
 
@@ -195,7 +225,7 @@ func (s *Service) List(ctx context.Context, f ListFilter) (ListPage, error) {
 	if f.Page < 1 || f.Page > MaxPage {
 		return ListPage{}, fmt.Errorf("%w: page", ErrInvalid)
 	}
-	mf := store.MailFilter{Limit: PageSize + 1, Offset: (f.Page - 1) * PageSize}
+	mf := store.MailFilter{Limit: PageSize + 1, Offset: (f.Page - 1) * PageSize, Optional: s.opts.Optional}
 	if f.State != "" {
 		st := store.Status(f.State)
 		if !slices.Contains(States, st) {
@@ -325,7 +355,7 @@ func (s *Service) Search(ctx context.Context, by SearchBy, q string) ([]store.Ma
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return st.ListMails(ctx, store.MailFilter{IDs: ids, Limit: MaxResults})
+	return st.ListMails(ctx, store.MailFilter{IDs: ids, Limit: MaxResults, Optional: s.opts.Optional})
 }
 
 // AddressState says how an address is shown.
@@ -506,7 +536,6 @@ func (s *Service) Mail(ctx context.Context, id string, access Access) (MailDetai
 	if err != nil {
 		return MailDetail{}, err
 	}
-	var all []store.Status
 	for _, dl := range ds {
 		dd := DeliveryDetail{
 			Target: dl.Target, Status: dl.Status, Attempts: dl.Attempts, NextAttempt: dl.NextAttempt,
@@ -518,11 +547,10 @@ func (s *Service) Mail(ctx context.Context, id string, access Access) (MailDetai
 				rd.Address = d.Recipients[r.Position]
 			}
 			dd.Recipients = append(dd.Recipients, rd)
-			all = append(all, r.Status)
 		}
 		d.Deliveries = append(d.Deliveries, dd)
 	}
-	d.Status = store.Summarize(all)
+	d.Status = store.MailStatus(ds, func(t string) bool { return slices.Contains(s.opts.Optional, t) })
 	d.Events, err = st.MailEvents(ctx, id, MaxEvents+1)
 	if err != nil {
 		return MailDetail{}, err

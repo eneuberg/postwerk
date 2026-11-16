@@ -161,6 +161,8 @@ button.link {
 }
 .tag-warn { background: var(--warn-bg); color: var(--warn-fg); }
 .tag-file { background: var(--info-bg); color: var(--info-fg); }
+.tag-ok { background: var(--ok-bg); color: var(--ok-fg); }
+.tag-bad { background: var(--bad-bg); color: var(--bad-fg); }
 
 /* Settings */
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem 1rem; margin: 1.5rem 0 .6rem; }
@@ -177,7 +179,7 @@ button.danger { background: var(--bad-fg); border-color: var(--bad-fg); color: v
 /* Overview */
 .targets { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .targets .card { margin: 0; }
-.target-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem; }
+.target-head { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin-bottom: .6rem; }
 .target-head h2 { margin: 0; font-size: 1.05rem; }
 .target-head h2 a { color: var(--text); text-decoration: none; }
 .target-head h2 a:hover { text-decoration: underline; }

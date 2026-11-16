@@ -728,3 +728,33 @@ func TestStreamedBodyLimit(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// The overview names each configured target's state (D45).
+func TestOverviewTargetState(t *testing.T) {
+	since := time.Date(2026, 11, 15, 11, 57, 0, 0, time.UTC)
+	var st *store.Store
+	h := newHarness(t, func(o *Options) {
+		st = o.Events.(*store.Store)
+		o.Query = query.New(query.Options{Store: st, Targets: []string{"mailjet", "capture"}, Optional: []string{"capture"},
+			Now: o.Now, Health: func() []query.TargetHealth {
+				return []query.TargetHealth{{Target: "mailjet", Down: true, Since: since, Reason: "auth"},
+					{Target: "capture", Since: since.Add(-time.Hour)}}
+			}})
+	})
+	var o overviewResponse
+	r := h.do("GET", "/v1/overview", adminBearer, "")
+	r.json(t, &o)
+	if r.StatusCode != 200 || len(o.Targets) != 2 {
+		t.Fatalf("overview: %d %s", r.StatusCode, r.body)
+	}
+	mj, cp := o.Targets[0], o.Targets[1]
+	if mj.State != "down" || mj.DownReason != "auth" || mj.StateSince == nil || !mj.StateSince.Equal(since) || mj.Optional {
+		t.Fatalf("mailjet: %s", r.body)
+	}
+	if cp.State != "up" || cp.DownReason != "" || !cp.Optional {
+		t.Fatalf("capture: %s", r.body)
+	}
+	if !strings.Contains(string(r.body), `"state":"down","state_since":"2026-11-15T11:57:00Z","down_reason":"auth"`) {
+		t.Fatalf("body: %s", r.body)
+	}
+}

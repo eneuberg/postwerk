@@ -16,6 +16,7 @@ import (
 
 	"github.com/eneuberg/postwerk/internal/addrhash"
 	"github.com/eneuberg/postwerk/internal/keys"
+	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/report"
 	"github.com/eneuberg/postwerk/internal/store"
 )
@@ -462,4 +463,26 @@ func (s *switchEvents) Append(ctx context.Context, e store.Event) error {
 		return fmt.Errorf("disk full")
 	}
 	return s.st.Append(ctx, e)
+}
+
+// The overview shows each target's state and which targets are optional
+// (D45).
+func TestOverviewTargetState(t *testing.T) {
+	since := time.Date(2026, 11, 15, 11, 57, 0, 0, time.UTC)
+	h := newHarness(t, func(o *Options) {
+		o.Query = query.New(query.Options{Store: o.Events.(*store.Store), Targets: []string{"mailjet", "capture"},
+			Optional: []string{"capture"}, Now: o.Now, Health: func() []query.TargetHealth {
+				return []query.TargetHealth{{Target: "mailjet", Down: true, Since: since, Reason: "auth"},
+					{Target: "capture", Since: since.Add(-time.Hour)}}
+			}})
+	})
+	r := h.loggedIn("ops", adminToken).get("/")
+	if r.StatusCode != 200 {
+		t.Fatalf("overview: %d", r.StatusCode)
+	}
+	for _, want := range []string{">down (auth) since ", ">up since ", ">optional</span>"} {
+		if !strings.Contains(r.body, want) {
+			t.Fatalf("overview lacks %q:\n%s", want, r.body)
+		}
+	}
 }

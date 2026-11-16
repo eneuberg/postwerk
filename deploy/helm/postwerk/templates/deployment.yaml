@@ -211,7 +211,19 @@ spec:
             - name: {{ $p }}ALLOW_RECIPIENTS
               value: {{ . | quote }}
             {{- end }}
+            {{- with .mailjetTracking }}
+            - name: {{ $p }}MAILJET_TRACKING
+              value: {{ . | quote }}
             {{- end }}
+            {{- if .caConfigMap }}
+            - name: {{ $p }}CA_FILE
+              value: /etc/postwerk/target-{{ .name | replace "_" "-" }}-ca/ca.crt
+            {{- end }}
+            {{- end }}
+            - name: POSTWERK_PROBE_INTERVAL
+              value: {{ .Values.targetProbe.interval | quote }}
+            - name: POSTWERK_PROBE_MAX_INTERVAL
+              value: {{ .Values.targetProbe.maxInterval | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -260,6 +272,11 @@ spec:
             {{- if .credentialsSecret }}
             - name: target-{{ .name | replace "_" "-" }}
               mountPath: /run/secrets/target-{{ .name | replace "_" "-" }}
+              readOnly: true
+            {{- end }}
+            {{- if .caConfigMap }}
+            - name: target-{{ .name | replace "_" "-" }}-ca
+              mountPath: /etc/postwerk/target-{{ .name | replace "_" "-" }}-ca
               readOnly: true
             {{- end }}
             {{- end }}
@@ -377,6 +394,14 @@ spec:
             items:
               - key: {{ .credentialsSecret.key | default "credentials" }}
                 path: credentials
+        {{- end }}
+        {{- if .caConfigMap }}
+        - name: target-{{ .name | replace "_" "-" }}-ca
+          configMap:
+            name: {{ .caConfigMap.name }}
+            items:
+              - key: {{ .caConfigMap.key | default "ca.crt" }}
+                path: ca.crt
         {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}

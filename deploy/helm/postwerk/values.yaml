@@ -98,8 +98,19 @@ targets:
     retryWindow: ""               # empty: retryWindow below
     onUnknown: ""                 # hold | retry | check; empty: Postwerk's default
     allowRecipients: ""           # e.g. "*@example.test,qa-*@your-domain"
+    mailjetTracking: ""           # status mailjet only: off (default; no open/click tracking) | account
+    # ConfigMap with a PEM bundle of the CAs this target's certificate comes
+    # from (a private relay); they replace the system roots for this target.
+    caConfigMap: {}               # e.g. {name: relay-ca, key: ca.crt}
 
 retryWindow: 24h
+
+# A target that rejects the login (535) or cannot be reached goes down: no
+# mail is sent to it, a probe (connect and log in, no mail) runs after
+# interval, doubling up to maxInterval, until it succeeds.
+targetProbe:
+  interval: 30s
+  maxInterval: 5m
 
 limits:
   # The smallest message limit of your targets (recommended: 15 MiB, the

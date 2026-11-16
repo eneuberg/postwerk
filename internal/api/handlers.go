@@ -188,7 +188,13 @@ func (a *API) overview(r *http.Request, _ caller) result {
 	for _, t := range o.Targets {
 		to := targetOverview{
 			Target: t.Target, Configured: t.Configured, Recent: map[store.Status]int{}, RecentTotal: t.RecentTotal,
-			Queued: t.Queued, OldestQueuedAt: optTime(t.OldestQueued),
+			Queued: t.Queued, OldestQueuedAt: optTime(t.OldestQueued), Optional: t.Optional,
+		}
+		if !t.Health.Since.IsZero() {
+			to.State, to.StateSince, to.DownReason = "up", optTime(t.Health.Since), t.Health.Reason
+			if t.Health.Down {
+				to.State = "down"
+			}
 		}
 		for _, sc := range t.Recent {
 			to.Recent[sc.Status] = sc.Count

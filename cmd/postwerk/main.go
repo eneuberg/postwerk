@@ -267,6 +267,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 
 	mgr := delivery.New(delivery.Options{
 		Store: st, Sealer: sealer, Targets: cfg.Targets, Logger: logger, HeloName: cfg.Hostname,
+		ProbeInterval: cfg.ProbeInterval, ProbeMaxInterval: cfg.ProbeMaxInterval,
 	})
 	// Deliveries left in sending by a crash are recovered first, so that the
 	// first retention run sees them as queued or unknown. Each worker retries
@@ -325,11 +326,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	var adminSrv *http.Server
 	var adminL net.Listener
 	if cfg.Admin.Listen != "" {
-		var names []string
-		for _, t := range cfg.Targets {
-			names = append(names, t.Name)
-		}
-		q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
+		q := query.New(queryOptions(cfg, st, mgr))
 		var tokens ui.Verifier // nil without a tokens file
 		if cfg.Admin.Tokens != nil {
 			tokens = cfg.Admin.Tokens
@@ -353,7 +350,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		}
 		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
 	}
-	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, logger)
+	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, mgr, logger)
 	if err != nil {
 		if adminL != nil {
 			adminL.Close()
@@ -489,15 +486,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 
 // apiListener opens the JSON query API's listener (H2), with TLS from a
 // reloaded certificate if configured. It returns nils when the API is off.
-func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
+func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
 	if cfg.API.Listen == "" {
 		return nil, nil, nil, nil, nil
 	}
-	var names []string
-	for _, t := range cfg.Targets {
-		names = append(names, t.Name)
-	}
-	q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
+	q := query.New(queryOptions(cfg, st, mgr))
 	a, err := api.New(api.Options{Query: q, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts, Logger: logger})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -615,4 +608,25 @@ func warnUnconfiguredTargets(ctx context.Context, st *store.Store, targets []con
 			logger.Warn("pending deliveries for a target that is not configured", "target", name, "count", n)
 		}
 	}
+}
+
+// queryOptions are the read layer's options for the UI and the API: the
+// configured targets, which of them are optional, and the targets' health
+// from the delivery workers (D45).
+func queryOptions(cfg *config.Config, st *store.Store, mgr *delivery.Manager) query.Options {
+	o := query.Options{Store: st, Hasher: hasher(cfg)}
+	for _, t := range cfg.Targets {
+		o.Targets = append(o.Targets, t.Name)
+		if t.Optional {
+			o.Optional = append(o.Optional, t.Name)
+		}
+	}
+	o.Health = func() []query.TargetHealth {
+		var out []query.TargetHealth
+		for _, h := range mgr.Health() {
+			out = append(out, query.TargetHealth{Target: h.Target, Down: h.Down, Since: h.Since, Reason: string(h.Reason)})
+		}
+		return out
+	}
+	return o
 }

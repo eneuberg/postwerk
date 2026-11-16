@@ -79,8 +79,10 @@ func TestDecide(t *testing.T) {
 		{"temporary, window nearly over", Temporary, pol(config.Hold, false, 30*time.Second), want{store.Queued, 30 * time.Second, store.KindDeliveryRetry, store.Warn}},
 		{"temporary, window over", Temporary, pol(config.Hold, false, 0), want{store.Failed, 0, store.KindDeliveryFailed, store.Error}},
 		{"temporary, window over, optional", Temporary, pol(config.Hold, true, -time.Second), want{store.Failed, 0, store.KindDeliveryFailed, store.Warn}},
-		{"auth failed", AuthFailed, pol(config.Hold, false, time.Hour), want{store.Queued, 2 * time.Minute, store.KindTargetAuthFailed, store.Error}},
-		{"auth failed, optional", AuthFailed, pol(config.Hold, true, time.Hour), want{store.Queued, 2 * time.Minute, store.KindTargetAuthFailed, store.Warn}},
+		// The error for a rejected login is the target's (target.down, D45);
+		// the mail only waits.
+		{"auth failed", AuthFailed, pol(config.Hold, false, time.Hour), want{store.Queued, 2 * time.Minute, store.KindDeliveryRetry, store.Warn}},
+		{"auth failed, optional", AuthFailed, pol(config.Hold, true, time.Hour), want{store.Queued, 2 * time.Minute, store.KindDeliveryRetry, store.Warn}},
 		{"auth failed, window over", AuthFailed, pol(config.Hold, false, 0), want{store.Failed, 0, store.KindDeliveryFailed, store.Error}},
 		{"permanent", Permanent, pol(config.Retry, false, time.Hour), want{store.Failed, 0, store.KindDeliveryFailed, store.Error}},
 		{"permanent, optional", Permanent, pol(config.Retry, true, time.Hour), want{store.Failed, 0, store.KindDeliveryFailed, store.Warn}},
@@ -102,6 +104,38 @@ func TestDecide(t *testing.T) {
 	}
 	if d := decide(Unclear, "", pol(config.Check, false, time.Hour), now, 1); !strings.Contains(d.text, "check pending") {
 		t.Errorf("check text = %q", d.text)
+	}
+}
+
+func TestRecipientRejected(t *testing.T) {
+	ec := func(code, a, b, c int, msg string) error {
+		return &smtp.SMTPError{Code: code, EnhancedCode: smtp.EnhancedCode{a, b, c}, Message: msg}
+	}
+	bare := &smtp.SMTPError{Code: 550, Message: "no such user"}
+	tests := []struct {
+		name   string
+		err    error
+		atRcpt bool
+		want   bool
+	}{
+		{"550 5.1.1 at RCPT", ec(550, 5, 1, 1, "unknown user"), true, true},
+		{"550 5.1.1 after DATA", ec(550, 5, 1, 1, "unknown user"), false, true},
+		{"551 5.1.6 moved", ec(551, 5, 1, 6, "moved"), true, true},
+		{"553 5.1.3 bad syntax", ec(553, 5, 1, 3, "bad address"), false, true},
+		{"550 5.2.1 disabled", ec(550, 5, 2, 1, "mailbox disabled"), false, true},
+		{"550 without enhanced code at RCPT", bare, true, true},
+		{"550 without enhanced code after DATA", bare, false, false},
+		{"550 5.7.1 relay denied", ec(550, 5, 7, 1, "relaying denied"), true, false},
+		{"550 5.7.1 spam after DATA", ec(550, 5, 7, 1, "spam"), false, false},
+		{"554 5.1.1", ec(554, 5, 1, 1, "rejected"), true, false},
+		{"530 auth", ec(530, 5, 7, 0, "auth required"), true, false},
+		{"452 temporary", ec(452, 4, 5, 3, "too many"), true, false},
+		{"network", errors.New("broken pipe"), true, false},
+	}
+	for _, tt := range tests {
+		if got := recipientRejected(tt.err, tt.atRcpt); got != tt.want {
+			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
 

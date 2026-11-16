@@ -67,6 +67,11 @@ type Options struct {
 	SubmissionTimeout time.Duration
 	// AttemptTimeout bounds one whole attempt, including the message body.
 	AttemptTimeout time.Duration
+	// ProbeInterval is the wait before the first probe of a target that
+	// went down; each failed probe doubles it up to ProbeMaxInterval (D45).
+	// Zero means the config defaults.
+	ProbeInterval    time.Duration
+	ProbeMaxInterval time.Duration
 	// Now returns the current time; nil means time.Now.
 	Now func() time.Time
 
@@ -104,6 +109,13 @@ func New(opts Options) *Manager {
 	if opts.AttemptTimeout <= 0 {
 		opts.AttemptTimeout = DefaultAttemptTimeout
 	}
+	if opts.ProbeInterval <= 0 {
+		opts.ProbeInterval = config.DefaultProbeInterval
+	}
+	if opts.ProbeMaxInterval <= 0 {
+		opts.ProbeMaxInterval = config.DefaultProbeMaxInterval
+	}
+	opts.ProbeMaxInterval = max(opts.ProbeMaxInterval, opts.ProbeInterval)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -115,12 +127,14 @@ func New(opts Options) *Manager {
 	}
 	m := &Manager{}
 	for _, t := range opts.Targets {
-		m.workers = append(m.workers, &worker{
+		w := &worker{
 			opts:   &opts,
 			target: t,
 			log:    opts.Logger.With("target", t.Name),
 			wake:   make(chan struct{}, 1),
-		})
+		}
+		w.health.since = opts.Now()
+		m.workers = append(m.workers, w)
 	}
 	return m
 }
@@ -200,6 +214,7 @@ type worker struct {
 	log     *slog.Logger
 	wake    chan struct{}
 	running atomic.Bool
+	health  health
 }
 
 func (w *worker) run(ctx context.Context) {
@@ -212,6 +227,10 @@ func (w *worker) run(ctx context.Context) {
 		w.sleep(ctx, w.opts.PollInterval)
 	}
 	for ctx.Err() == nil {
+		if down, _, _ := w.health.get(); down {
+			w.whileDown(ctx)
+			continue
+		}
 		c, err := w.opts.Store.Claim(ctx, w.target.Name, w.opts.Now())
 		if err != nil {
 			if ctx.Err() == nil {
@@ -339,6 +358,9 @@ func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
 	// The recipients the target accepted, or that the attempt never got
 	// to, share the outcome of the attempt.
 	var d decision
+	var down Reason
+	var downCode int
+	var downText string
 	switch {
 	case res.refused != "":
 		d = decision{status: store.Failed, kind: res.refused, level: w.problem(), text: res.reason}
@@ -354,9 +376,21 @@ func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
 		}
 	default:
 		o, code, text := Classify(res.err, res.dataSent)
+		switch {
+		case res.connectFailed:
+			// Whatever the reply, the target cannot take mail now (D45);
+			// the mail is not to blame.
+			down, o = ReasonUnreachable, Temporary
+		case o == AuthFailed && !res.dataSent:
+			down = ReasonAuth
+		}
+		downCode, downText = code, text
 		d = decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
-		if o == Temporary && code == 0 && d.status == store.Queued {
-			d.kind = store.KindTargetUnreachable
+		if down != "" && d.status == store.Queued {
+			d.text = join("target down ("+string(down)+")", text)
+		}
+		if o == Permanent && recipientRejected(res.err, false) {
+			d.kind, d.level = store.KindDeliveryRejected, store.Warn
 		}
 		r.Code, r.Text = code, d.text
 		if code != 0 {
@@ -376,7 +410,11 @@ func (w *worker) process(ctx context.Context, c *store.Claimed) bool {
 		r.Recipients = append(r.Recipients, d.result(rc.Position, r.Code))
 		next(d)
 	}
-	return w.finish(ctx, r)
+	ok := w.finish(ctx, r)
+	if down != "" {
+		w.goDown(ctx, down, downCode, downText)
+	}
+	return ok
 }
 
 // problem is the level of a failure at this target.
@@ -419,10 +457,12 @@ type sendResult struct {
 	reply    string // the target's text after the message, on success
 	err      error  // from the network or the target, for every recipient not in rejected
 	storeErr error  // recording data_sent_at failed; nothing was sent or recorded
-	refused  string // event kind: the mail was not sent because the target cannot take it
-	reason   string // why, for the event
-	rejected []rejection
-	recorded bool // rejected was stored with data_sent_at
+	// connectFailed: err came from connecting, TLS, the greeting or EHLO.
+	connectFailed bool
+	refused       string // event kind: the mail was not sent because the target cannot take it
+	reason        string // why, for the event
+	rejected      []rejection
+	recorded      bool // rejected was stored with data_sent_at
 }
 
 // rcptRejection turns a target's reply to RCPT into a result for that
@@ -435,6 +475,9 @@ func (w *worker) rcptRejection(c *store.Claimed, pos int, se *smtp.SMTPError, no
 		o = Temporary
 	}
 	d := decide(o, text, w.policy(c.ReceivedAt), now, c.Attempt)
+	if o == Permanent && recipientRejected(se, true) {
+		d.kind, d.level = store.KindDeliveryRejected, store.Warn
+	}
 	return rejection{result: d.result(pos, code), decision: d}
 }
 
@@ -442,7 +485,7 @@ func (w *worker) rcptRejection(c *store.Claimed, pos int, se *smtp.SMTPError, no
 func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendResult {
 	client, err := w.connect(ctx)
 	if err != nil {
-		return sendResult{err: err}
+		return sendResult{err: err, connectFailed: true}
 	}
 	defer client.Close()
 
@@ -451,11 +494,7 @@ func (w *worker) send(ctx context.Context, c *store.Claimed, raw []byte) sendRes
 		_ = client.Quit()
 		return sendResult{refused: store.KindDeliveryUnsupported, reason: reason}
 	}
-	if w.target.Status == config.StatusMailjet {
-		// Tracking must be unambiguous: only Postwerk's own X-MJ-CustomID
-		// reaches Mailjet.
-		raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
-	}
+	raw = stripFor(w.target, raw)
 	headers := w.headers(c.MailID)
 	size := message.Size(headers, raw)
 	if limit, ok := client.MaxMessageSize(); ok && limit > 0 && size > limit {
@@ -587,8 +626,29 @@ func headersFor(t config.Target, mailID string) []message.Field {
 	h := []message.Field{{Name: message.HeaderID, Value: mailID}}
 	if t.Status == config.StatusMailjet {
 		h = append(h, message.Field{Name: message.HeaderMailjetCustomID, Value: mailID})
+		if t.MailjetTracking == config.TrackingOff {
+			h = append(h,
+				message.Field{Name: message.HeaderMailjetTrackOpen, Value: "0"},
+				message.Field{Name: message.HeaderMailjetTrackClick, Value: "0"})
+		}
 	}
 	return h
+}
+
+// stripFor removes the sender's header fields that Postwerk sets itself for
+// target t, so what reaches the target is unambiguous: for Mailjet the
+// X-MJ-CustomID (tracking, D10), and with tracking off the sender's
+// tracking switches (D47).
+func stripFor(t config.Target, raw []byte) []byte {
+	if t.Status != config.StatusMailjet {
+		return raw
+	}
+	raw = message.RemoveField(raw, message.HeaderMailjetCustomID)
+	if t.MailjetTracking == config.TrackingOff {
+		raw = message.RemoveField(raw, message.HeaderMailjetTrackOpen)
+		raw = message.RemoveField(raw, message.HeaderMailjetTrackClick)
+	}
+	return raw
 }
 
 // MaxAddedBytes returns the most bytes Postwerk adds to a message for any of
@@ -605,10 +665,14 @@ func MaxAddedBytes(targets []config.Target) int {
 }
 
 func (w *worker) tlsConfig() *tls.Config {
+	roots := w.opts.rootCAs
+	if w.target.RootCAs != nil {
+		roots = w.target.RootCAs // CA_FILE replaces the system roots (D48)
+	}
 	return &tls.Config{
 		ServerName: w.target.Host,
 		MinVersion: tls.VersionTLS12,
-		RootCAs:    w.opts.rootCAs,
+		RootCAs:    roots,
 	}
 }
 

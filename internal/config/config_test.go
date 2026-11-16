@@ -201,7 +201,7 @@ func TestFullConfig(t *testing.T) {
 		{
 			Name: "mailjet", Scheme: SchemeSTARTTLS, Host: "in-v3.mailjet.com", Addr: "in-v3.mailjet.com:587",
 			Username: "apikey", Password: "apisecret:with-colon", Status: "mailjet",
-			RetryWindow: 12 * time.Hour, OnUnknown: Check,
+			RetryWindow: 12 * time.Hour, OnUnknown: Check, MailjetTracking: TrackingOff,
 		},
 		{
 			Name: "capture", Scheme: SchemePlain, Host: "mailpit", Addr: "mailpit:1025", Optional: true,
@@ -214,6 +214,44 @@ func TestFullConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(c.Targets, want) {
 		t.Fatalf("targets:\n%+v\nwant\n%+v", c.Targets, want)
+	}
+}
+
+// Tracking defaults to off for Mailjet targets and is left alone with
+// account (D47); a CA file replaces the system roots of its target (D48);
+// probes default to 30 s doubling to 5 min (D45).
+func TestTrackingCAAndProbe(t *testing.T) {
+	cert := testutil.NewCert(t)
+	f := baseFiles(t)
+	f["/etc/ca/relay.pem"] = string(cert.CertPEM)
+	env := append(minimalEnv(),
+		"POSTWERK_TARGETS=mj,relay,mailpit",
+		"POSTWERK_TARGET_MJ_URL=smtp://in-v3.mailjet.com",
+		"POSTWERK_TARGET_MJ_STATUS=mailjet",
+		"POSTWERK_TARGET_MJ_MAILJET_TRACKING=account",
+		"POSTWERK_TARGET_RELAY_URL=smtps://relay.internal.test",
+		"POSTWERK_TARGET_RELAY_CA_FILE=/etc/ca/relay.pem",
+	)
+	c, err := Load(env, f.read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Targets[0].MailjetTracking != TrackingAccount || c.Targets[0].RootCAs != nil {
+		t.Fatalf("mj = %+v", c.Targets[0])
+	}
+	if r := c.Targets[1]; r.RootCAs == nil || r.CAFile != "/etc/ca/relay.pem" || r.MailjetTracking != "" {
+		t.Fatalf("relay = %+v", r)
+	}
+	if _, ok := c.SecretFiles["POSTWERK_TARGET_RELAY_CA_FILE"]; ok {
+		t.Fatal("a CA file is not a secret file")
+	}
+	if c.ProbeInterval != DefaultProbeInterval || c.ProbeMaxInterval != DefaultProbeMaxInterval ||
+		DefaultProbeInterval != 30*time.Second || DefaultProbeMaxInterval != 5*time.Minute {
+		t.Fatalf("probe = %v, %v", c.ProbeInterval, c.ProbeMaxInterval)
+	}
+	c, err = Load(append(minimalEnv(), "POSTWERK_PROBE_INTERVAL=10s", "POSTWERK_PROBE_MAX_INTERVAL=10m"), f.read)
+	if err != nil || c.ProbeInterval != 10*time.Second || c.ProbeMaxInterval != 10*time.Minute {
+		t.Fatalf("probe = %+v, %v", c, err)
 	}
 }
 
@@ -323,12 +361,22 @@ func TestErrors(t *testing.T) {
 		{"admin senders as tokens", []string{"POSTWERK_UI_TOKENS_FILE=/run/secrets/senders"}, "POSTWERK_UI_TOKENS_FILE: line 1: expected name:role:hash"},
 		{"admin bad host", []string{"POSTWERK_ADMIN_HOSTS=https://relay.example.test"}, "POSTWERK_ADMIN_HOSTS"},
 		{"admin host with port", []string{"POSTWERK_ADMIN_HOSTS=relay.example.test:8081"}, "POSTWERK_ADMIN_HOSTS"},
+		{"tracking without mailjet", []string{"POSTWERK_TARGET_MAILPIT_MAILJET_TRACKING=off"}, "POSTWERK_TARGET_MAILPIT_MAILJET_TRACKING: only for a target with POSTWERK_TARGET_MAILPIT_STATUS=mailjet"},
+		{"bad tracking", []string{"POSTWERK_TARGET_MAILPIT_STATUS=mailjet", "POSTWERK_TARGET_MAILPIT_MAILJET_TRACKING=on"}, "expected off or account"},
+		{"ca file with plain", []string{"POSTWERK_TARGET_MAILPIT_CA_FILE=/run/secrets/senders"}, "smtp+plain:// uses no TLS, so a CA file has no effect"},
+		{"ca file missing", []string{"POSTWERK_TARGET_MAILPIT_URL=smtps://x", "POSTWERK_TARGET_MAILPIT_CA_FILE=/nope"}, "POSTWERK_TARGET_MAILPIT_CA_FILE: cannot read file"},
+		{"ca file without pem", []string{"POSTWERK_TARGET_MAILPIT_URL=smtps://x", "POSTWERK_TARGET_MAILPIT_CA_FILE=/run/secrets/senders"}, "no PEM certificate in the file"},
+		{"ca file with a key", []string{"POSTWERK_TARGET_MAILPIT_URL=smtps://x", "POSTWERK_TARGET_MAILPIT_CA_FILE=/tls/key.pem"}, `PEM block "PRIVATE KEY" is not a certificate`},
+		{"bad probe interval", []string{"POSTWERK_PROBE_INTERVAL=0s"}, "POSTWERK_PROBE_INTERVAL"},
+		{"probe max below min", []string{"POSTWERK_PROBE_INTERVAL=1m", "POSTWERK_PROBE_MAX_INTERVAL=30s"}, "POSTWERK_PROBE_MAX_INTERVAL must be at least POSTWERK_PROBE_INTERVAL"},
 		{"tokens with admin off", []string{"POSTWERK_ADMIN_LISTEN=off"}, "POSTWERK_UI_TOKENS_FILE is set but the admin listener is off"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env := append(minimalEnv(), tt.env...)
-			c, err := Load(env, baseFiles(t).read)
+			f := baseFiles(t)
+			f["/tls/key.pem"] = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+			c, err := Load(env, f.read)
 			if err == nil {
 				t.Fatalf("no error, config %+v", c)
 			}

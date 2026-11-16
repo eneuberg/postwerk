@@ -37,6 +37,11 @@ type MailFilter struct {
 	// From and To bound the received time: From ≤ received < To. Zero
 	// values leave that side open.
 	From, To time.Time
+	// Optional names the optional targets. Without Target, a mail's state
+	// is derived from the recipients of its other (required) targets only;
+	// a mail with no delivery to a required target uses all of them
+	// (design.md section 4, MailStatus).
+	Optional []string
 	// IDs, if not nil, limits the list to these mails (search results).
 	IDs []string
 	// Limit (required, > 0) and Offset page through the list, newest first.
@@ -56,8 +61,8 @@ type MailSummary struct {
 	Sender     string
 	Size       int
 	Recipients int
-	// Status is derived over the recipients of all deliveries, or of the
-	// filter's target.
+	// Status is derived over the recipients of the required targets
+	// (MailStatus), or of the filter's target.
 	Status Status
 	// Targets holds the derived status of every delivery, by target name.
 	Targets []TargetStatus
@@ -74,9 +79,20 @@ func (s *Store) ListMails(ctx context.Context, f MailFilter) ([]MailSummary, err
 	var where []string
 	var args []any
 	join := `LEFT JOIN delivery_recipients dr ON dr.mail_id = m.id`
-	if f.Target != "" {
+	switch {
+	case f.Target != "":
 		join += ` AND dr.target = ?`
 		args = append(args, f.Target)
+	case len(f.Optional) > 0:
+		// Required targets only, unless the mail has none.
+		in := placeholders(len(f.Optional))
+		join += ` AND (dr.target NOT IN (` + in + `) OR NOT EXISTS (
+			SELECT 1 FROM delivery_recipients x WHERE x.mail_id = m.id AND x.target NOT IN (` + in + `)))`
+		for range 2 {
+			for _, t := range f.Optional {
+				args = append(args, t)
+			}
+		}
 	}
 	if !f.From.IsZero() {
 		where = append(where, `m.received_at >= ?`)

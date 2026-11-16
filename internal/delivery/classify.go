@@ -111,8 +111,9 @@ func decide(o Outcome, text string, p policy, now time.Time, attempt int) decisi
 		return retry(store.KindDeliveryRetry, store.Warn, text)
 	case AuthFailed:
 		// D5 in decisions.md: a rejected login is our outage, the mail stays
-		// queued and the error is raised at once.
-		return retry(store.KindTargetAuthFailed, problem, text)
+		// queued. The error is raised once for the target (target.down,
+		// D45), not for every mail.
+		return retry(store.KindDeliveryRetry, store.Warn, text)
 	case Permanent:
 		return decision{status: store.Failed, kind: store.KindDeliveryFailed, level: problem, text: text}
 	case Unclear:

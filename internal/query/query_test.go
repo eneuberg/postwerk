@@ -328,3 +328,57 @@ func TestListAndOverview(t *testing.T) {
 		t.Fatalf("problems: %+v", o.Problems)
 	}
 }
+
+// The mail's state leaves out optional targets everywhere the query layer
+// derives it (design.md section 4), and the overview carries each target's
+// health (D45).
+func TestOptionalTargetsAndHealth(t *testing.T) {
+	st := openStore(t)
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-3 * time.Minute)
+	q := New(Options{Store: st, Targets: []string{"provider", "mailpit"}, Optional: []string{"mailpit"},
+		Now: func() time.Time { return now },
+		Health: func() []TargetHealth {
+			return []TargetHealth{{Target: "provider", Down: true, Since: since, Reason: "auth"},
+				{Target: "mailpit", Since: now.Add(-time.Hour)}}
+		}})
+	accept(t, st, "pw_fail", now.Add(-time.Minute), []string{"r@example.test"},
+		map[string][]store.Status{"provider": {store.Failed}, "mailpit": {store.HandedOff}})
+	accept(t, st, "pw_capfail", now.Add(-time.Minute), []string{"r@example.test"},
+		map[string][]store.Status{"provider": {store.HandedOff}, "mailpit": {store.Failed}})
+
+	if p, err := q.List(ctx, ListFilter{State: "failed"}); err != nil || len(p.Rows) != 1 || p.Rows[0].ID != "pw_fail" {
+		t.Fatalf("failed: %+v %v", p.Rows, err)
+	}
+	if p, err := q.List(ctx, ListFilter{State: "partial"}); err != nil || len(p.Rows) != 0 {
+		t.Fatalf("partial: %+v %v", p.Rows, err)
+	}
+	if p, err := q.List(ctx, ListFilter{State: "handed_off"}); err != nil || len(p.Rows) != 1 || p.Rows[0].ID != "pw_capfail" {
+		t.Fatalf("handed_off: %+v %v", p.Rows, err)
+	}
+	d, err := q.Mail(ctx, "pw_fail", Full)
+	if err != nil || d.Status != store.Failed || len(d.Deliveries) != 2 {
+		t.Fatalf("detail: %+v %v", d, err)
+	}
+	if d, _ := q.Mail(ctx, "pw_capfail", Full); d.Status != store.HandedOff || d.Deliveries[0].Status != store.Failed {
+		t.Fatalf("detail capfail: status %s, deliveries %+v", d.Status, d.Deliveries)
+	}
+	if rows, err := q.Search(ctx, ByID, "pw_fail"); err != nil || len(rows) != 1 || rows[0].Status != store.Failed {
+		t.Fatalf("search: %+v %v", rows, err)
+	}
+
+	o, err := q.Overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Problems) != 1 || o.Problems[0].ID != "pw_fail" {
+		t.Fatalf("problems: %+v", o.Problems)
+	}
+	p, m := o.Targets[0], o.Targets[1]
+	if p.Target != "provider" || !p.Health.Down || p.Health.Reason != "auth" || !p.Health.Since.Equal(since) || p.Optional {
+		t.Fatalf("provider: %+v", p)
+	}
+	if m.Target != "mailpit" || m.Health.Down || !m.Optional {
+		t.Fatalf("mailpit: %+v", m)
+	}
+}

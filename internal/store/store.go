@@ -77,9 +77,16 @@ const (
 	KindDeliveryUnsupported = "delivery.unsupported"
 	// KindDeliveryTooLarge: the target offers a SIZE smaller than the
 	// message; nothing was sent.
-	KindDeliveryTooLarge  = "delivery.too_large"
-	KindTargetAuthFailed  = "target.auth_failed"
-	KindTargetUnreachable = "target.unreachable"
+	KindDeliveryTooLarge = "delivery.too_large"
+	// KindDeliveryRejected: the target refused this recipient's address
+	// for good (D46); a matter for the sender, not the operator.
+	KindDeliveryRejected = "delivery.rejected"
+	// KindTargetDown: a rejected login (535) or a target that cannot be
+	// reached stopped all sending to it (D45). One per outage, no mail id.
+	KindTargetDown = "target.down"
+	// KindTargetRecovered: a probe succeeded and sending resumes; the text
+	// holds how long the target was down.
+	KindTargetRecovered = "target.recovered"
 	// KindRawExpired: the stored message was removed by retention while the
 	// delivery still needed it; the delivery is failed and cannot be resent.
 	KindRawExpired = "retention.raw_expired"
@@ -912,6 +919,28 @@ func Summarize(statuses []Status) Status {
 		n[s]++
 	}
 	return summarizeCounts(n, len(statuses))
+}
+
+// MailStatus derives the state of a mail from its deliveries: over the
+// recipients of the required targets only, because a failed capture copy
+// does not make a mail a problem (design.md section 4). A mail whose
+// deliveries all go to optional targets is derived from all of them.
+// optional reports whether a target is optional; nil means none is.
+// ListMails applies the same rule in SQL (MailFilter.Optional).
+func MailStatus(ds []Delivery, optional func(target string) bool) Status {
+	var required, all []Status
+	for _, d := range ds {
+		for _, r := range d.Recipients {
+			all = append(all, r.Status)
+			if optional == nil || !optional(d.Target) {
+				required = append(required, r.Status)
+			}
+		}
+	}
+	if len(required) == 0 {
+		return Summarize(all)
+	}
+	return Summarize(required)
 }
 
 // summarizeCounts is Summarize over counts per status; total is the number

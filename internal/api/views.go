@@ -157,6 +157,12 @@ func detail(m query.MailDetail) mailDetail {
 type targetOverview struct {
 	Target     string `json:"target"`
 	Configured bool   `json:"configured"`
+	Optional   bool   `json:"optional"`
+	// State is "up" or "down" for a configured target (D45), since
+	// StateSince; DownReason is "auth" or "unreachable" while down.
+	State      string     `json:"state,omitempty"`
+	StateSince *time.Time `json:"state_since,omitempty"`
+	DownReason string     `json:"down_reason,omitempty"`
 	// Recent counts the recipients of mails received since Since, by
 	// status.
 	Recent                 map[store.Status]int `json:"recent"`

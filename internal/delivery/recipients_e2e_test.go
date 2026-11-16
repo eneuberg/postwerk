@@ -64,7 +64,7 @@ func TestPerRecipientResults(t *testing.T) {
 		t.Fatalf("target received %+v", got)
 	}
 	want := []string{
-		"delivery.failed/0", "delivery.retry/2", "delivery.retry/3", "delivery.handed_off/1",
+		"delivery.rejected/0", "delivery.retry/2", "delivery.retry/3", "delivery.handed_off/1",
 		"delivery.handed_off/2", "delivery.handed_off/3",
 	}
 	if ev := resultEvents(h, mailID, "t"); !slices.Equal(ev, want) {
