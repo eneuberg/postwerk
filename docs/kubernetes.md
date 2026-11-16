@@ -180,8 +180,10 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `tls.certManager.enabled` | `false` | Create a cert-manager `Certificate` that fills `tls.secretName`. |
 | `tls.certManager.issuerRef`, `duration`, `renewBefore`, `dnsNames` | `internal-ca` ClusterIssuer, `2160h`, `360h`, the Service names | Issuer and lifetime; the DNS names default to `<svc>`, `<svc>.<ns>`, `<svc>.<ns>.svc`, `<svc>.<ns>.svc.<clusterDomain>`. |
 | `tls.allowInsecureAuth` | `false` | Only with `tls.enabled=false`: cleartext `AUTH`, for a network that encrypts traffic between nodes. The chart refuses `tls.enabled=false` without it. |
-| `targets[]` | Mailjet over STARTTLS | `name`, `url`, `credentialsSecret`, `status`, `optional`, `retryWindow`, `onUnknown`, `allowRecipients`, as in configuration.md "Targets". |
+| `targets[]` | Mailjet over STARTTLS | `name`, `url`, `credentialsSecret`, `status`, `optional`, `retryWindow`, `onUnknown`, `allowRecipients`, `mailjetTracking` (`off`, the default, or `account`), as in configuration.md "Targets". |
+| `targets[].caConfigMap` | `{}` | `{name, key}` of a ConfigMap with the PEM bundle of a target's private CA (key default `ca.crt`); mounted read-only and passed as `POSTWERK_TARGET_<NAME>_CA_FILE`. It replaces the system roots for that target only (D48). |
 | `retryWindow` | `24h` | `POSTWERK_RETRY_WINDOW`. |
+| `targetProbe.interval`, `targetProbe.maxInterval` | `30s`, `5m` | `POSTWERK_PROBE_INTERVAL`, `POSTWERK_PROBE_MAX_INTERVAL`: how often a target that is down (rejected login, unreachable) is probed (D45). Not the Kubernetes probes. |
 | `limits.maxMessageBytes` | `15728640` (**recommended** for Mailjet) | `POSTWERK_MAX_MESSAGE_BYTES`: the smallest limit of your targets, Postwerk's header lines included; ingress accepts that minus those lines (configuration.md, "Message size"). |
 | `limits.maxRecipients`, `limits.maxConnections` | `50`, `100` | `POSTWERK_MAX_RECIPIENTS`, `POSTWERK_MAX_CONNECTIONS`. |
 | `limits.maxInflightBytes` | `268435456` (**recommended**) | `POSTWERK_MAX_INFLIGHT_BYTES`, the memory budget for messages being received. |

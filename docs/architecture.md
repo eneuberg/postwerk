@@ -117,22 +117,24 @@ recipients. The status of a delivery, or of a mail over all its targets, is a su
 | some `handed_off`, the others `failed` | `partial` |
 
 Event kinds. Every result is an event per recipient: it carries the recipient's position, never its address.
-`mail.accepted`, `delivery.attempt` and `retention.purged` carry none.
+`mail.accepted`, `delivery.attempt` and `retention.purged` carry none; `target.down` and `target.recovered` carry no
+mail id either.
 
 | Kind | Level | Written when |
 |---|---|---|
 | `mail.accepted` | info | a mail is stored |
 | `delivery.attempt` | info | a worker claims a delivery (one per attempt, no recipient) |
-| `delivery.retry` | warn | a temporary failure for this recipient (`4xx` at `RCPT` or for the attempt); queued again |
+| `delivery.retry` | warn | a temporary failure for this recipient (`4xx` at `RCPT` or for the attempt, `535`, the target unreachable); queued again |
 | `delivery.handed_off` | info | the target answered `250` after the message; one per recipient of the attempt |
-| `delivery.failed` | error (warn: optional target) | a permanent failure for this recipient (`5xx` at `RCPT` or after the message), or the retry window is over |
+| `delivery.failed` | error (warn: optional target) | a permanent failure for this recipient (`5xx` at `RCPT` or after the message), or the retry window is over (also while the target is down) |
+| `delivery.rejected` | warn | the target refused this recipient's address for good: `550`, `551` or `553` with `5.1.x`/`5.2.x`, or without an enhanced code at `RCPT` (D46); `failed` |
 | `delivery.unknown` | error (warn: optional) | no reply after the message was sent, policy `hold` or `check`; for the recipients of that attempt |
 | `delivery.skipped` | info | the sender named the target in `X-Postwerk-Skip`; one per recipient |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list; the whole target is skipped, one event per recipient |
 | `delivery.unsupported` | error (warn: optional) | the mail (or this recipient's address) needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
 | `delivery.too_large` | error (warn: optional) | the message as Postwerk would send it is larger than the `SIZE` the target offers; nothing was sent |
-| `target.auth_failed` | error (warn: optional) | the target answered `535`; queued again |
-| `target.unreachable` | warn | no reply before the message was sent (connection, TLS or protocol error) |
+| `target.down` | error (warn: optional) | the target answered `535` (text `auth: <reply>`) or connecting, TLS, the greeting or `EHLO` failed (`unreachable: <error>`); its worker stops sending and probes (D45). One per outage |
+| `target.recovered` | info | a probe of a down target succeeded; text `<reason>, down for <duration>` |
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
 | `retention.purged` | info | a retention run changed something; text holds counts only (`raw_purged=… raw_expired=… pseudonymized=… records_deleted=… events_deleted=…`) |
 | `store.decrypt_failed` | error | the stored message could not be decrypted (unknown key id, failed authentication); the delivery is `failed`, nothing was sent |
@@ -173,9 +175,10 @@ and every result is per recipient.
 | Outcome | Applies to | Before `data_sent_at` | After `data_sent_at` |
 |---|---|---|---|
 | reply `250` after the message | the accepted recipients of the attempt | — | `handed_off` |
-| `5xx` to `RCPT` | that recipient | `failed` | — |
+| `5xx` to `RCPT` | that recipient | `failed` (`delivery.rejected` if it refuses the address, D46) | — |
 | `4xx` to `RCPT`, or `552` (too many recipients, RFC 5321 4.5.3.1.10) | that recipient | queued, backoff; only queued recipients go into the next attempt | — |
-| reply `535` | every recipient of the attempt | queued, backoff, event `target.auth_failed` (error) | same |
+| connecting, TLS, greeting or `EHLO` fails | every recipient of the attempt | queued, backoff; the target goes down (`target.down`) | — |
+| reply `535` | every recipient of the attempt | queued, backoff; the target goes down (`target.down`) | queued, backoff |
 | reply `4xx` to `MAIL`, `DATA` or after the message | the recipients of the attempt not refused at `RCPT` | queued, backoff | queued, backoff (the server answered, so the outcome is clear) |
 | reply `5xx` to `MAIL`, `DATA` or after the message | the same | `failed` | `failed` |
 | no reply (network error, timeout, crash) | the same | queued, backoff | unclear: `hold` → `unknown`; `retry` → queued |
@@ -193,8 +196,24 @@ If writing `data_sent_at` fails, the message is not sent at all.
 
 A reply code outside 2xx/4xx/5xx counts as "no reply". `check` behaves like `hold` until the status adapter exists
 (phase L); its event says that the check is pending. The last attempt is moved to the end of the retry window, so the
-whole window is used. Levels: `failed`, `unknown` and `target.auth_failed` are `error`, or `warn` for an optional
-target; retries are `warn`.
+whole window is used. Levels: `failed`, `unknown` and `target.down` are `error`, or `warn` for an optional
+target; retries and `delivery.rejected` are `warn`.
+
+**Target health** (D45, `internal/delivery/health.go`). Each worker keeps its target's state in memory: up, or down
+since a time with a reason. `process` marks the target down when the attempt failed while connecting (dial, TLS,
+greeting, `EHLO`, whatever the reply) or with a `535` before the message; the attempt's recipients are queued as for a
+temporary failure, then `target.down` is appended. While down, the worker claims nothing. Each loop step first fails
+the queued recipients whose retry window is over (`store.ExpireQueued`, `delivery.failed`, at most 200 deliveries
+per transaction), then sleeps until the next probe (wake signals are ignored) or runs it: `connect` and `AUTH`
+through the same code as a send, then `QUIT`. A failed probe doubles the wait up to the maximum; a good one sets the
+target up and appends `target.recovered`. `Manager.Health` returns the states for the UI and the API
+(`query.Options.Health`, wired in `cmd/postwerk`); `query` does not import `delivery`.
+
+**Mailjet tracking and CA files.** For a `STATUS=mailjet` target with `MAILJET_TRACKING=off`, `headersFor` adds
+`X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0` after `X-MJ-CustomID`, and `stripFor` removes the sender's
+fields of those names; `MaxAddedBytes` and `message.Size` count them like the other added lines (D47). A target with
+`CA_FILE` has its own `x509.CertPool` (`config.Target.RootCAs`), used instead of the system roots in `tlsConfig`
+(D48).
 
 Recovery at start (D6): recipients left in `sending` move to `queued` (no `data_sent_at`) or through the target's
 `ON_UNKNOWN` policy (with `data_sent_at`). `cmd/postwerk` runs this for every target (`Manager.Recover`) before the
@@ -224,7 +243,7 @@ orchestrator's grace period must be longer than the deadline (120 s).
 | 7-bit message | `BODY=8BITMIME` (set by the SMTP library for every target that offers it; 7-bit content is valid 8BITMIME) | sent without `BODY=` |
 
 **Size.** The worker computes the exact size it will send (its own headers plus the stored message, without the
-sender's `X-MJ-CustomID` for Mailjet targets, a bare LF counted as CRLF; `message.Size`) and sends it as `SIZE=` to a
+sender's `X-MJ-CustomID` and tracking fields for Mailjet targets, a bare LF counted as CRLF; `message.Size`) and sends it as `SIZE=` to a
 target that offers `SIZE`. Ingress accepts `POSTWERK_MAX_MESSAGE_BYTES` minus `delivery.MaxAddedBytes`, the length of
 those headers for the configured targets, so a mail it accepts fits a target with that limit (I17). If the target
 names a limit and the message is larger, the delivery fails with `delivery.too_large` before `AUTH` and `MAIL`; like
@@ -235,7 +254,8 @@ does not need it. `delivery.unsupported` is final: the target's capabilities do 
 
 Before a send, the worker opens the sealed message. If retention removed it, the claim returns no message and the
 delivery fails with `retention.raw_expired`; if it cannot be decrypted, it fails with `store.decrypt_failed`. In both
-cases nothing is sent. For a Mailjet target, any `X-MJ-CustomID` the sender set is removed before Postwerk adds its own.
+cases nothing is sent. For a Mailjet target, any `X-MJ-CustomID` the sender set is removed before Postwerk adds its own,
+and with tracking off also the sender's `X-Mailjet-TrackOpen` and `X-Mailjet-TrackClick`.
 
 ## Encryption at rest
 
@@ -285,7 +305,10 @@ Lookups by address (`store.MailIDsByAddress`) take the normalized query and its 
 `internal/query` holds the read logic; the SQL behind it is in the store (`ListMails`, `TargetStatsSince`,
 `MailIDsByRef`, `MailIDsByMessageID`, `MailIDsByAddress`, `MailEvents`, `Mail`, `Deliveries`). `ListMails` filters by
 the derived state in SQL: it counts each mail's recipients per status and applies the same rule as `store.Summarize`
-(a test checks both agree for every combination), so pages stay correct with a state filter. The query layer decides
+(a test checks both agree for every combination), so pages stay correct with a state filter. A mail's state counts
+the recipients of its required targets only: `MailFilter.Optional` (from `query.Options.Optional`) leaves the
+optional targets out of the join unless the mail has no other delivery, and `store.MailStatus` does the same for one
+mail's detail (a randomized test compares both). The query layer decides
 what a reader may see: `query.Full` (the UI, and API tokens with role `admin`) returns addresses, `query.Masked` (API
 tokens with role `read`, the zero value) returns `j•••@e•••.com` and masks the `Message-ID` (`query.MaskMessageID`),
 and a pseudonymized mail returns no address at all. No function returns the stored message.
@@ -317,6 +340,10 @@ after its event is written, so nothing happens in the UI that the audit log miss
 - End-to-end tests start Postwerk's ingress and workers in-process against fake SMTP targets built with the same SMTP
   library, scripted to answer `250`, `4xx`, `535`, `5xx` or to drop the connection after DATA.
 - Recovery tests write a store in a crashed state and start the workers on it.
+- Target health: a target answering `535` with four mails queued gets the first attempt and then only probes (the
+  test counts the logins), writes one `target.down` and one Sentry report, and after the fix one
+  `target.recovered`, and every mail goes out; an unreachable target, a target with an untrusted certificate and one
+  without STARTTLS go down the same way; the retry window still ends while a target is down.
 - Every end-to-end test sends to a canary address and checks at the end that it appears nowhere in logs, exported
   events, the events table or delivery reply texts (leak test). The end-to-end harness runs with encryption on. One
   test also runs retention with tiny periods and then searches the database file and the WAL file byte by byte: the

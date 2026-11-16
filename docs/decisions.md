@@ -28,7 +28,8 @@ Security-critical content (password reset links, one-time tokens) stays with the
 ## D5 `535` holds the queue
 
 A rejected upstream login is our own configuration error, not a property of the mail. Postwerk keeps retrying within
-the retry window and raises an error immediately, instead of failing the mail.
+the retry window and raises an error immediately, instead of failing the mail. D45 moves the error and the retries to the
+target: one error per outage, and probes instead of a login per mail.
 
 ## D6 SQLite, one instance
 
@@ -566,6 +567,85 @@ in full it can tell a support tool more than masked addresses do.
   recipient finds the mail, and the response does not hand it back in full.
 - **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
   gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.
+
+## D45 A rejected login or an unreachable target takes the target down, not each mail
+
+D5 kept the mails queued on a `535`, but every queued mail still tried its own login: with four mails queued and a
+wrong password, an end-to-end check saw 7 failed logins in about 90 s, 7 `target.auth_failed` error events and 7
+reports in the error tracker. A provider that locks an account after repeated failed logins would have locked it,
+and the alert said the same thing seven times.
+
+- **The target has a state, up or down.** A `535`, or a failure while connecting (dial, TLS, greeting, `EHLO`,
+  whatever the reply), is about the target, so it takes the target down at once. Its worker then sends nothing. A
+  probe (connect, `EHLO`, `AUTH`, `QUIT`; never a mail) runs after 30 s and doubles to at most 5 min, both
+  configurable. The first probe that works brings the target up and the queue resumes. The provider sees at most one
+  login per probe.
+- **One event per outage.** `target.down` (`error`, `warn` for an optional target) with the reason `auth` or
+  `unreachable` and the redacted reply, and `target.recovered` (`info`) with how long it lasted. The two old kinds,
+  `target.auth_failed` and `target.unreachable`, are gone, not kept beside them: one name per fact keeps the event
+  schema and the alert rules simple. The mail whose attempt found the problem gets an ordinary `delivery.retry`
+  (`warn`); the others get nothing until they are sent. There was no release, so no consumer of the old kinds needs
+  a transition; old rows stay in the event log until retention removes them.
+- **Down on the first failure, also for `unreachable`.** Waiting for a second failure would mean one more login with
+  a wrong password, and for a network blip it saves only one event pair. A blip now gives `target.down` and, 30 s
+  later, `target.recovered`; an error tracker can group or mute that pair, which is its job, not Postwerk's.
+- **The retry window still ends.** While down, the worker claims nothing, so it fails the queued recipients whose
+  window is over itself (`delivery.failed`). Otherwise a mail could wait for days and go out after the target came
+  back, which the retry window exists to prevent.
+- **In memory only.** Storing the state would need a table, a migration and rules for a state left over from an
+  older configuration. After a restart every target starts up and the first attempt finds out again, at the cost of
+  one more `target.down` per restart while it is still broken. Readiness does not depend on it: a pod that is not
+  ready takes no mail, which would turn an outage of the provider into one of Postwerk.
+- The UI and the API overview show each target as up or down since a time, from the delivery workers through the
+  query layer (`query.Options.Health`), so `query` still does not import `delivery`.
+
+## D46 A refused recipient address is `delivery.rejected`, a warning
+
+A typo in an address or a closed mailbox was `delivery.failed` at `error`, the same as a relay that refuses Postwerk
+or a provider that rejects every mail. With alerts on `error`, a user mistyping their address paged the operator, who
+can do nothing about it.
+
+- **Own kind, level `warn`.** The recipient stays `failed`, so the mail's state, lists and the API are unchanged.
+  Only the event differs, and with it the alert. `delivery.failed` keeps everything the operator must act on: other
+  permanent replies, the end of the retry window, failures at `MAIL` or after the message that are not about an
+  address.
+- **Kept simple and narrow.** A rejection is a `550`, `551` or `553` whose enhanced status code says the address or
+  the mailbox is wrong (`5.1.x`, `5.2.x`), or, at `RCPT`, such a code without an enhanced code. A `550 5.7.1` (relay
+  denied, policy, spam) and any `554` stay `delivery.failed`: they are often the operator's configuration. After the
+  message, a qualifying reply applies to the recipients of that attempt. Parsing the reply text for which recipient
+  it names was not done: texts differ between providers and would need redacted addresses to be matched.
+- Delivery status after hand-off and bounce suppression stay with the provider; this only names what the target said
+  in the SMTP session.
+
+## D47 Mailjet tracking is off by default
+
+A Mailjet account with open or click tracking on rewrites every link through its tracking domain and adds a pixel,
+password reset links included. Applications such as an auth service send through SMTP and cannot switch that off per
+mail. Mailjet reads `X-Mailjet-TrackOpen` and `X-Mailjet-TrackClick` (`0` off, `1` on) on each SMTP message, over the
+account's setting (dev.mailjet.com, "SMTP relay", custom headers).
+
+- **`POSTWERK_TARGET_<NAME>_MAILJET_TRACKING`, default `off`, only with `STATUS=mailjet`.** `off` adds both headers
+  with `0` and removes any the sender set, so no sender turns tracking back on by accident and the outcome does not
+  depend on how the account is configured. `account` adds and removes nothing; the account's settings and the
+  sender's headers apply. There is no `on`: turning tracking on is a marketing choice for the account or the sender.
+- **Counted in the size margin**, like `X-MJ-CustomID` (D40): the two lines have a fixed length of 49 bytes, so
+  ingress offers 49 bytes less for a Mailjet target with tracking off.
+- This changes headers, which D3 keeps to Postwerk's own tracking lines; it changes no content and no link. It lets
+  Postwerk keep the promise that links reach the recipient as the application wrote them.
+
+## D48 A CA file per target replaces the system roots for that target
+
+Only Go's `SSL_CERT_FILE` let Postwerk trust a relay with a private CA. It is undocumented in Postwerk, applies to
+every target and to the Sentry sink, and replaces the system roots, so a bundle without the public roots breaks the
+public provider.
+
+- **`POSTWERK_TARGET_<NAME>_CA_FILE`**, a PEM bundle, read and checked at start: every PEM block must be a
+  certificate that parses, at least one must be there, and `smtp+plain` with a CA file is an error (it would have no
+  effect). It is not a secret, so it gets no permission warning.
+- **Replaces, does not add.** A target behind a private CA should trust that CA, not every public one as well: adding
+  would let any public CA vouch for a host name that is meant to be internal. The other targets and the Sentry sink
+  keep the system roots. Anyone who wants both builds a bundle that holds both.
+- The chart mounts it from a ConfigMap (`targets[].caConfigMap`).
 
 ## D56 Semantic versioning from 1.0 covers the operator's contract
 

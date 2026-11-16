@@ -196,16 +196,33 @@ their own retention. Backups should not live longer than `POSTWERK_RECORD_RETENT
 | `POSTWERK_RETRY_WINDOW` | `24h` | a duration > 0, < `RAW_MAX_AGE` | Default retry window: after it, a delivery that keeps failing temporarily becomes `failed`. |
 | `POSTWERK_TARGET_<NAME>_URL` | required | `smtps://host[:465]`, `smtp://host[:587]`, `smtp+plain://host[:25]` | `smtps` is implicit TLS, `smtp` requires STARTTLS, `smtp+plain` is cleartext and must be chosen explicitly. No user, password, path or query in the URL. Certificates are always verified. |
 | `POSTWERK_TARGET_<NAME>_CREDENTIALS_FILE` | none | path | First line `username:password` for `AUTH PLAIN`. Not allowed with `smtp+plain`. Secret file. |
-| `POSTWERK_TARGET_<NAME>_STATUS` | none | `mailjet` | Provider status adapter. For `mailjet`, Postwerk removes any `X-MJ-CustomID` the sender set and adds its own (the mail id), so tracking is unambiguous. The adapter itself is a later phase. |
-| `POSTWERK_TARGET_<NAME>_OPTIONAL` | `false` | `true`, `false` | Failures of an optional target are warnings, not errors. |
+| `POSTWERK_TARGET_<NAME>_STATUS` | none | `mailjet` | Provider status adapter. For `mailjet`, Postwerk removes any `X-MJ-CustomID` the sender set and adds its own (the mail id), so tracking is unambiguous, and turns open and click tracking off (`MAILJET_TRACKING`). The adapter itself is a later phase. |
+| `POSTWERK_TARGET_<NAME>_OPTIONAL` | `false` | `true`, `false` | Failures of an optional target are warnings, not errors, and they do not change a mail's state: a mail is `failed`, `partial` or `handed_off` by its required targets alone (the delivery to the optional target keeps its own state). |
 | `POSTWERK_TARGET_<NAME>_RETRY_WINDOW` | `POSTWERK_RETRY_WINDOW` | a duration > 0, < `RAW_MAX_AGE` | Retry window for this target. |
 | `POSTWERK_TARGET_<NAME>_ON_UNKNOWN` | `hold` (`check` with a status adapter) | `hold`, `retry`, `check` | What to do when the connection breaks after the message was sent (unclear outcome). `hold` marks it `unknown` for an admin; `retry` sends again and may duplicate; `check` needs a status adapter and behaves like `hold` until the adapter exists. |
 | `POSTWERK_TARGET_<NAME>_ALLOW_RECIPIENTS` | none (all allowed) | comma-separated patterns with `@`, `*` and `?` wildcards, case-insensitive | Allow-list. If any recipient of a mail is outside it, the whole delivery to this target is skipped (all or nothing per target; `delivery.not_allowed`, warning, one per recipient); the mail is not rejected and other targets still get it. |
+| `POSTWERK_TARGET_<NAME>_MAILJET_TRACKING` | `off` (**recommended**) | `off`, `account`; only with `STATUS=mailjet` | `off` adds `X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0` to every mail and removes those headers if the sender set them, so Mailjet neither rewrites links (password reset links included) nor adds a tracking pixel, whatever the account's settings. `account` adds nothing and passes the sender's headers on: the account's settings apply, and a sender can still switch tracking per mail. |
+| `POSTWERK_TARGET_<NAME>_CA_FILE` | none (the system roots) | path to a PEM file with one or more `CERTIFICATE` blocks | The certificate authorities this target's certificate comes from, for a relay with a private CA. They **replace** the system roots for this target only; other targets keep the system roots. Checked at start: every PEM block must be a certificate that parses. Not allowed with `smtp+plain`. Not a secret file. |
+| `POSTWERK_PROBE_INTERVAL` | `30s` | a duration > 0 | Wait before the first probe of a target that is down (section "Target down"). |
+| `POSTWERK_PROBE_MAX_INTERVAL` | `5m` | a duration ≥ `POSTWERK_PROBE_INTERVAL` | Each failed probe doubles the wait, up to this. |
 
 `<NAME>` is the target name in upper case. Security notes: prefer `smtps://` or `smtp://`; use `smtp+plain://` only for
 a capture tool on the same host or network. **No capture target in production**: a capture tool holds working password
 reset links. If one is needed for a short test, exclude sensitive mails, put authentication on its UI, and set its own
 retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
+
+**Target down.** When a target rejects the login (`535`) or cannot be reached (connecting, TLS, the greeting or
+`EHLO` fails), Postwerk stops sending to it and writes one `target.down` event (`error`, `warn` for an optional
+target). Mails stay queued. It then probes the target (connect, `EHLO`, `AUTH`, `QUIT`; no mail) after
+`POSTWERK_PROBE_INTERVAL`, doubling up to `POSTWERK_PROBE_MAX_INTERVAL`. The first probe that works writes
+`target.recovered` and sending resumes. A provider that locks an account after repeated failed logins sees at most one
+login per probe. Mails whose retry window ends meanwhile become `failed`. The state is kept in memory only: after a
+restart the first attempt finds a broken target again. Fix the credentials file and restart, or wait for the probe if
+the provider was down.
+
+**Private CA.** `CA_FILE` replaces the roots, rather than adding to them, so a target behind a private CA trusts that CA
+and nothing else; a public provider needs no `CA_FILE`. Go's `SSL_CERT_FILE` still works but changes the roots for
+every target and for the Sentry sink, so prefer `CA_FILE`.
 
 ## Limits
 
@@ -228,13 +245,15 @@ target unchanged. Internationalized addresses (UTF-8, RFC 6531) are accepted onl
 
 A provider refuses a message larger than its limit. Postwerk adds header lines to every message it sends, so it
 accepts a little less than the limit, computed exactly: `X-Postwerk-Id: pw_…` (46 bytes) for every target, and
-`X-MJ-CustomID: pw_…` (46 bytes) as well for a target with `STATUS=mailjet`. The mail id always has 29 characters.
-Postwerk takes the largest of these sums over all targets: with the default and a Mailjet target, ingress offers
-`SIZE 15728548` (15728640 − 92). The start log shows both values (`max_message_bytes`, `smtp_size`).
+`X-MJ-CustomID: pw_…` (46 bytes) as well for a target with `STATUS=mailjet`, and with `MAILJET_TRACKING=off` (the
+default) `X-Mailjet-TrackOpen: 0` (24 bytes) and `X-Mailjet-TrackClick: 0` (25 bytes). The mail id always has 29
+characters. Postwerk takes the largest of these sums over all targets: with the default and a Mailjet target, ingress
+offers `SIZE 15728499` (15728640 − 141). The start log shows both values (`max_message_bytes`, `smtp_size`).
 
 Sizes are counted as the target receives the message: a line that ends in a bare LF is sent with CRLF, so each such
-LF counts as two bytes at ingress. A sender's own `X-Postwerk-*` and, for Mailjet, `X-MJ-CustomID` lines are removed,
-which only makes the message smaller.
+LF counts as two bytes at ingress. A sender's own `X-Postwerk-*` and, for Mailjet, `X-MJ-CustomID` lines (and with
+tracking off its `X-Mailjet-TrackOpen` and `X-Mailjet-TrackClick` lines) are removed, which only makes the message
+smaller.
 
 For another provider, set `POSTWERK_MAX_MESSAGE_BYTES` to its limit; with several targets, to the smallest one. Some
 values (taken from the provider's `EHLO` reply or documentation, November 2026; check yours, they change):
@@ -288,10 +307,17 @@ The Sentry-protocol sink sends warn and error events to Sentry or a Sentry-compa
 get an alert with the mail id, target, sender login and SMTP code, and can look the mail up in the UI. It is off until
 a DSN file is set. Details of what is sent: [privacy-and-security.md](privacy-and-security.md#24-what-goes-to-sentry).
 
+With the default level `error`, a report means the operator has something to do: a target is down (`target.down`,
+one per outage, not per mail: a wrong password or a provider outage pages once), a mail failed for a reason on the
+relay's or the provider's side (`delivery.failed`, including the end of the retry window), an unclear outcome, a
+message too large or needing an extension the target lacks, a decryption or retention failure, a TLS reload problem.
+A recipient address the target refuses (a typo, a closed mailbox) is `delivery.rejected` at `warn`: the sending
+application and its user can fix that, the operator cannot. Failures at optional targets are `warn` too.
+
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
 | `POSTWERK_SENTRY_DSN_FILE` | none (sink off) | path | File whose first line is the project's DSN, `https://<key>@<host>[:port][/path]/<project id>`. Checked at start. Secret file. |
-| `POSTWERK_SENTRY_MIN_LEVEL` | `error` (**recommended**) | `error`, `warn` | Lowest level that is sent. `warn` adds retries, unreachable targets, skipped recipients and failed UI logins. Lower events only move the sink's cursor. |
+| `POSTWERK_SENTRY_MIN_LEVEL` | `error` (**recommended**) | `error`, `warn` | Lowest level that is sent. `warn` adds retries, rejected recipient addresses (`delivery.rejected`), failures at optional targets, skipped recipients and failed UI logins. Lower events only move the sink's cursor. |
 | `POSTWERK_SENTRY_ALLOW_HTTP` | `false` | `true`, `false` | Accept an `http://` DSN. For a local test, or a GlitchTip in the same cluster on a network that encrypts traffic between nodes. A warning is logged at every start. |
 
 `POSTWERK_SENTRY_DSN` (the DSN as a value) is refused: the DSN holds the project key, and like every secret it comes

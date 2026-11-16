@@ -168,7 +168,7 @@ A status is always written out as text, colour only supports it.
 | Page | Path | Shows |
 |---|---|---|
 | Login | `GET /login`, `POST /login` | name and password or token |
-| Overview | `GET /` | per target: recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial`) |
+| Overview | `GET /` | per target: up, or down since when and why (`auth`, `unreachable`; D45), whether it is optional, recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial` by their required targets) |
 | Mails | `GET /mails` | the search form; list with filters (state, target, received from and to), newest first, 50 per page |
 | Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
 | Mail | `GET /mails/{id}` | id, received time, sending application, size, ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; per target the derived status (including `partial`), attempts, next attempt, last reply, and a table with each recipient's status and reply; the event timeline. Opening it writes `ui.view` |

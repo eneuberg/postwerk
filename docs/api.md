@@ -128,7 +128,7 @@ The id is not personal data, so it may be in the URL. Example for a `read` token
     {"seq": 1, "time": "2026-11-15T11:00:00Z", "kind": "mail.accepted", "level": "info"},
     {"seq": 2, "time": "2026-11-15T11:00:01Z", "kind": "delivery.attempt", "level": "info", "target": "mailjet", "attempt": 1},
     {"seq": 3, "time": "2026-11-15T11:00:02Z", "kind": "delivery.handed_off", "level": "info", "target": "mailjet", "recipient": 0, "attempt": 1, "code": 250, "text": "2.0.0 OK"},
-    {"seq": 4, "time": "2026-11-15T11:00:02Z", "kind": "delivery.failed", "level": "error", "target": "mailjet", "recipient": 1, "attempt": 1, "code": 550, "text": "5.1.1 <redacted>: mailbox unavailable"}
+    {"seq": 4, "time": "2026-11-15T11:00:02Z", "kind": "delivery.rejected", "level": "warn", "target": "mailjet", "recipient": 1, "attempt": 1, "code": 550, "text": "5.1.1 <redacted>: mailbox unavailable"}
   ],
   "events_truncated": false
 }
@@ -139,6 +139,9 @@ For a `read` token the `message_id` is masked too, because many libraries put a 
 it: the part after the last `@` like an address's domain, and the part before it as well if it holds an `@` or an
 encoded address (`jane=example.com`); angle brackets stay. A search by `message_id` still takes the exact value
 (D44).
+A mail's `status` (here and in search results and lists) is derived from the recipients of its required targets
+only; a delivery to an optional target keeps its own `status` in `deliveries` but does not change the mail's
+(design.md section 4). So `state=failed` lists a mail that failed at the provider even if its capture copy arrived.
 Recipients are numbered by their position in the envelope, from 0, as in the events. SMTP texts are stored redacted.
 At most 500 events are returned. An unknown id gets `404`. Every detail returned is an `api.view` event with the
 token name and the mail id (section 5).
@@ -154,8 +157,9 @@ Filters as URL parameters, each at most once: `state`, `target`, `from` and `to`
 
 ### Overview: `GET /v1/overview` (admin)
 
-Per target: recipients of mails received in the last 24 hours by status, mails queued now, the oldest queued; and the
-ten most recent `failed`, `unknown` or `partial` mails.
+Per target: whether it is optional, whether its worker can send to it, recipients of mails received in the last 24
+hours by status, mails queued now, the oldest queued; and the ten most recent `failed`, `unknown` or `partial` mails
+(by their required targets).
 
 ```json
 {
@@ -165,6 +169,10 @@ ten most recent `failed`, `unknown` or `partial` mails.
     {
       "target": "mailjet",
       "configured": true,
+      "optional": false,
+      "state": "down",
+      "state_since": "2026-11-15T11:57:12Z",
+      "down_reason": "auth",
       "recent": {"failed": 1, "handed_off": 1, "queued": 0, "sending": 0, "skipped": 0, "unknown": 0},
       "recent_total": 2,
       "queued": 1,
@@ -175,6 +183,12 @@ ten most recent `failed`, `unknown` or `partial` mails.
   "problems": [{"id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X", "…": "as in search"}]
 }
 ```
+
+`state` is `up` or `down` for a configured target (D45); a target that has deliveries in the store but is no longer
+configured has no `state`. `down` means the target rejected the login (`down_reason` `auth`) or could not be reached
+(`unreachable`) and no mail goes out to it until a probe succeeds; `state_since` is when it went down, or when it was
+last seen up again (or Postwerk started). The state is held in memory, so after a restart every target is `up` until
+the first attempt says otherwise.
 
 ### Errors
 

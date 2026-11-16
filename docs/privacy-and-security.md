@@ -110,7 +110,7 @@ or Sentry's cloud service, which is then a processor for this data (section 7).
 
 | Sent | Example | Personal |
 |---|---|---|
-| message: kind, target, SMTP code and redacted reply text | `delivery.failed at mailjet: 550 5.1.1 <redacted>: unknown user` | no, after redaction |
+| message: kind, target, SMTP code and redacted reply text | `delivery.failed at mailjet: 554 5.7.1 relay access denied`; with `warn`, `delivery.rejected at mailjet: 550 5.1.1 <redacted>: unknown user` | no, after redaction |
 | tags: `kind`, `target`, `sender`, `instance`, `level`, `mail_id`; `actor` for UI events | `sender=auth-service`, `mail_id=pw_01JC…` | no, unless a sender login or token name is named after a person; the mail id points to a person for whoever can open the UI |
 | extra: `seq`, `attempt`, `recipient` (position), `smtp_code`, `smtp_text`, `ui_path` | `recipient=1`, `ui_path=/mails/pw_01JC…` | no |
 | event time, environment (the instance), the fixed SDK name `postwerk` and its version | | no |

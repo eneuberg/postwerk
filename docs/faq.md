@@ -21,9 +21,11 @@ off, that mail is lost.
 
 ## What happens if the provider is down or the credentials are wrong?
 
-Mails stay in the queue and are retried with backoff (from 30 seconds up to hourly) for 24 hours by default. A rejected
-login (`535`) raises an error event at once and keeps the mails queued, so rotated credentials do not turn into failed
-mails. Other targets are not affected.
+Mails stay in the queue for 24 hours by default. A rejected login (`535`) or a provider that cannot be reached takes
+the target down: one `target.down` error event at once, no further mail is tried, and a probe (log in, no mail) runs
+every 30 seconds, doubling up to 5 minutes, so the provider does not see a login per queued mail and lock the
+account. When the probe works, `target.recovered` is written and the queue goes out. Rotated credentials do not turn
+into failed mails. Other targets are not affected.
 
 ## Does Postwerk store email content?
 

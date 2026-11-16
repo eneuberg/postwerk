@@ -51,7 +51,7 @@ and being able to say what happened to each one.
 | | Postwerk | maddy | Postfix |
 |---|---|---|---|
 | Built for | outgoing application mail only | full mail server (inbound, IMAP, DKIM) | full mail transfer agent |
-| Provider rejects the login (`535`) | mail stays queued, error raised at once | mail fails, not retried (our reading of the v0.9.7 source) | deferred and retried |
+| Provider rejects the login (`535`) | mail stays queued, one error at once, login probed with backoff | mail fails, not retried (our reading of the v0.9.7 source) | deferred and retried |
 | What happened to one mail? | event per mail, target and recipient; internal UI and query API | search the logs | search the logs, `postqueue` |
 | Copy to Mailjet and Mailpit at once | each target tracked on its own | several `deliver_to` | extra BCC recipient, not tracked |
 | Mail content on disk | encrypted, removed once handed off | plain in the queue | plain in the queue |

@@ -29,7 +29,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 |---|---|---|---|
 | Ingress | SMTP server, `AUTH PLAIN` per sender, size and recipient limits, STARTTLS | built | `github.com/emersion/go-smtp`, `github.com/emersion/go-sasl` |
 | Store | SQLite in WAL mode, one connection, migrations embedded | built | `modernc.org/sqlite` (pure Go) |
-| Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start | built | `github.com/emersion/go-smtp` (client) |
+| Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start, target down and probes after a rejected login or an unreachable target | built | `github.com/emersion/go-smtp` (client) |
 | Retention | removes raw messages, pseudonymizes addresses, expires records and events | built | standard library |
 | Reporter | event log → sinks, each with its own cursor and loop | built for stdout and Sentry protocol; other sinks planned | standard library |
 | Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
@@ -62,10 +62,12 @@ Per target (`POSTWERK_TARGET_<NAME>_<SETTING>`; full list in [configuration.md](
 | `URL` | `smtps://host[:465]` (implicit TLS), `smtp://host[:587]` (STARTTLS required) or `smtp+plain://host[:25]` (cleartext, never with credentials) | required |
 | `CREDENTIALS_FILE` | `username:password` for the target | none |
 | `STATUS` | provider status adapter; only `mailjet` is accepted *(adapter planned)* | none |
-| `OPTIONAL` | failures are reported as warnings instead of errors | `false` |
+| `OPTIONAL` | failures are reported as warnings instead of errors, and they do not change the mail's state (section 4) | `false` |
 | `RETRY_WINDOW` | how long to keep retrying | global value, `24h` |
 | `ON_UNKNOWN` | what to do with an unclear outcome, see section 6 | `check` if `STATUS` is set, else `hold` |
 | `ALLOW_RECIPIENTS` | comma-separated address patterns such as `*@example.test`; a mail with any recipient outside the list is not delivered to this target | none (all allowed) |
+| `MAILJET_TRACKING` | with `STATUS=mailjet` only: `off` switches Mailjet's open and click tracking off for every mail; `account` leaves it to the account's settings | `off` |
+| `CA_FILE` | PEM bundle of the certificate authorities this target's certificate comes from; replaces the system roots for this target | none (system roots) |
 
 TLS is the default towards every target. `smtp://` fails if the target does not offer STARTTLS; Postwerk does not fall
 back to cleartext. Cleartext needs the explicit scheme `smtp+plain://`, which is meant for a local capture tool such as
@@ -89,7 +91,31 @@ delivery fails with `delivery.unsupported`. `DSN` and `REQUIRETLS` are not offer
 
 Headers: Postwerk removes every `X-Postwerk-*` header set by the sender before it stores the mail. It reads
 `X-Postwerk-Ref` and `X-Postwerk-Skip` first. Towards every target it adds `X-Postwerk-Id: <mail id>`, and for targets
-with `STATUS=mailjet` also `X-MJ-CustomID: <mail id>`. No other header is added or changed.
+with `STATUS=mailjet` also `X-MJ-CustomID: <mail id>` and, while `MAILJET_TRACKING=off` (the default),
+`X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0`. A Mailjet account with tracking on rewrites every link,
+password reset links included, and an application cannot switch that off per mail through SMTP alone; so Postwerk
+switches it off and removes any `X-MJ-CustomID`, `X-Mailjet-TrackOpen` or `X-Mailjet-TrackClick` the sender set
+(D47). No other header is added or changed.
+
+### Target health
+
+A rejected login (`535`) or a target that cannot be reached (connecting, TLS, the greeting or `EHLO` fails) says
+nothing about the mail; it is the target that is broken. On the first such failure the target goes **down** (D45):
+
+- Its worker stops sending. Queued mails wait; new mails are accepted and queued as usual.
+- A probe runs instead: connect, `EHLO`, `AUTH` if the target has credentials, `QUIT`. Never a mail. The first probe
+  comes after `POSTWERK_PROBE_INTERVAL` (30 s), each failed probe doubles the wait up to `POSTWERK_PROBE_MAX_INTERVAL`
+  (5 min). With wrong credentials the provider sees one login per probe, not one per queued mail, so it has no
+  reason to lock the account.
+- When a probe succeeds the target is **up** again and the queue resumes in its usual order.
+- One `target.down` event (`error`, `warn` for an optional target) when it goes down, with the reason (`auth` or
+  `unreachable`) and the redacted reply or error; one `target.recovered` event (`info`) when it comes back, with how
+  long it was down. The mail whose attempt found the problem gets a `delivery.retry` (`warn`) like any temporary
+  failure; the mails behind it get nothing until they are sent.
+- The retry window still ends: a recipient queued at a down target past its window becomes `failed`
+  (`delivery.failed`) without another attempt.
+- The state lives in memory. After a restart every target starts up, and the first attempt finds out again (one
+  more `target.down` if it is still broken). The UI and the API overview show each target as up or down since a time.
 
 ## 4. Lifecycle
 
@@ -125,11 +151,16 @@ UI and the query API.
 - `accepted`: stored, `250` sent to the sender. The raw message is kept, encrypted, until it is no longer needed for
   delivery (section 7).
 - `handed_off`: the target replied `250`. Without a provider status adapter this is the last state.
-- `failed`, `unknown` and `target.auth_failed` raise an event with level `error` (`warn` for optional targets).
+- `failed` and `unknown` raise an event with level `error` (`warn` for optional targets), except a recipient address
+  the target refuses for good, `delivery.rejected` (`warn`, section 5). A broken login or unreachable target raises
+  one `target.down` for the target, not one event per mail (section 3).
 - On start, each worker recovers its recipients left in `sending`: back to `queued` if the message was not sent yet,
   through `ON_UNKNOWN` if it was. An unclear outcome only ever applies to the recipients of that attempt.
-- The mail's overall state is derived from the recipients of its required targets: `done` when all are `handed_off`
-  or later, `problem` as soon as one failed or is unknown, `pending` otherwise. It is not stored separately.
+- The mail's overall state is the same summary over the recipients of its **required** targets only; optional
+  targets (a capture copy) are left out, so a mail that failed at the provider and reached Mailpit is `failed`, not
+  `partial`, and a failed capture copy does not make a mail a problem. Each delivery keeps its own state, optional
+  ones included. A mail that has deliveries to optional targets only is summarized over those. It is not stored
+  separately; the list filters (`state=failed`) and the recent problems use the same rule.
 
 ### What `250` means
 
@@ -148,12 +179,13 @@ waits only seconds before hand-off.
 | Target reply | Meaning | Postwerk does |
 |---|---|---|
 | `250` after the message | accepted | `handed_off` |
-| `5xx` to one `RCPT` | permanent for that recipient | that recipient `failed`; the others go on |
+| `5xx` to one `RCPT` | permanent for that recipient | that recipient `failed`; the others go on; `delivery.rejected` (`warn`) if the reply refuses the address (below), else `delivery.failed` |
 | `4xx` to one `RCPT` (and `552`, which RFC 5321 counts as "too many recipients") | temporary for that recipient | that recipient stays queued; only queued recipients go into the next attempt |
 | `4xx` | temporary | retry with backoff |
-| network error, TLS error, timeout before the message was sent | temporary | retry with backoff, event `target.unreachable` |
-| `535` (authentication failed) | our credentials are wrong or rotated | **retry and raise an error at once**; the delivery stays queued |
-| other `5xx` | permanent | `failed` |
+| connecting, TLS, greeting or `EHLO` fails (any reply) | the target is unreachable | the target goes down (section 3): the mail stays queued, one `target.down` |
+| network error or timeout later, before the message was sent | temporary | retry with backoff |
+| `535` (authentication failed) | our credentials are wrong or rotated | the target goes down (section 3): **the mail stays queued, one error at once** |
+| other `5xx` | permanent | `failed`; `delivery.rejected` for `550`, `551` or `553` that refuses the address (below) |
 | target lacks `SMTPUTF8` or `8BITMIME` that the mail needs (seen in `EHLO`) | permanent | `failed`, event `delivery.unsupported`, nothing sent |
 | message larger than the target's `SIZE` (seen in `EHLO`) | permanent | `failed`, event `delivery.too_large`, nothing sent |
 | no reply after the message was sent (timeout, crash) | unclear | `unknown`, see section 6 |
@@ -163,7 +195,14 @@ Backoff: 30 s, 1 min, 2 min, 5 min, 10 min, 30 min, then hourly until the retry 
 attempt is placed at the end of the window, so the whole window is used.
 
 The `535` rule is deliberate. Some relays treat it as permanent and drop queued mail while the credentials are broken.
-Postwerk treats a broken login as an outage on its own side.
+Postwerk treats a broken login as an outage on its own side, and of the target, not of each mail (D45).
+
+**Rejected recipients** (D46). A recipient address the target refuses for good is the sender's matter (a typo, a
+closed mailbox), not the operator's. It is `failed` like any permanent failure, but its event is `delivery.rejected`
+at `warn`, so an alert on `error` fires only for what the operator must act on. A reply counts as such a rejection when
+its code is `550`, `551` or `553` and its enhanced status code is `5.1.x` (address) or `5.2.x` (mailbox); at `RCPT`
+also a `550`, `551` or `553` without an enhanced code. A `550 5.7.1` (policy, relay denied, spam) or any `554` stays
+`delivery.failed`. After the message, the rejection applies to the recipients of that attempt.
 
 "After the message was sent" is recorded per delivery (`data_sent_at`): it is set after the target's `354` reply and
 before the first byte of the message. Details in [architecture.md](architecture.md#delivery-worker).
@@ -219,12 +258,12 @@ unknown, skip) is one event per recipient and carries `"recipient"`, the positio
   "seq": 1042,
   "time": "2026-11-13T09:41:07.312Z",
   "level": "error",
-  "kind": "target.auth_failed",
+  "kind": "delivery.failed",
   "mail_id": "pw_01JCX4…",
   "target": "mailjet",
   "recipient": 0,
   "attempt": 3,
-  "smtp": { "code": 535, "text": "5.7.8 authentication failed" },
+  "smtp": { "code": 554, "text": "5.7.1 relay access denied" },
   "sender": "auth-service",
   "instance": "prod"
 }
@@ -239,13 +278,14 @@ Kinds written today:
 | `delivery.retry` | warn | temporary failure, next attempt scheduled |
 | `delivery.handed_off` | info | the target replied `250` |
 | `delivery.failed` | error (warn if optional) | permanent failure or retry window over |
+| `delivery.rejected` | warn | the target refused the recipient's address for good (`550`/`551`/`553`, section 5); `failed` |
 | `delivery.unknown` | error (warn if optional) | unclear outcome under `hold` (or `check`, until the adapter exists) |
 | `delivery.skipped` | info | excluded by `X-Postwerk-Skip` |
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
 | `delivery.unsupported` | error (warn if optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; not sent |
 | `delivery.too_large` | error (warn if optional) | the message is larger than the `SIZE` the target offers; not sent |
-| `target.auth_failed` | error (warn if optional) | the target replied `535` |
-| `target.unreachable` | warn | no reply before the message was sent: connection, TLS or protocol error |
+| `target.down` | error (warn if optional) | the target rejected the login (`535`) or could not be reached; sending stops until a probe succeeds (section 3); no mail id, text `auth: <reply>` or `unreachable: <error>` |
+| `target.recovered` | info | a probe succeeded and sending resumes; text `<reason>, down for <duration>` |
 | `tls.reloaded` | info | a renewed STARTTLS certificate is served |
 | `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
 | `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; once a day |
@@ -268,7 +308,11 @@ failing sink holds up no other sink and never delivery.
 | Sentry protocol | error events (warnings too, if chosen) grouped by `kind` and `target`, with `mail_id` as a searchable tag; works with Sentry-compatible tools such as GlitchTip | built; on when a DSN file is set ([configuration.md](configuration.md#error-reports-to-sentry-or-glitchtip), decisions D30, D31) |
 | Webhook | JSON `POST`, signed per the Standard Webhooks spec (HMAC-SHA256) | planned; on when a URL is set |
 
-The Sentry sink filters by level (`error`, or `warn` and above). Planned: a filter for every sink (`level`, `kind`,
+The Sentry sink filters by level (`error`, or `warn` and above). Levels are chosen so that `error` means "the
+operator must act": a target down, a mail failed for a reason on the relay's or the provider's side, an unclear
+outcome, a decryption or retention failure. A refused recipient address (`delivery.rejected`), retries and failures at
+optional targets are `warn`. A broken login or unreachable target is one `target.down` per outage, not one report per
+mail; routing and grouping beyond that is the error tracker's job. Planned: a filter for every sink (`level`, `kind`,
 `target`). The variables for the planned sinks are reserved: setting one today stops the start with "not
 implemented yet".
 
