@@ -278,44 +278,47 @@ reuses access control that already exists and is already audited.
   data is read (`internal/query`), not in the templates, so the later JSON API cannot forget it. The UI later dropped
   the `read` role (D35); the masking stays for the API.
 
-## D38 TLS certificates reload from their files, checked every minute
+## D30 The Sentry protocol by hand, without an SDK
 
-cert-manager renews a certificate long before it expires, and Kubernetes swaps the files of a Secret volume through a
-symlink. A process that reads the certificate only at start would keep serving the old one until it expires; then
-in-cluster clients, which need TLS for `AUTH PLAIN`, could no longer send. Options were a restart on every renewal (an
-extra controller or a cron job, and a short outage), file system notifications, or polling.
+Sentry-compatible tools (Sentry itself, GlitchTip) are where many teams already get their alerts, so error events go
+there directly (D8). An SDK would bring many indirect dependencies (O4, [scope.md gap 15](scope.md#7-gaps-between-the-ideal-and-the-current-design))
+and defaults that collect more than Postwerk wants to send: breadcrumbs, request data, the host name, local
+variables. What Postwerk needs is small: one `POST` of one envelope per event, with a key in a header.
 
-- **Polling, by content, every 60 s.** Notifications on a symlink swap are easy to miss (the watched path itself does
-  not change), and the modification time of the target can stay the same. Reading two small files once a minute
-  costs nothing and catches every way of replacing them. Kubernetes takes up to about a minute to update the volume,
-  so faster polling would gain little.
-- **Validate before swapping.** A new pair must parse, the key must match and the certificate must still be valid.
-  Otherwise the old certificate stays: a broken renewal must not take TLS down while the old certificate still works.
-  A pair read in the middle of a replacement is read once more after 2 s before it counts as failed.
-- **Report, not spam.** `tls.reload_failed` once per content, `tls.reloaded` per reload, `tls.expiring` once a day
-  under 14 days. cert-manager renews 15 days ahead, so the warning means the renewal did not arrive.
-- **One package for every listener.** `internal/tlsreload` has no Postwerk dependencies; the STARTTLS ingress uses it,
-  and any later TLS listener uses the same code. At start an invalid pair still stops Postwerk (O1).
+- **Standard library only.** `report.Sentry` builds the envelope and the event itself from the event record, so there
+  is no field that could carry an address or content (privacy-and-security.md, change 12). The payload was checked
+  against the Sentry developer documentation (envelopes, authentication, event payloads, rate limiting) and against
+  GlitchTip's ingest code, and sent to GlitchTip 7.0.0 in a local test.
+- **One Sentry event per Postwerk event, grouped by kind and target.** The fingerprint is
+  `["postwerk", kind, target]`, so "`delivery.failed` at `mailjet`" is one issue however many mails fail, and a new
+  kind of trouble is a new issue that alerts. Reply texts differ per mail and would split issues if they were part of
+  the grouping.
+- **`mail_id` as a tag.** Tags are searchable in Sentry and GlitchTip, so an alert leads to the mail, and the mail to
+  the UI (`ui_path` in the extra data). `sender` and `target` are tags for the same reason.
+- **The DSN from a file.** Sentry calls the key public, but whoever has it can post events to the project and flood
+  the alerts. It is handled like every other secret (D20): from a file, never from a variable, never logged.
+- **`https` only, unless allowed.** `POSTWERK_SENTRY_ALLOW_HTTP=true` exists for local tests and a GlitchTip inside
+  a cluster whose network is encrypted, as cleartext SMTP needs its own explicit setting (D18).
 
-## D39 Signed images on GHCR, no `latest`
+## D31 At least once to Sentry, never in the way of delivery
 
-Operators need an image they can pull and check, without building it themselves. The release workflow runs on a tag
-`v<semver>` only; nothing is published from a branch.
+The Sentry SDKs drop events when the server is down or rate limits them. Postwerk already has every event in its log
+and a cursor per sink (D7), so the Sentry sink keeps them instead and sends them later.
 
-- **GHCR, keyless cosign.** The image lives next to the code, and the workflow's own `GITHUB_TOKEN` pushes it. cosign
-  signs with a short-lived certificate for the workflow's OIDC identity, so there is no signing key to store, rotate or
-  leak. A verifier checks issuer and identity (`release.yml@refs/tags/v…`), which ties the image to this repository
-  and that tag. The signature covers the index digest, and with it both platforms, the SBOM and the provenance.
-- **SBOM and provenance from BuildKit**, attached to the image index. No extra action is needed for them, and the
-  scanner image is pinned by digest. The workflow uses four actions (checkout, setup-go, setup-buildx, the cosign
-  installer), each pinned by commit; login, build and signing are plain commands. The tests run in a job of their
-  own with read access only; the job that pushes and signs starts after it and runs no project code but the build.
-- **Two platforms, no emulation.** The build stage runs on the build machine and cross-compiles (`GOOS`, `GOARCH`);
-  the final stage is `scratch`, so `linux/arm64` costs one more `go build`.
-- **No `latest`.** A moving tag hides which version runs, and `IfNotPresent` never pulls the new one. Users pin a
-  version, better a digest. The chart takes its tag from `appVersion`, and the workflow refuses a tag that does not
-  match it, so chart and image cannot drift.
-- **Publishing stays a manual step.** A release starts only when the maintainer pushes a tag.
+- **Deterministic event ids.** The id is a UUID made from instance, seq, time, mail id and kind. An event exported
+  twice (a crash between export and cursor update) has the same id, and Sentry and GlitchTip keep one. Time and mail
+  id are part of it so that a new database, which starts at seq 1 again under the same instance name, does not
+  collide with events already sent.
+- **Wait as asked.** `429` with `Retry-After`, and `X-Sentry-Rate-Limits` on any response, pause the sink as long as
+  the server says (60 s for a bare `429`, at most an hour). Network errors, `5xx` and a refused DSN back off from 5 s
+  to 5 minutes. A refused DSN is kept and retried like a rejected SMTP login (D5): it is our configuration error.
+- **Skip what can never succeed.** An event refused with `400`, `413` or `422` is logged and skipped; sending it
+  again would stop the sink for good.
+- **Every sink on its own.** The reporter runs each sink in its own loop, so a slow Sentry holds up neither stdout nor
+  other sinks, and delivery only ever sends a non-blocking wake signal. One request takes at most 10 s; while the sink
+  waits, it makes no requests at all. The final export at shutdown is capped at 10 s, so closing the store always
+  has time left.
+- **Events below the level** move the cursor at once, so the sink never re-reads them.
 
 ## D32 The query API on its own listener, reachable from the cluster network
 
@@ -371,67 +374,6 @@ The purpose is "what happened to the mail for this address, id or ref", not a co
   gets no id in its event, so a mistyped or guessed id leaves no trace of the guess.
 - **Limits are fixed for now**: 60 requests per minute per token and 600 in all. They can become settings once real
   use shows the need.
-
-## D30 The Sentry protocol by hand, without an SDK
-
-Sentry-compatible tools (Sentry itself, GlitchTip) are where many teams already get their alerts, so error events go
-there directly (D8). An SDK would bring many indirect dependencies (O4, [scope.md gap 15](scope.md#7-gaps-between-the-ideal-and-the-current-design))
-and defaults that collect more than Postwerk wants to send: breadcrumbs, request data, the host name, local
-variables. What Postwerk needs is small: one `POST` of one envelope per event, with a key in a header.
-
-- **Standard library only.** `report.Sentry` builds the envelope and the event itself from the event record, so there
-  is no field that could carry an address or content (privacy-and-security.md, change 12). The payload was checked
-  against the Sentry developer documentation (envelopes, authentication, event payloads, rate limiting) and against
-  GlitchTip's ingest code, and sent to GlitchTip 7.0.0 in a local test.
-- **One Sentry event per Postwerk event, grouped by kind and target.** The fingerprint is
-  `["postwerk", kind, target]`, so "`delivery.failed` at `mailjet`" is one issue however many mails fail, and a new
-  kind of trouble is a new issue that alerts. Reply texts differ per mail and would split issues if they were part of
-  the grouping.
-- **`mail_id` as a tag.** Tags are searchable in Sentry and GlitchTip, so an alert leads to the mail, and the mail to
-  the UI (`ui_path` in the extra data). `sender` and `target` are tags for the same reason.
-- **The DSN from a file.** Sentry calls the key public, but whoever has it can post events to the project and flood
-  the alerts. It is handled like every other secret (D20): from a file, never from a variable, never logged.
-- **`https` only, unless allowed.** `POSTWERK_SENTRY_ALLOW_HTTP=true` exists for local tests and a GlitchTip inside
-  a cluster whose network is encrypted, as cleartext SMTP needs its own explicit setting (D18).
-
-## D31 At least once to Sentry, never in the way of delivery
-
-The Sentry SDKs drop events when the server is down or rate limits them. Postwerk already has every event in its log
-and a cursor per sink (D7), so the Sentry sink keeps them instead and sends them later.
-
-- **Deterministic event ids.** The id is a UUID made from instance, seq, time, mail id and kind. An event exported
-  twice (a crash between export and cursor update) has the same id, and Sentry and GlitchTip keep one. Time and mail
-  id are part of it so that a new database, which starts at seq 1 again under the same instance name, does not
-  collide with events already sent.
-- **Wait as asked.** `429` with `Retry-After`, and `X-Sentry-Rate-Limits` on any response, pause the sink as long as
-  the server says (60 s for a bare `429`, at most an hour). Network errors, `5xx` and a refused DSN back off from 5 s
-  to 5 minutes. A refused DSN is kept and retried like a rejected SMTP login (D5): it is our configuration error.
-- **Skip what can never succeed.** An event refused with `400`, `413` or `422` is logged and skipped; sending it
-  again would stop the sink for good.
-- **Every sink on its own.** The reporter runs each sink in its own loop, so a slow Sentry holds up neither stdout nor
-  other sinks, and delivery only ever sends a non-blocking wake signal. One request takes at most 10 s; while the sink
-  waits, it makes no requests at all. The final export at shutdown is capped at 10 s, so closing the store always
-  has time left.
-- **Events below the level** move the cursor at once, so the sink never re-reads them.
-
-## D40 The size limit is the target's, Postwerk's header lines are taken off exactly
-
-Postwerk adds `X-Postwerk-Id` to every message and `X-MJ-CustomID` for Mailjet. With ingress and target at the same
-15 MiB, a message just under the limit got `250` and then failed at the target with `delivery.too_large`: the sender
-believed it was sent. Options were a fixed margin (1 KiB, a default of 15727616), a separate setting for the margin,
-or computing it.
-
-- **Computed, not a margin.** The added lines have a fixed length, because every mail id has 29 characters: 46 bytes
-  each. Ingress accepts the configured value minus the largest sum over the configured targets, 92 bytes with a
-  Mailjet target. Nothing to tune, and nothing is given away.
-- **One setting, in the provider's terms.** `POSTWERK_MAX_MESSAGE_BYTES` is the largest message a target receives,
-  so operators copy the provider's limit (the `SIZE` in its `EHLO`, or its documentation) and are done. A separate
-  margin setting would make them do the arithmetic. Anyone who wants more room sets a lower value.
-- **Counted as sent.** The SMTP client turns every bare LF into CRLF, so a message with LF line ends grows on the
-  way out. Ingress and the `SIZE=` towards targets count a bare LF as two bytes, which keeps the check exact for those
-  messages too. Dots added for transparency do not count (RFC 1870).
-- The SMTP library's `DATA` reader refuses a message of exactly the offered `SIZE`; the largest one through `DATA` is
-  one byte less. That errs on the safe side, so Postwerk leaves it.
 
 ## D35 One kind of UI account: admin, and every opened mail is an event
 
@@ -494,6 +436,64 @@ A fresh install has no accounts in its database, so the first admin has to come 
 With the admin listener on and neither a tokens file nor an account in the database, Postwerk does not start, with a
 message that says what to do; a UI nobody can log in to would be a silent misconfiguration (O1).
 
+## D38 TLS certificates reload from their files, checked every minute
+
+cert-manager renews a certificate long before it expires, and Kubernetes swaps the files of a Secret volume through a
+symlink. A process that reads the certificate only at start would keep serving the old one until it expires; then
+in-cluster clients, which need TLS for `AUTH PLAIN`, could no longer send. Options were a restart on every renewal (an
+extra controller or a cron job, and a short outage), file system notifications, or polling.
+
+- **Polling, by content, every 60 s.** Notifications on a symlink swap are easy to miss (the watched path itself does
+  not change), and the modification time of the target can stay the same. Reading two small files once a minute
+  costs nothing and catches every way of replacing them. Kubernetes takes up to about a minute to update the volume,
+  so faster polling would gain little.
+- **Validate before swapping.** A new pair must parse, the key must match and the certificate must still be valid.
+  Otherwise the old certificate stays: a broken renewal must not take TLS down while the old certificate still works.
+  A pair read in the middle of a replacement is read once more after 2 s before it counts as failed.
+- **Report, not spam.** `tls.reload_failed` once per content, `tls.reloaded` per reload, `tls.expiring` once a day
+  under 14 days. cert-manager renews 15 days ahead, so the warning means the renewal did not arrive.
+- **One package for every listener.** `internal/tlsreload` has no Postwerk dependencies; the STARTTLS ingress uses it,
+  and any later TLS listener uses the same code. At start an invalid pair still stops Postwerk (O1).
+
+## D39 Signed images on GHCR, no `latest`
+
+Operators need an image they can pull and check, without building it themselves. The release workflow runs on a tag
+`v<semver>` only; nothing is published from a branch.
+
+- **GHCR, keyless cosign.** The image lives next to the code, and the workflow's own `GITHUB_TOKEN` pushes it. cosign
+  signs with a short-lived certificate for the workflow's OIDC identity, so there is no signing key to store, rotate or
+  leak. A verifier checks issuer and identity (`release.yml@refs/tags/v…`), which ties the image to this repository
+  and that tag. The signature covers the index digest, and with it both platforms, the SBOM and the provenance.
+- **SBOM and provenance from BuildKit**, attached to the image index. No extra action is needed for them, and the
+  scanner image is pinned by digest. The workflow uses four actions (checkout, setup-go, setup-buildx, the cosign
+  installer), each pinned by commit; login, build and signing are plain commands. The tests run in a job of their
+  own with read access only; the job that pushes and signs starts after it and runs no project code but the build.
+- **Two platforms, no emulation.** The build stage runs on the build machine and cross-compiles (`GOOS`, `GOARCH`);
+  the final stage is `scratch`, so `linux/arm64` costs one more `go build`.
+- **No `latest`.** A moving tag hides which version runs, and `IfNotPresent` never pulls the new one. Users pin a
+  version, better a digest. The chart takes its tag from `appVersion`, and the workflow refuses a tag that does not
+  match it, so chart and image cannot drift.
+- **Publishing stays a manual step.** A release starts only when the maintainer pushes a tag.
+
+## D40 The size limit is the target's, Postwerk's header lines are taken off exactly
+
+Postwerk adds `X-Postwerk-Id` to every message and `X-MJ-CustomID` for Mailjet. With ingress and target at the same
+15 MiB, a message just under the limit got `250` and then failed at the target with `delivery.too_large`: the sender
+believed it was sent. Options were a fixed margin (1 KiB, a default of 15727616), a separate setting for the margin,
+or computing it.
+
+- **Computed, not a margin.** The added lines have a fixed length, because every mail id has 29 characters: 46 bytes
+  each. Ingress accepts the configured value minus the largest sum over the configured targets, 92 bytes with a
+  Mailjet target. Nothing to tune, and nothing is given away.
+- **One setting, in the provider's terms.** `POSTWERK_MAX_MESSAGE_BYTES` is the largest message a target receives,
+  so operators copy the provider's limit (the `SIZE` in its `EHLO`, or its documentation) and are done. A separate
+  margin setting would make them do the arithmetic. Anyone who wants more room sets a lower value.
+- **Counted as sent.** The SMTP client turns every bare LF into CRLF, so a message with LF line ends grows on the
+  way out. Ingress and the `SIZE=` towards targets count a bare LF as two bytes, which keeps the check exact for those
+  messages too. Dots added for transparency do not count (RFC 1870).
+- The SMTP library's `DATA` reader refuses a message of exactly the offered `SIZE`; the largest one through `DATA` is
+  one byte less. That errs on the safe side, so Postwerk leaves it.
+
 ## D41 API tokens as SHA-256, not PBKDF2
 
 The API first hashed its tokens like the UI tokens, with PBKDF2 at 600,000 iterations (D33). A slow hash makes a
@@ -530,22 +530,6 @@ so each also went to Sentry.
   plus one, whatever an attacker sends, and a token pasted into the name part still never reaches the log.
 - **Not a sampling.** Every failure is counted; nothing is dropped. The `401` itself does not wait for the event.
 
-## D44 The Message-ID is masked for `read` API tokens
-
-A `read` token saw addresses masked but the `Message-ID` in full (D34). Many mail libraries build it from the
-sending host's name (`<…@app-7f9c.internal.example>`), and some put the recipient's address or a user id into it, so
-in full it can tell a support tool more than masked addresses do.
-
-- **Masked like an address.** The part after the last `@` keeps its first character and its top-level domain
-  (`<4711@s•••.com>`). The part before it stays, because it is mostly a random id that support staff compare with
-  the copy a recipient forwards, unless it looks like an address: it holds an `@`, or an address folded in the way
-  bounce and tracking ids do (`jane=example.com`, `jane%example.com`). Then it is masked to its first character.
-  Angle brackets stay, so the value still reads as a `Message-ID`.
-- **Search unchanged.** A search by `message_id` matches the exact stored value; a caller who has the value from a
-  recipient finds the mail, and the response does not hand it back in full.
-- **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
-  gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.
-
 ## D43 Build inputs pinned by digest, releases only from `main`
 
 D39 pinned the actions by commit and the SBOM scanner by digest, but other inputs of the release could still change
@@ -566,3 +550,19 @@ would have been released.
 - **A release tag must be on `main`.** The release workflow checks that the tagged commit is an ancestor of
   `origin/main` before the tests run, and stops otherwise. A tag on a branch nobody reviewed can no longer publish
   a signed image. The check runs in the job without write rights, so nothing is pushed or signed before it passes.
+
+## D44 The Message-ID is masked for `read` API tokens
+
+A `read` token saw addresses masked but the `Message-ID` in full (D34). Many mail libraries build it from the
+sending host's name (`<…@app-7f9c.internal.example>`), and some put the recipient's address or a user id into it, so
+in full it can tell a support tool more than masked addresses do.
+
+- **Masked like an address.** The part after the last `@` keeps its first character and its top-level domain
+  (`<4711@s•••.com>`). The part before it stays, because it is mostly a random id that support staff compare with
+  the copy a recipient forwards, unless it looks like an address: it holds an `@`, or an address folded in the way
+  bounce and tracking ids do (`jane=example.com`, `jane%example.com`). Then it is masked to its first character.
+  Angle brackets stay, so the value still reads as a `Message-ID`.
+- **Search unchanged.** A search by `message_id` matches the exact stored value; a caller who has the value from a
+  recipient finds the mail, and the response does not hand it back in full.
+- **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
+  gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.
