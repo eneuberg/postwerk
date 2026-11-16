@@ -208,7 +208,7 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
-| `POSTWERK_MAX_MESSAGE_BYTES` | `15728640` (15 MiB, **recommended**) | 1024 to 1073741824 | Larger messages get `552`. Offered as `SIZE` in `EHLO`. The default is the `SIZE` Mailjet's relay offers, so a mail Postwerk accepts also fits there. Postwerk adds its own headers (about 50 bytes, about 100 for Mailjet targets), so a message within those bytes of a target's limit fails there with `delivery.too_large`. Raise it only together with every target's limit. |
+| `POSTWERK_MAX_MESSAGE_BYTES` | `15728640` (15 MiB, **recommended** for Mailjet) | 1024 to 1073741824 | The largest message a target receives from Postwerk, Postwerk's own header lines included. Set it to the smallest limit of your targets (section "Message size"). Ingress accepts this minus the header lines Postwerk adds and offers that as `SIZE` in `EHLO`; larger messages get `552`. |
 | `POSTWERK_MAX_RECIPIENTS` | `50` | 1 to 1000 | More recipients per message get `452`. |
 | `POSTWERK_MAX_INFLIGHT_BYTES` | `268435456` (256 MiB, **recommended**) | `POSTWERK_MAX_MESSAGE_BYTES` to 1099511627776 | Memory budget for messages being received at once. Each `DATA` reserves `POSTWERK_MAX_MESSAGE_BYTES`, or the `SIZE=` the sender declared if smaller, before reading; when the budget is used up the reply is `451 4.3.1 Insufficient system resources, try again later` and the message is discarded unread into memory. A message larger than its declared `SIZE` grows its reservation to the maximum or gets the same `451`. Senders retry a `451` like any temporary error. Processing and encryption copy a message a few times, so plan the container's memory limit at about three times this value plus some 50 MiB. |
 | `POSTWERK_MAX_CONNECTIONS` | `100` | 1 to 10000 | Concurrent SMTP connections. A connection over the limit gets `421 4.7.0 Too many connections, try again later` and is closed. |
@@ -220,6 +220,40 @@ minutes, write timeout 1 minute. Envelope addresses with more than one `@`, or w
 need a quoted local part (space, `"`, `\`, `<`, `>`, `(`, `)`, `,`, `;`), get `553`: they could not be passed on to a
 target unchanged. Internationalized addresses (UTF-8, RFC 6531) are accepted only when the sender gives `SMTPUTF8` in
 `MAIL`; otherwise they get `553 5.6.7 Non-ASCII address requires SMTPUTF8`.
+
+### Message size
+
+A provider refuses a message larger than its limit. Postwerk adds header lines to every message it sends, so it
+accepts a little less than the limit, computed exactly: `X-Postwerk-Id: pw_…` (46 bytes) for every target, and
+`X-MJ-CustomID: pw_…` (46 bytes) as well for a target with `STATUS=mailjet`. The mail id always has 29 characters.
+Postwerk takes the largest of these sums over all targets: with the default and a Mailjet target, ingress offers
+`SIZE 15728548` (15728640 − 92). The start log shows both values (`max_message_bytes`, `smtp_size`).
+
+Sizes are counted as the target receives the message: a line that ends in a bare LF is sent with CRLF, so each such
+LF counts as two bytes at ingress. A sender's own `X-Postwerk-*` and, for Mailjet, `X-MJ-CustomID` lines are removed,
+which only makes the message smaller.
+
+For another provider, set `POSTWERK_MAX_MESSAGE_BYTES` to its limit; with several targets, to the smallest one. Some
+values (taken from the provider's `EHLO` reply or documentation, November 2026; check yours, they change):
+
+| Provider | Limit | `POSTWERK_MAX_MESSAGE_BYTES` | Source |
+|---|---|---|---|
+| Mailjet (`in-v3.mailjet.com`) | `SIZE 15728640` in `EHLO` | `15728640` (the default) | `EHLO` reply |
+| Amazon SES (SMTP) | 40 MB per message including attachments, after base64 encoding; no `SIZE` in `EHLO` | `40000000` | [SES service quotas](https://docs.aws.amazon.com/ses/latest/dg/quotas.html) |
+| Postmark | 10 MB total, including attachments, after base64 encoding (`EHLO` offers `SIZE 20480000`) | `10000000` | [Postmark size limits](https://postmarkapp.com/support/article/1056-what-are-the-attachment-and-email-size-limits) |
+
+Where a document says "MB", use the decimal value (10 MB = 10000000 bytes): it is the smaller reading. To see what a
+target offers:
+
+```sh
+(printf 'EHLO relay.example.test\n'; sleep 3; printf 'QUIT\n') |
+  openssl s_client -quiet -crlf -starttls smtp -connect smtp.example.test:587 2>/dev/null | grep SIZE
+```
+
+A target that offers a smaller `SIZE` than the message is never sent it: that delivery fails with
+`delivery.too_large`. A larger limit also uses more of `POSTWERK_MAX_INFLIGHT_BYTES`: a `DATA`
+without a declared `SIZE=` reserves the whole accepted size, so with 40000000 the default budget of 256 MiB takes six
+such messages at once. Raise the budget and the container's memory limit with it if needed.
 
 **SMTP extensions.** Ingress offers `8BITMIME`, `SMTPUTF8`, `SIZE`, `PIPELINING`, `CHUNKING` and
 `ENHANCEDSTATUSCODES`, never `DSN` or `REQUIRETLS` (Postwerk could not keep their promise towards every target). The

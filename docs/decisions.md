@@ -182,9 +182,8 @@ would list people in `To` and `Cc` who never got it.
 `POSTWERK_MAX_MESSAGE_BYTES` defaults to 15728640 bytes, the `SIZE` Mailjet's relay offers (checked 2026-11-15), instead
 of 25 MiB. Postwerk answers `250` once a mail is stored; a mail it accepts but no target can take would fail only
 later, after the sender believes it sent it. With the provider's limit as the default, the sender gets the `552` at
-once. The limit also bounds memory per mail (D27). The only gap is Postwerk's own headers (about 50 to 100 bytes): a
-message within those bytes of the limit fails at the target with `delivery.too_large`, visibly, instead of being sent
-and bounced. Towards each target, Postwerk checks the `SIZE` it offers before sending and passes the exact size as
+once. The limit also bounds memory per mail (D27). Postwerk's own header lines are taken off what ingress accepts
+(D40). Towards each target, Postwerk checks the `SIZE` it offers before sending and passes the exact size as
 `SIZE=`.
 
 ## D26 Login hardening without extra packages
@@ -408,3 +407,22 @@ and a cursor per sink (D7), so the Sentry sink keeps them instead and sends them
   waits, it makes no requests at all. The final export at shutdown is capped at 10 s, so closing the store always
   has time left.
 - **Events below the level** move the cursor at once, so the sink never re-reads them.
+
+## D40 The size limit is the target's, Postwerk's header lines are taken off exactly
+
+Postwerk adds `X-Postwerk-Id` to every message and `X-MJ-CustomID` for Mailjet. With ingress and target at the same
+15 MiB, a message just under the limit got `250` and then failed at the target with `delivery.too_large`: the sender
+believed it was sent. Options were a fixed margin (1 KiB, a default of 15727616), a separate setting for the margin,
+or computing it.
+
+- **Computed, not a margin.** The added lines have a fixed length, because every mail id has 29 characters: 46 bytes
+  each. Ingress accepts the configured value minus the largest sum over the configured targets, 92 bytes with a
+  Mailjet target. Nothing to tune, and nothing is given away.
+- **One setting, in the provider's terms.** `POSTWERK_MAX_MESSAGE_BYTES` is the largest message a target receives,
+  so operators copy the provider's limit (the `SIZE` in its `EHLO`, or its documentation) and are done. A separate
+  margin setting would make them do the arithmetic. Anyone who wants more room sets a lower value.
+- **Counted as sent.** The SMTP client turns every bare LF into CRLF, so a message with LF line ends grows on the
+  way out. Ingress and the `SIZE=` towards targets count a bare LF as two bytes, which keeps the check exact for those
+  messages too. Dots added for transparency do not count (RFC 1870).
+- The SMTP library's `DATA` reader refuses a message of exactly the offered `SIZE`; the largest one through `DATA` is
+  one byte less. That errs on the safe side, so Postwerk leaves it.

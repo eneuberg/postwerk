@@ -219,7 +219,9 @@ orchestrator's grace period must be longer than the deadline (120 s).
 | 7-bit message | `BODY=8BITMIME` (set by the SMTP library for every target that offers it; 7-bit content is valid 8BITMIME) | sent without `BODY=` |
 
 **Size.** The worker computes the exact size it will send (its own headers plus the stored message, without the
-sender's `X-MJ-CustomID` for Mailjet targets) and sends it as `SIZE=` to a target that offers `SIZE`. If the target
+sender's `X-MJ-CustomID` for Mailjet targets, a bare LF counted as CRLF; `message.Size`) and sends it as `SIZE=` to a
+target that offers `SIZE`. Ingress accepts `POSTWERK_MAX_MESSAGE_BYTES` minus `delivery.MaxAddedBytes`, the length of
+those headers for the configured targets, so a mail it accepts fits a target with that limit (I17). If the target
 names a limit and the message is larger, the delivery fails with `delivery.too_large` before `AUTH` and `MAIL`; like
 `delivery.unsupported`, this is final.
 

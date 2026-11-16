@@ -177,7 +177,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `tls.allowInsecureAuth` | `false` | Only with `tls.enabled=false`: cleartext `AUTH`, for a network that encrypts traffic between nodes. The chart refuses `tls.enabled=false` without it. |
 | `targets[]` | Mailjet over STARTTLS | `name`, `url`, `credentialsSecret`, `status`, `optional`, `retryWindow`, `onUnknown`, `allowRecipients`, as in configuration.md "Targets". |
 | `retryWindow` | `24h` | `POSTWERK_RETRY_WINDOW`. |
-| `limits.maxMessageBytes` | `15728640` (**recommended**) | `POSTWERK_MAX_MESSAGE_BYTES`, the `SIZE` Mailjet offers. |
+| `limits.maxMessageBytes` | `15728640` (**recommended** for Mailjet) | `POSTWERK_MAX_MESSAGE_BYTES`: the smallest limit of your targets, Postwerk's header lines included; ingress accepts that minus those lines (configuration.md, "Message size"). |
 | `limits.maxRecipients`, `limits.maxConnections` | `50`, `100` | `POSTWERK_MAX_RECIPIENTS`, `POSTWERK_MAX_CONNECTIONS`. |
 | `limits.maxInflightBytes` | `268435456` (**recommended**) | `POSTWERK_MAX_INFLIGHT_BYTES`, the memory budget for messages being received. |
 | `shutdownTimeout`, `terminationGracePeriodSeconds` | `100s`, `120` | The grace period must stay longer than the shutdown deadline. |

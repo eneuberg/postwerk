@@ -28,7 +28,7 @@ its default is listed in [configuration.md](configuration.md).
 | I2 | Sender passwords are stored as salted PBKDF2-SHA256 hashes; unknown users cost the same time as known ones. | F |
 | I3 | `AUTH` over cleartext only if explicitly allowed; otherwise the server needs a TLS certificate (STARTTLS). | F |
 | I4 | A connection is closed after 3 failed `AUTH` attempts. | F |
-| I5 | Limits: message size (`POSTWERK_MAX_MESSAGE_BYTES`, default 15 MiB, the `SIZE` Mailjet offers), recipients per message, line length, read/write timeouts, concurrent connections (`POSTWERK_MAX_CONNECTIONS`, default 100; a connection over the limit gets a fixed `421` and is closed). | F |
+| I5 | Limits: message size (`POSTWERK_MAX_MESSAGE_BYTES`, default 15 MiB, the `SIZE` Mailjet offers; see I17), recipients per message, line length, read/write timeouts, concurrent connections (`POSTWERK_MAX_CONNECTIONS`, default 100; a connection over the limit gets a fixed `421` and is closed). | F |
 | I6 | `250` is sent only after the mail and its deliveries are committed with `synchronous=FULL`. The reply names the id: `250 2.0.0 queued as pw_…`. | F |
 | I7 | If storing fails, reply `451` (temporary) and keep nothing half-written. Internal error texts never reach the client. | F |
 | I8 | `X-Postwerk-*` headers set by the sender are read (`Ref`, `Skip`) and removed before storage. *(safe default, proposed; scope gap 7)* | F |
@@ -40,6 +40,7 @@ its default is listed in [configuration.md](configuration.md).
 | I14 | A connection that has not logged in within 30 s is closed (`421 4.4.2`, the SMTP library's fixed idle reply); the deadline also covers a STARTTLS handshake. No per-IP blocking. | F |
 | I15 | Memory budget `POSTWERK_MAX_INFLIGHT_BYTES` (default 256 MiB): each `DATA` reserves the maximum message size, or the declared `SIZE` if smaller, before reading; budget exhausted → fixed `451 4.3.1`, nothing buffered; released when the mail is stored or refused. | F |
 | I16 | The STARTTLS certificate and key are re-read every 60 s and compared by content (a Kubernetes symlink swap counts). A changed pair is served from the next handshake only if it parses, matches and has not expired; otherwise the old one stays and `tls.reload_failed` (error) is written once per content. Each reload writes `tls.reloaded`; less than 14 days left writes `tls.expiring` once a day. | F |
+| I17 | `POSTWERK_MAX_MESSAGE_BYTES` is the largest message a target receives. Ingress accepts and offers as `SIZE` that value minus the bytes of the header lines Postwerk adds, computed exactly for the configured targets (46 for `X-Postwerk-Id`, 46 more for `X-MJ-CustomID` with `STATUS=mailjet`). Sizes are counted as sent: a bare LF counts as CRLF, at ingress and in `SIZE=` towards targets. | F |
 
 ## Store
 
