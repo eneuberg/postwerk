@@ -521,7 +521,7 @@ func TestLogout(t *testing.T) {
 	if r := b.do("POST", "/logout", url.Values{}); r.StatusCode != 403 {
 		t.Fatalf("logout without csrf: %d", r.StatusCode)
 	}
-	if r := b.do("POST", "/logout", url.Values{"csrf": {"x" + token[1:]}}); r.StatusCode != 403 {
+	if r := b.do("POST", "/logout", url.Values{"csrf": {otherFirst(token)}}); r.StatusCode != 403 {
 		t.Fatalf("logout with a wrong csrf: %d", r.StatusCode)
 	}
 	if r := b.get("/"); r.StatusCode != 200 {
@@ -567,4 +567,14 @@ func TestCrossSitePOSTRefused(t *testing.T) {
 	if r := b.do("POST", "/logout", url.Values{"csrf": {token}}); r.StatusCode != http.StatusSeeOther {
 		t.Fatalf("same-origin logout: %d", r.StatusCode)
 	}
+}
+
+// otherFirst returns s with its first character replaced by a different
+// one, so the result never equals s (a random token can start with any
+// character, "x" too).
+func otherFirst(s string) string {
+	if s[0] == 'x' {
+		return "y" + s[1:]
+	}
+	return "x" + s[1:]
 }
