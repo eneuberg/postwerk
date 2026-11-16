@@ -131,8 +131,8 @@ its default is listed in [configuration.md](configuration.md).
 | ID | Requirement | Phase |
 |---|---|---|
 | H1 | Separate HTTP listener, default `127.0.0.1:8080`. `/healthz` (alive) and `/readyz` (store reachable and writable, volume above its reserve, workers running; H10). | F |
-| H2 | Read-only JSON query API with bearer tokens (`read`, `admin`), every use logged, on its own listener (H4), on top of the query layer (U15): H4–H9 below, [api.md](api.md). Resend and close for admins come later. | F |
-| H3 | Small UI, server-rendered, no content, mail records read-only: U1–U24 below, [ui.md](ui.md). | F |
+| H2 | JSON query API with bearer tokens (`read`, `admin`), every use logged, on its own listener (H4), on top of the query layer (U15): H4–H9 below, [api.md](api.md). Read-only except for an admin's close and resend of a delivery (H11–H13), which the UI offers too (U25). | F |
+| H3 | Small UI, server-rendered, no content, mail records read-only except for close and resend: U1–U25 below, [ui.md](ui.md). | F |
 | H4 | The API has its own listener `POSTWERK_API_LISTEN`, default `off`; it may bind a pod address and must differ from the health, SMTP and admin listeners. Optional TLS (`POSTWERK_API_TLS_CERT_FILE`, `POSTWERK_API_TLS_KEY_FILE`), re-read while running; without TLS on a non-loopback address, a warning at every start. | F |
 | H5 | Tokens from `POSTWERK_API_TOKENS_FILE`, one `name:role:sha256$<digest>` line each (role `read` or `admin`, digest the SHA-256 of a random 32-byte token), sent as `Authorization: Bearer <name>.<token>`; `postwerk gen-api-token <name> <role>` prints both. Every check is one SHA-256 and one constant-time comparison, against a random dummy for an unknown name (D41). A line with a PBKDF2 hash is a configuration error. | F |
 | H6 | `read`: `POST /v1/search` (id, `X-Postwerk-Ref`, `Message-ID`, address through K3; at most 20 mails) and `GET /v1/mails/{id}`, addresses masked (U12) and the `Message-ID` masked after its `@` (before it too if it looks like an address; D44), while a search takes the exact value; no list, no overview (`403`). `admin`: also `GET /v1/mails` (filters, pages) and `GET /v1/overview` (with each target's `state`, D19), addresses in full, searches up to 100 mails. Never content, subject or headers other than `Message-ID`. | F |
@@ -140,6 +140,9 @@ its default is listed in [configuration.md](configuration.md).
 | H8 | At most 60 requests per minute per token name and 600 for all callers together, counted before the token check; more get `429` with `Retry-After`. | F |
 | H9 | JSON only: a `POST` needs `Content-Type: application/json` (UTF-8, else `415`), bodies at most 4 KiB (`413`), unknown fields refused, search terms only in the body. No CORS; requests with `Origin` or `Sec-Fetch-*` get `403`. Security headers and server timeouts on every response; optional `Host` allow-list `POSTWERK_API_HOSTS`. | F |
 | H10 | `/readyz` fails while the store's last write failed for lack of space or storage (`SQLITE_FULL`, `IOERR`, `READONLY`, `CANTOPEN`; probed every 10 s until a write succeeds) or the volume is below its reserve (I18). It never fails because a target is down (D52). | F |
+| H11 | Close (D53): an admin closes one delivery (mail, target): every recipient that is `queued`, `unknown` or `failed` without a resolution, with the resolution `confirmed` (status `handed_off`; refused while one of them is `queued`) or `given_up` (status `failed`), stored beside the status in `delivery_recipients.resolution`, and an optional note (at most 200 characters, one line of plain text, redacted). A closed recipient is final: raw expiry (S7), a claim, a close and a resend never touch it again. The same transaction removes the stored message if no recipient of the mail is `queued`, `sending`, `unknown` or `failed` without a resolution. Derived summaries (D17) read the status only. | F |
+| H12 | Resend (D54): an admin queues the `failed` (not closed) and `unknown` recipients of one delivery again, due at once, while the stored message exists; never once it is removed, and retention is never extended for it (S7 applies unchanged). An `unknown` recipient needs the admin's explicit consent that the mail may arrive twice. Only to a configured target. The retry window stays the one counted from the mail's arrival. | F |
+| H13 | Close and resend (D55) are for UI accounts and `admin` API tokens (`read`: `403`), at `POST /v1/mails/{id}/targets/{target}/close` and `/resend` with a JSON body ([api.md](api.md)) and the UI forms (U25). Both are refused (`409`) while any recipient of the delivery is `sending`, and checked in the transaction that makes the change, so a recipient is never in two attempts at once and a second resend finds nothing to queue. Each changed recipient gets one event, `delivery.closed` or `delivery.resend`, with `actor` and `via=ui\|api`, in that transaction; for the API it takes the place of `api.request`. | F |
 
 ## UI and admin listener
 
@@ -160,7 +163,7 @@ Details and reasons: [ui.md](ui.md), decisions D29, D35, D36 and D37.
 | U11 | Search by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address, by `POST` only; addresses are found after pseudonymization through K3. The query never appears in a URL, log line or event. | F |
 | U12 | One kind of account, admin (D35): addresses in full, "pseudonymized" after S8. | F |
 | U13 | Events `ui.login`, `ui.login_failed`, `ui.login_throttled`, `ui.search`, `ui.view` and the account events name the account in a new `actor` field (on a failed login only if the name is an account); never the query, an address or a password. | F |
-| U14 | No message content on any page. Mail records read-only; resend and close come later. | F |
+| U14 | No message content on any page. Mail records change only by an admin's close or resend (H11–H13, U25). | F |
 | U15 | Read logic lives in `internal/query` on top of the store (SQL stays in the store), so the JSON API (H2) reuses it, masking included. | F |
 | U16 | At most 30 searches per minute per account; more get `429`. | F |
 | U17 | Accounts in the database (`ui_accounts`): name, PBKDF2 hash as for senders (D15), created and last changed with who did it; never the password. Pages to list and create accounts, set a password and delete. | F |
@@ -170,7 +173,8 @@ Details and reasons: [ui.md](ui.md), decisions D29, D35, D36 and D37.
 | U21 | Setting a password or deleting an account ends all its sessions at once. | F |
 | U22 | Failed password checks are throttled in memory: per name 5 free, then 1 minute doubling to 15 minutes, forgotten after 24 h or a good login; per source address 20 free, forgotten after 1 h. Unknown names alike. A waiting login gets `429` without a check; `ui.login_throttled` when a wait starts. | F |
 | U23 | The tokens file is start and break-glass access: optional, its accounts shown as "tokens file" and not editable, it wins on a name clash (warning at start). Without the file and without a database account, Postwerk does not start (D37). | F |
-| U24 | Opening a mail's page writes `ui.view` (`actor`, `mail_id`) before the page is shown; the mail's timeline leaves out events with an `actor`. | F |
+| U24 | Opening a mail's page writes `ui.view` (`actor`, `mail_id`) before the page is shown; the mail's timeline leaves out events with an `actor`, except an admin's `delivery.closed` and `delivery.resend`. | F |
+| U25 | The mail page offers close and resend per target (H11–H12) as `POST` forms with the CSRF token and the acting account's current password (as U18), a confirmation text, and for an `unknown` recipient a required tick that the mail may arrive twice. An action that is not possible is shown disabled with its reason; a target whose recipients are all final shows none. | F |
 
 ## Operations and supply chain
 

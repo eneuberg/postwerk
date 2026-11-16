@@ -4,8 +4,8 @@ What Postwerk stores, for how long, who can read it, and how an operator meets d
 describes what is built, marks what is planned, and ends with the list of privacy changes and their status.
 
 Status: the foundation is built, including address redaction, retention, encryption at rest and the internal UI with
-its accounts and access control, the read-only query API ([api.md](api.md)) and the Sentry-protocol sink.
-The OpenTelemetry and webhook sinks, the provider status adapter, and resend and close are planned; what this page
+its accounts and access control, the query API ([api.md](api.md)), an admin's close and resend of a delivery, and
+the Sentry-protocol sink. The OpenTelemetry and webhook sinks and the provider status adapter are planned; what this page
 says about them is intent. The exact
 schema is in [architecture.md](architecture.md#store), every setting in [configuration.md](configuration.md).
 
@@ -141,6 +141,15 @@ Why `raw` goes at hand-off: the only use of the stored message is resending. Res
 `unknown` only, not after `handed_off`. Waiting for the provider's final status would keep content for a day without a
 use.
 
+**Close and resend never keep content longer** (D53–D55). Postwerk is not the system of record for content: the
+sending application is. So a resend is possible only while the message is still stored under the rules above, and
+no admin action extends them; after `RAW_KEEP_AFTER_FAILURE` or `RAW_MAX_AGE` the application has to send the mail
+again itself. When a resend fails again, the 72 h count from that failure, as after any attempt; the 7-day maximum
+age never moves. A close works the other way: it removes the message at once when no other recipient of the mail may
+still need it, without waiting for the 72 h. The admin's note on a close is free text from a person; it goes into the
+event only, at most 200 characters, with addresses replaced by `<redacted>` like every other text, and leaves with
+the event's retention.
+
 ### 3.2 Why these periods
 
 The periods are reasoned defaults for a typical support process. They are not legal requirements. The GDPR does not
@@ -153,7 +162,7 @@ Variable names and formats are in [configuration.md](configuration.md).
 |---|---|---|---|
 | raw after hand-off | removed at once | Every target has the mail; Postwerk has no further use for the content. | No resend after hand-off, which is not offered anyway. |
 | raw after a failure | 72 h | Enough time over a weekend for someone to see the error, fix the cause and resend ([scope.md gap 2](scope.md#7-gaps-between-the-ideal-and-the-current-design)). | Longer means more time to react, and more content at rest. |
-| raw maximum age | 7 d | A hard cap for every state, including `unknown` under `hold` and long `535` outages, so content never stays by accident. | After it, resend is no longer possible; the delivery record stays. |
+| raw maximum age | 7 d | A hard cap for every state, including `unknown` under `hold` and long `535` outages, so content never stays by accident. | After it, resend is no longer possible; the delivery record stays, and an admin can still close it. |
 | addresses pseudonymized after | 30 d | Support can see plain addresses for a month ("I did not get my invoice last month"). After that, lookups still work by hash (section 4). | Shorter is better for privacy and makes support slightly harder. |
 | mail records | 90 d | Covers typical support and incident questions, and one quarter of trend data. | Operators who need delivery proof for longer, for example for legal claims, raise it and write the reason into their records of processing. |
 | events | 90 d | Equal to the record retention, so events never outlive the mail they describe without a reason. | Export events to a sink with its own retention if longer audit history is needed. |
@@ -262,9 +271,9 @@ establishment, exercise or defence of legal claims. Whether a delivery record mu
 
 | Actor | Content | Addresses | Metadata | Mitigation |
 |---|---|---|---|---|
-| UI account (every account is an admin) | no; later can trigger a resend | yes; can test whether an address got mail by searching for it | yes | reaching the UI needs a tunnel first (`pods/portforward` or SSH), so only people who run Postwerk; one named account per person; every login, search, opened mail and account change is an event with the account name; searches by `POST` (change 8), 30 a minute; failed logins throttled |
+| UI account (every account is an admin) | no; can resend it to a configured target while it is stored, never read it | yes; can test whether an address got mail by searching for it | yes | reaching the UI needs a tunnel first (`pods/portforward` or SSH), so only people who run Postwerk; one named account per person; every login, search, opened mail, account change, close and resend is an event with the account name; close and resend ask for the account's password again; searches by `POST` (change 8), 30 a minute; failed logins throttled |
 | Holder of a `read` API token (a calling application) | no | masked only; can test whether an address got mail by searching for it | the mails it looks up, at most 20 per search; no list or overview | exact-match lookups only, every request an `api.request` event with the token name and result count, every detail an `api.view` event with the mail id, 60 requests per minute per token; its pod must be in `api.allowFrom`; TLS by default in the chart |
-| Holder of an `admin` API token | no | yes, until pseudonymization | yes, including lists and the overview | give it only to an operator's own tooling; same events, limits and network rule |
+| Holder of an `admin` API token | no; can resend it to a configured target while it is stored | yes, until pseudonymization | yes, including lists and the overview; can close and resend deliveries | give it only to an operator's own tooling; same events, limits and network rule; every close and resend is an event with the token name |
 | Shell or exec in the container | **yes**, plus key files and memory | yes | yes | the image has no shell; restrict exec and debug rights; encryption does not help here |
 | Copy of the volume or a backup | **no**, unless the key file is in the same copy | yes until hashed; hashes are useless without the hash key | yes | keep key files out of volume backups; backups encrypted and short-lived ([scope.md gap 10](scope.md#7-gaps-between-the-ideal-and-the-current-design)) |
 | Cluster admin | **yes** (can read secrets and exec) | yes | yes | a trust decision; Postwerk cannot protect against it |
@@ -395,7 +404,7 @@ is usually not one, but an operator relaying mail for third parties should check
 
 | Area | Default | Status |
 |---|---|---|
-| Raw message | encrypted at rest; deleted at hand-off; 72 h after a failure; never older than 7 days | built |
+| Raw message | encrypted at rest; deleted at hand-off; 72 h after a failure; never older than 7 days; deleted at once when an admin closes the last delivery that needs it; never kept longer for a resend | built |
 | Addresses | plain for 30 days, then keyed hash | built, for recipients and the envelope sender |
 | Mail and delivery rows, events | 90 days | built |
 | Free text from targets | addresses redacted before storing or exporting | built |
@@ -424,7 +433,7 @@ Proposed in an earlier review of the design. Related gaps in
 | 7 | SQLite `secure_delete`, checkpoint after each retention run | built |
 | 8 | Keep addresses out of URLs and logs: `POST /v1/mails/search` instead of `GET /v1/mails?to=…`; token-use events record the call and the token id, not its parameters | built for the UI (search by `POST`, `ui.search` with the token name and search kind only) and the query API (`POST /v1/search`, `api.request` with the token name, endpoint, status and count only) |
 | 9 | Mask addresses for `read` tokens (`u***@example.com`), full address for `admin` | built in the query layer (`query.Mask`, `j•••@e•••.com`) and used by the API; the UI has no `read` role any more (D35): only people with a tunnel reach it, and each opened mail is an event |
-| 10 | Login required for the UI, secrets stored as hashes, CSRF protection for admin actions | built: password and token login, PBKDF2 hashes, throttling, re-entered password for account changes, CSRF tokens on every form, Host check, strict headers, loopback listener |
+| 10 | Login required for the UI, secrets stored as hashes, CSRF protection for admin actions | built: password and token login, PBKDF2 hashes, throttling, re-entered password for account changes and for close and resend, CSRF tokens on every form, Host check, strict headers, loopback listener |
 | 11 | Hash sender passwords; refuse `AUTH` without TLS unless explicitly allowed | built, as PBKDF2-SHA256 and `AUTH PLAIN` only (decisions D15, D16) |
 | 12 | Sentry sink without SDK defaults: each error event built from the event record only, no breadcrumbs, no request data | built (section 2.4, decision D30): no SDK, fixed fields, reply text redacted again, leak test on the request body |
 | 13 | `ref` must be opaque; a `ref` with `@` is rejected | built (such a `ref` is not stored) |

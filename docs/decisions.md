@@ -731,6 +731,71 @@ application that swallows the error loses mail silently.
 - **`smtp` only for SMTP replies.** An event carries `"smtp": {code, text}` only when it has a reply code; every other
   text (a certificate, retention counts, a network error, a count of refusals) is `"text"`. Fixed before 1.0, because
   the event fields are covered by semantic versioning from then on (D56).
+## D53 An admin closes a delivery; the resolution is stored beside the status
+
+After a crash during `DATA` a delivery under `hold` is `unknown`, and the target probably has the mail. Without a way
+to settle it, retention turned it into `failed` with `retention.raw_expired` after 72 h, so the final record said
+"failed" for a mail that was most likely delivered, and nobody could correct it.
+
+- **Close with a resolution.** An admin (UI account or `admin` API token) closes a delivery with `confirmed` (checked
+  at the target, it has the mail) or `given_up` (nobody will send it), and an optional note of at most 200
+  characters, redacted like every text. It takes every recipient of the delivery that is `queued`, `unknown` or
+  `failed` and not closed yet, including one that raw expiry already turned into `failed`, which is exactly the case
+  above. `confirmed` is refused while a recipient is `queued`: it never reached the target.
+- **No new status.** `confirmed` makes the recipients `handed_off`, `given_up` makes them `failed`, and a new column
+  `delivery_recipients.resolution` (migration 0007) records that a person decided it. The alternative, a status
+  `closed`, would have needed a place in `store.Summarize`, the SQL filter, the overview counts and every reader, and
+  still would not say whether the mail arrived. With the resolution beside the status, every summary stays as it is:
+  a confirmed delivery counts as handed off, a given-up one as failed. A check in the schema keeps the two consistent.
+  Who closed it, when and why is in the `delivery.closed` event, not in the row.
+- **Final.** A closed recipient is never touched again: raw expiry only fails `queued` and `unknown` recipients, a
+  claim takes only `queued`, and neither close nor resend takes a recipient with a resolution. A mistaken close is
+  corrected outside Postwerk; the event log says what happened.
+- **Content goes at once.** Closing removes the stored message in the same transaction when no recipient of the
+  mail, at any target, may still need it (`queued`, `sending`, `unknown`, or `failed` and not closed). `Finish`
+  counts closed recipients as done when it removes the message at the last hand-off.
+- **Per delivery, not per recipient.** One SMTP transaction carries all recipients of a delivery, and an unclear
+  outcome hits all recipients of that attempt alike, so the admin's check at the provider answers for all of them.
+  Closing single recipients would need a selection in the UI and the API for a case not seen yet; it can come later.
+
+## D54 Resend only while the message is stored, never longer
+
+Postwerk should take on as little responsibility as possible (D57): it keeps no content longer than delivery needs,
+and it is never the system of record for content; the sending application is.
+
+- **Within the existing retention.** A resend queues the delivery's `failed` (not closed) and `unknown` recipients
+  again, due at once, and is possible only while the encrypted message is still stored under the rules of S7
+  (removed at hand-off, kept `RAW_KEEP_AFTER_FAILURE` after a failure, `RAW_MAX_AGE` at most). No action extends them.
+  Once the message is gone, resend is not offered in the UI and gets `409 message_removed` from the API; the
+  application sends the mail again if it is still needed. A resend that fails again counts its 72 h from that failure,
+  like every attempt; the maximum age never moves.
+- **An explicit duplicate.** For an `unknown` recipient the admin must accept that the mail may arrive twice (a
+  required tick in the UI, `"accept_duplicate": true` in the API), because the target may have it. The form says to
+  check at the target first and to close as confirmed if it has the mail. This keeps P2 (never send twice by accident):
+  a duplicate is possible only by an admin's explicit choice.
+- **The same retry window.** The resent recipients get the retries left in the window counted from the mail's
+  arrival, no new window. Past it, the resend is one attempt; a temporary failure fails it again. A new window would
+  have to be stored per delivery and would keep the mail in the queue past what the operator configured.
+- **Only to a configured target**, because nothing else would send it.
+
+## D55 Close and resend: admins only, checked in the transaction, recorded with the actor
+
+- **Who.** UI accounts (all admins, D35) and `admin` API tokens; `read` tokens get `403` and an `api.forbidden`
+  event. In the UI each action is a `POST` with the CSRF token and the account's current password, like an account
+  change (U18), because it changes a mail record and can send mail; a wrong password counts against the login
+  throttle. The API keeps its usual checks (method, JSON body, size, token, rate limit, role).
+- **No race with a worker.** The store checks the rules (`store.CloseCheck`, `store.ResendCheck`) inside the
+  transaction that makes the change, on the single connection every worker also uses. While any recipient of the
+  delivery is `sending`, both are refused (`409 in_progress`), so a recipient is never in two attempts at once; a
+  resend only takes recipients that are `failed` or `unknown`, so of several resends at once one queues the mail and
+  the others find nothing. The UI and the API use the same functions to show what is possible, through
+  `internal/resolve`, which both depend on; neither depends on `delivery`, a resend wakes the workers through a
+  function passed in.
+- **Recorded with the change.** Each changed recipient gets one event, `delivery.closed` (`resolution=… was=…
+  via=ui|api` and the note) or `delivery.resend` (`was=… via=…`), with the account or token name as `actor`, in the
+  same transaction. They belong to the mail's history, so its timeline shows them, unlike `ui.view` and `api.view`;
+  the API shows their actor to `admin` tokens only. For the API they take the place of `api.request`, as `api.view`
+  does for a returned mail; a refused request is an `api.request` with its status.
 
 ## D56 Semantic versioning from 1.0 covers the operator's contract
 

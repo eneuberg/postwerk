@@ -1,10 +1,10 @@
 # Internal web UI
 
-A small web UI for people who run Postwerk: what is queued, what failed, and what happened to one mail. Mail records
-are read-only in it; the only things it changes are its own accounts. It never shows message content. This page
-describes how the UI is reached, how it is protected and what each page shows. Requirements: U1–U24 in
-[requirements.md](requirements.md#ui-and-admin-listener); reasons: decisions D29, D35, D36 and D37 in
-[decisions.md](decisions.md).
+A small web UI for people who run Postwerk: what is queued, what failed, and what happened to one mail. It changes
+its own accounts and, by an admin's decision, a delivery: close it or resend it (section 6). It never shows message
+content. This page describes how the UI is reached, how it is protected and what each page shows. Requirements:
+U1–U25 in [requirements.md](requirements.md#ui-and-admin-listener); reasons: decisions D29, D35, D36, D37 and D53–D55
+in [decisions.md](decisions.md).
 
 ## 1. How it is reached
 
@@ -154,11 +154,14 @@ other event):
 | `ui.account_created` | info | `actor`: who created it, `text`: the new account's name |
 | `ui.password_set` | info | `actor`: who set it, `text`: the account's name |
 | `ui.account_deleted` | info | `actor`: who deleted it, `text`: the account's name |
+| `delivery.closed` | info | `actor`: who closed it, `mail_id`, `target`, the recipient's position; `text`: `resolution=… was=… via=ui` and the note, redacted. One per recipient |
+| `delivery.resend` | info | `actor`: who resent it, `mail_id`, `target`, position; `text`: `was=… via=ui`. One per recipient |
 
 On stdout and in every sink these events carry `"actor"` and `"text"` instead of an `"smtp"` object. A login, a
 search, an opened mail or an account change that cannot be written to the event log is refused, so nothing happens in
 the UI that the audit log misses. Searches are limited to 30 per minute per account; more get `429`. The timeline on a
-mail's page shows the relay's events only; who opened the mail is in the event log.
+mail's page shows the relay's events and an admin's close and resend (with the account's name); who opened the mail is
+in the event log. A close or resend writes its events in the transaction that makes the change.
 
 ## 5. Pages
 
@@ -171,7 +174,8 @@ A status is always written out as text, colour only supports it.
 | Overview | `GET /` | per target: up, or down since when and why (`auth`, `unreachable`; D45), whether it is optional, recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial` by their required targets) |
 | Mails | `GET /mails` | the search form; list with filters (state, target, received from and to), newest first, 50 per page |
 | Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
-| Mail | `GET /mails/{id}` | id, received time, sending application, size, ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; per target the derived status (including `partial`), attempts, next attempt, last reply, and a table with each recipient's status and reply; the event timeline. Opening it writes `ui.view` |
+| Mail | `GET /mails/{id}` | id, received time, sending application, size, ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline. Opening it writes `ui.view` |
+| Close, resend | `POST /mails/{id}/targets/{target}/close`, `POST /mails/{id}/targets/{target}/resend` | on success back to the mail page with a notice; when refused, the mail page with the reason at that target |
 | Settings | `GET /settings`, `POST /settings/accounts` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
 | Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
 | Logout | `POST /logout` | |
@@ -189,13 +193,39 @@ Recipients are numbered by their position in the envelope, from 0, as in the eve
 
 **Never shown:** message content, subject, headers other than `Message-ID`, and anything from the stored message.
 
-Mail records are read-only for now. Resend and close (D13) will come as `POST` forms.
+## 6. Close and resend
 
-## 6. Code
+When Postwerk cannot finish a delivery alone, an admin decides on the mail's page (D53–D55). Each target with
+something to resolve has a **Resolve** part under its recipients, with two forms that open on a click (no JavaScript):
+
+- **Resend…** queues the recipients that are `failed` or `unknown` at this target again and sends at once. Only
+  while the message is still stored: Postwerk keeps it 72 h after a failure and 7 days at most, and never longer for
+  a resend. If a recipient is `unknown`, the connection broke after the message was sent, so the target may have it;
+  the form says so and asks for a tick at "Resend anyway; it may arrive twice". Check at the target first: if it has
+  the mail, close the delivery as confirmed instead.
+- **Close…** ends the delivery for its open recipients (`queued`, `unknown` or `failed`): nothing sends them any
+  more, and retention no longer turns an `unknown` one into `failed` when the message expires. Choose a resolution:
+  **confirmed** (you checked at the target, it has the mail; shown as handed off with "closed: confirmed") or
+  **given up** (shown as failed with "closed: given up"). An optional note of at most 200 characters, plain text on one
+  line, goes into the event; addresses in it are replaced by `<redacted>`. Confirmed is not offered while a recipient
+  is queued. The stored message is removed at once when no other delivery of the mail needs it. A close cannot be
+  undone.
+
+Both forms ask for your own current password, like the account changes, and carry the CSRF token; a wrong password
+counts against the login throttle. They act on every open recipient of that target at once, never on a single one.
+When an action is not possible, its button is shown disabled with the reason: the message was removed, the delivery is
+being sent right now (wait a moment), or the target is no longer configured (only close then). A target whose
+recipients are all final shows no actions. Every close and resend is an event with your name (section 4).
+
+The typical case: a connection broke after `DATA`, the delivery is `unknown` (policy `hold`). Look the mail up at the
+provider by its `X-Postwerk-Id` (Mailjet: the custom id). Found: close as confirmed. Not found: resend.
+
+## 7. Code
 
 | Package | Holds |
 |---|---|
 | `internal/store` | the SQL for every read (lists, counts, events of a mail) and for the accounts table; still the only package that speaks SQL |
+| `internal/resolve` | close and resend for the UI and the API: input checks, what is possible for a delivery, the store's change and the wake signal for the workers |
 | `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
 | `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
 | `internal/auth` | token file parsing, password rules and the equal-cost checker, on top of the sender password hashes |
@@ -203,7 +233,7 @@ Mail records are read-only for now. Resend and close (D13) will come as `POST` f
 For design work, `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m` serves made-up data,
 logged in as `ops` (tokens file) on that port and as `alice` (database) on the next one.
 
-## 7. Not built yet
+## 8. Not built yet
 
-Resend and close, TLS on the admin listener itself, a check of new passwords against a list of breached passwords,
+Closing or resending a single recipient of a delivery, TLS on the admin listener itself, a check of new passwords against a list of breached passwords,
 and sessions and login limits that survive a restart.

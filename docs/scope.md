@@ -4,9 +4,9 @@ What Postwerk should do, what it should not do, how it differs from other ways t
 setup. It starts from the ideal and compares it with the current [design](design.md) at the end.
 
 Status: early development. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
-event log on stdout and to Sentry or GlitchTip, retention and encryption at rest, the internal UI and the read-only
-query API); provider status and the OpenTelemetry and webhook sinks are planned. Nothing here is measured production
-behavior yet.
+event log on stdout and to Sentry or GlitchTip, retention and encryption at rest, the internal UI and the query API,
+with an admin's close and resend of a delivery); provider status and the OpenTelemetry and webhook sinks are planned.
+Nothing here is measured production behavior yet.
 
 ## 1. The ideal in one paragraph
 
@@ -257,8 +257,8 @@ not change the design until they are accepted there.
    queued mail into `failed` and then deletes it.
    *Suggestion:* keep the raw message for a configurable period after a failure (for example 72 h). Consider a separate,
    longer window for errors on Postwerk's own side (`535`, target unreachable), since these are not about the mail.
-   *Status:* built: the raw message is kept 72 h after a failure by default. A separate window for Postwerk's own errors
-   is open.
+   *Status:* built: the raw message is kept 72 h after a failure by default, and an admin can resend within it in the
+   UI or the API (D54); it is never kept longer for a resend. A separate window for Postwerk's own errors is open.
 
 3. **Every deploy can create `unknown` deliveries.** If the process stops while it is sending `DATA` to a target, the
    outcome is unclear. With `hold`, each deploy could leave work for an admin.

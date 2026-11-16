@@ -1,11 +1,10 @@
 # Query API
 
-A small, read-only JSON API for other applications inside the cluster, such as a support tool: "what happened to the
-mail for this address, this id or this ref?". One can look up what happened to a given mail; nobody can read all mails
-through it with a `read` token. It never returns message content. Requirements: H2, H4–H9 in
-[requirements.md](requirements.md#http); reasons: decisions D32–D34 in [decisions.md](decisions.md).
-
-Resend and close are not built yet.
+A small JSON API for other applications inside the cluster, such as a support tool: "what happened to the mail for
+this address, this id or this ref?". One can look up what happened to a given mail; nobody can read all mails through
+it with a `read` token. An `admin` token can also close or resend a delivery (section 3, "Close and resend"); nothing
+else changes through the API. It never returns message content. Requirements: H2, H4–H13 in
+[requirements.md](requirements.md#http); reasons: decisions D32–D34 and D53–D55 in [decisions.md](decisions.md).
 
 ## 1. Turning it on
 
@@ -43,6 +42,8 @@ Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
 | `GET /v1/mails/{id}` | yes, addresses and the `Message-ID` masked (`j•••@e•••.com`, `<4711@s•••.com>`) | yes, in full |
 | `GET /v1/mails` (list with filters) | no (`403`) | yes |
 | `GET /v1/overview` (per target) | no (`403`) | yes |
+| `POST /v1/mails/{id}/targets/{target}/close` | no (`403`) | yes |
+| `POST /v1/mails/{id}/targets/{target}/resend` | no (`403`) | yes |
 
 A `read` token can only answer "what happened to this mail?": every search is an exact match on one id, ref,
 Message-ID or address, and there is no listing. After pseudonymization nobody sees an address (`"state":
@@ -135,6 +136,9 @@ The id is not personal data, so it may be in the URL. Example for a `read` token
 ```
 
 An address `state` is `full` (admin), `masked` (read), `pseudonymized` (no address) or `null_sender` (`MAIL FROM:<>`).
+A recipient an admin closed has `"resolution": "confirmed"` (its status is `handed_off`) or `"given_up"` (status
+`failed`); the field is left out otherwise. The events include the admin's `delivery.closed` and `delivery.resend`; for
+an `admin` token they carry `"actor"`, the account or token that acted.
 For a `read` token the `message_id` is masked too, because many libraries put a host name, and some an address, into
 it: the part after the last `@` like an address's domain, and the part before it as well if it holds an `@` or an
 encoded address (`jane=example.com`); angle brackets stay. A search by `message_id` still takes the exact value
@@ -190,6 +194,70 @@ configured has no `state`. `down` means the target rejected the login (`down_rea
 last seen up again (or Postwerk started). The state is held in memory, so after a restart every target is `up` until
 the first attempt says otherwise.
 
+### Close and resend: `POST /v1/mails/{id}/targets/{target}/close`, `…/resend` (admin)
+
+An admin's decision on one delivery (the mail at one target), for what Postwerk cannot finish alone, typically an
+`unknown` delivery after a connection broke during `DATA` (D53–D55). Both act on every open recipient of that delivery
+at once, are refused while a worker is sending it (`409 in_progress`, try again a moment later), and write one event
+per recipient with the token name as `actor`, in the same transaction as the change.
+
+**Close** takes the recipients that are `queued`, `unknown` or `failed` (and not closed yet):
+
+```http
+POST /v1/mails/pw_01JD3W8K2M4N6P8Q0R2S4T6V8X/targets/mailjet/close HTTP/1.1
+Authorization: Bearer ops-tool.Xb3k…
+Content-Type: application/json
+
+{"resolution": "confirmed", "note": "found in the provider's message log"}
+```
+
+`resolution` is `confirmed` (checked at the target, it has the mail; the recipients become `handed_off`) or
+`given_up` (they become `failed`). `confirmed` is refused while a recipient to close is `queued`
+(`409 confirm_queued`): it was never handed to the target. `note` is optional, at most 200 characters of plain text on
+one line; addresses in it are replaced by `<redacted>` before it is stored, in the event only. A closed recipient is
+final: retention no longer turns an `unknown` one into `failed`, and nothing sends it again. If no other recipient of
+the mail may still need the stored message, it is removed in the same transaction.
+
+**Resend** takes the recipients that are `failed` (not closed) or `unknown`, queues them again and sends at once, with
+the retries left in the retry window (counted from the mail's arrival):
+
+```json
+{"accept_duplicate": true}
+```
+
+`accept_duplicate` (default `false`) must be `true` if one of them is `unknown`: the target may already have the mail,
+and a resend may deliver it twice (`409 duplicate_risk` otherwise). A resend needs the stored message. Postwerk keeps
+it 72 h after a failure and 7 days at most (`POSTWERK_RAW_KEEP_AFTER_FAILURE`, `POSTWERK_RAW_MAX_AGE`) and never longer
+for a resend; once it is gone: `409 message_removed`. The body is required, `{}` at least.
+
+Both answer `200` with the positions changed and the delivery as in the mail's detail:
+
+```json
+{
+  "id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X",
+  "target": "mailjet",
+  "recipients": [1],
+  "delivery": {
+    "target": "mailjet", "status": "handed_off", "attempts": 1, "last_code": 250, "last_text": "2.0.0 OK",
+    "recipients": [
+      {"position": 0, "status": "handed_off", "last_code": 250, "last_text": "2.0.0 OK"},
+      {"position": 1, "status": "handed_off", "resolution": "confirmed"}
+    ]
+  }
+}
+```
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `bad_request` | unknown `resolution`, a note too long or not plain text, an invalid body |
+| 404 | `not_found` | no such mail, or the mail has no delivery to this target |
+| 409 | `in_progress` | a worker is sending this delivery right now |
+| 409 | `nothing_to_close`, `nothing_to_resend` | no recipient in a state the action takes (a second resend finds the recipients queued) |
+| 409 | `confirm_queued` | `confirmed` with a queued recipient |
+| 409 | `duplicate_risk` | resend of an `unknown` recipient without `"accept_duplicate": true` |
+| 409 | `message_removed` | resend after the stored message was removed |
+| 409 | `target_not_configured` | resend to a target that is no longer configured (close it instead) |
+
 ### Errors
 
 Every error is `{"error": "<code>", "message": "<text>"}`:
@@ -200,9 +268,10 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | 401 | `unauthorized` | missing, malformed or wrong token; with `WWW-Authenticate: Bearer realm="postwerk"` |
 | 403 | `forbidden` | the role may not use the endpoint |
 | 403 | `host_not_allowed`, `browser_refused` | `Host` not in `POSTWERK_API_HOSTS`; a request with `Origin` or `Sec-Fetch-*` headers |
-| 404 | `not_found` | no such endpoint or mail |
+| 404 | `not_found` | no such endpoint, mail or delivery |
 | 405 | `method_not_allowed` | wrong method (with `Allow`) |
 | 413 | `too_large` | body over 4 KiB |
+| 409 | see above | a close or resend that is not possible now |
 | 415 | `unsupported_media_type` | a `POST` without `Content-Type: application/json` (UTF-8) |
 | 429 | `rate_limited` | over a rate limit; with `Retry-After` in seconds |
 | 503 | `unavailable` | the request could not be written to the event log; with `Retry-After` |
@@ -233,6 +302,7 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | `api.request` | info | `actor`: the token name; `text`: endpoint, search kind, HTTP status and number of mails, for example `search by=address status=200 results=1` |
 | `api.view` | info | `actor`: the token name, `mail_id`: the mail whose detail was returned; no text. Written instead of `api.request` for a successful `GET /v1/mails/{id}`, like the UI's `ui.view` |
 | `api.forbidden` | warn | `actor`: the token name; `text`: the endpoint |
+| `delivery.closed`, `delivery.resend` | info | `actor`: the token name, `mail_id`, `target` and the recipient's position; `text`: `resolution=… was=… via=api` and the note (close), `was=… via=api` (resend). Written instead of `api.request` for a close or resend that succeeded, in the same transaction as the change; a refused one is an `api.request` with its status |
 | `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file, otherwise empty; `text`: `failures=<n>`, the missing, malformed or wrong tokens of that actor in one minute. At most one per actor and minute (D42) |
 
 Never the search term, a ref, a Message-ID or an address; a mail id only in `api.view`, for a mail that was returned
@@ -242,10 +312,11 @@ written; if that fails, the client gets `503` and no data. Failed authentication
 one of an actor starts a minute, the ones after it are counted, and one `api.auth_failed` with the count is written
 when the minute ends or Postwerk stops. So a flood of wrong tokens writes at most one event per token name, plus one
 for the rest, per minute, and the same to Sentry. Requests over a rate limit write no event. Events caused
-by a token or a person (`api.view`, `ui.view`) are not part of a mail's own timeline in the detail response.
+by a token or a person (`api.view`, `ui.view`) are not part of a mail's own timeline in the detail response; a close
+or resend is, because it changes the mail's state.
 
 ## 6. Code
 
 `internal/api` holds the handler, the checks and the JSON shapes, on top of `internal/query` (the same read logic and
-masking as the UI). `postwerk gen-api-token` is in `cmd/postwerk`; the listener and its TLS (`internal/tlsreload`) are
+masking as the UI) and `internal/resolve` (the same close and resend as the UI). `postwerk gen-api-token` is in `cmd/postwerk`; the listener and its TLS (`internal/tlsreload`) are
 set up there too.

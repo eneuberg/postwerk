@@ -81,7 +81,7 @@ most 30 searches per minute per account.
 
 ## Query API
 
-The read-only JSON API ([api.md](api.md)) for another application, such as a support tool, on its own listener. Off by
+The JSON API ([api.md](api.md)) for another application, such as a support tool, on its own listener. Off by
 default. Unlike the admin listener it may bind a pod address, because another pod calls it.
 
 | Variable | Default | Allowed | What it does |
@@ -161,7 +161,7 @@ in the WAL file.
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
 | `POSTWERK_RAW_KEEP_AFTER_HANDOFF` | `0` (**recommended**) | `0` or a duration ≤ `RAW_MAX_AGE` | How long the stored message is kept once every recipient of every delivery of the mail is `handed_off` or `skipped`. With `0` it is removed in the same transaction that makes the last recipient final; a mail whose deliveries are all skipped is not stored at all. |
-| `POSTWERK_RAW_KEEP_AFTER_FAILURE` | `72h` (**recommended**) | `0` or a duration ≤ `RAW_MAX_AGE` | How long the stored message is kept once every recipient is final and one of them is `failed` or `unknown` (a `partial` delivery counts), so an admin can resend. When it is removed, `unknown` recipients become `failed` with `retention.raw_expired`. |
+| `POSTWERK_RAW_KEEP_AFTER_FAILURE` | `72h` (**recommended**) | `0` or a duration ≤ `RAW_MAX_AGE` | How long the stored message is kept once every recipient is final and one of them is `failed` or `unknown` (a `partial` delivery counts), so an admin can resend. When it is removed, `unknown` recipients become `failed` with `retention.raw_expired`, unless an admin closed them (D53). |
 | `POSTWERK_RAW_MAX_AGE` | `7d` (**recommended**) | a duration > 0 | Hard cap for any state, counted from receipt. When the message is removed while a recipient is still `queued` or `unknown`, that recipient becomes `failed` with a `retention.raw_expired` event (`error`, `warn` for optional targets). A recipient being sent at that moment is left to finish; the next run takes the message. |
 | `POSTWERK_PSEUDONYMIZE_AFTER` | `30d` (**recommended**) | `0` (off) or a duration ≥ `RAW_MAX_AGE` and ≤ `RECORD_RETENTION` | Replaces recipient addresses and the envelope sender by keyed hashes (below). Only mails with no stored message and no delivery that may still be sent are touched. `0` keeps plain addresses until the records are deleted; a warning is logged. |
 | `POSTWERK_RECORD_RETENTION` | `90d` (**recommended**) | a duration ≥ `RAW_MAX_AGE` | Deletes `mails` rows with their `recipients`, `deliveries` and recipient statuses. A mail with a recipient still `queued`, `sending` or `unknown` is kept. Raise it if you need delivery proof for longer, and record why. |

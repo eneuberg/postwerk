@@ -25,8 +25,9 @@ internal/httpapi      health endpoints on the health listener (H1)
 internal/watch        Postwerk's own signals: free space of the data volume, age of each target's queue (H10, A10, A11)
 internal/fold         counts repeated occurrences, one record per key and window (the API's and ingress's refusal events)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
-internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts (H3, U1–U24)
-internal/api          the read-only JSON query API on its own listener: bearer tokens, limits, events, JSON (H2, H4–H9)
+internal/resolve      the admin actions on a delivery for the UI and the JSON API: close and resend, their input and availability (H11–H13)
+internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts, close and resend forms (H3, U1–U25)
+internal/api          the JSON query API on its own listener: bearer tokens, limits, events, JSON, close and resend (H2, H4–H13)
 internal/testutil     helpers for tests only (self-signed certificates, polling, buffers); never imported by code
 ```
 
@@ -34,8 +35,9 @@ Dependency rule: `store` depends on nothing internal except `redact`, so every f
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
 packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
-`addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `ui` depends on `query`,
-`auth` and the store's event type, never on `ingress` or `delivery`; so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
+`addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `resolve` writes
+through `store` and reads `query`'s delivery detail; `ui` depends on `query`, `resolve`, `auth` and the store's types,
+never on `ingress` or `delivery` (a resend wakes the workers through a function `cmd/postwerk` passes in); so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
 makes the data flow visible: everything meets in the store.
 
 ## Data flow
@@ -54,9 +56,12 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
      Sentry ◀──HTTPS──┘                                                                 │
                                                                                         │
   person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
-                                                         └── tx: ui.* events, ui_accounts ────▶┘
+                                                         ├── tx: ui.* events, ui_accounts ────▶│
+                                                         └── resolve ── tx: close / resend ───▶│
+                                                                  (+ events, raw removed at close; wake workers)
   other pod ──▶ API listener (POSTWERK_API_LISTEN) ── api ── query ── reads ───────────▶│
-                                                       └── tx: api.request / api.view events ▶┘
+                                                       ├── tx: api.request / api.view events ▶│
+                                                       └── resolve ── tx: close / resend ─────▶│
   watch (disk every 10 s and at MAIL/RCPT/DATA, queues every minute) ── statfs, queue ages ─▶│
                                                        └── tx: disk.* / queue.* events ────────▶┘
 ```
@@ -71,14 +76,14 @@ One `*sql.DB` with a single open connection. All access is serialized; at transa
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
 
-Tables (version 6):
+Tables (version 7):
 
 | Table | Holds | Notes |
 |---|---|---|
 | `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at`, the declared MAIL parameters `body`, `smtputf8`, `declared_size` | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
 | `deliveries` | mail id, target, attempts, next attempt, `data_sent_at`, last code and redacted text of the attempt, updated time | what one SMTP transaction shares; primary key (mail id, target); next attempt is set while a recipient is queued; partial index on (target, next attempt) |
-| `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth |
+| `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time, `resolution` | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth; `resolution` (`confirmed`, `given_up` or NULL) is set when an admin closed it |
 | `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login, actor (account name of a UI event) | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
 | `cursors` | sink name, last seq | one row per sink |
 | `ui_accounts` | name, PBKDF2 hash, created and updated time and by whom | UI accounts managed in the panel (U17); never a password |
@@ -94,7 +99,9 @@ the MAIL parameters as the sender declared them: `body` (`7BIT`, `8BITMIME` or N
 `declared_size` (NULL if not given). `0004_recipient_status.sql` adds `delivery_recipients`, fills it with each
 delivery's status for every recipient, drops `deliveries.status` (and the unused provider columns; provider status will
 be kept per recipient) and adds `events.recipient`. `0005_ui.sql` adds partial indexes on `mails.ref` and
-`mails.message_id` for lookups, and `events.actor`. `0006_ui_accounts.sql` adds `ui_accounts`.
+`mails.message_id` for lookups, and `events.actor`. `0006_ui_accounts.sql` adds `ui_accounts`. `0007_resolution.sql`
+adds `delivery_recipients.resolution` with a check that it matches the status (`confirmed` only with `handed_off`,
+`given_up` only with `failed`).
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -119,6 +126,25 @@ recipients. The status of a delivery, or of a mail over all its targets, is a su
 | all others `handed_off` | `handed_off` |
 | none `handed_off` | `failed` |
 | some `handed_off`, the others `failed` | `partial` |
+
+**Closed by an admin** (D53). Closing does not add a status. A recipient closed as `confirmed` becomes `handed_off`,
+one closed as `given_up` becomes `failed`, and `resolution` records that a person decided it, not a reply from the
+target. Every summary above, the list filters and the overview counts read the status only, so they stay as they are:
+a confirmed `unknown` counts as handed off, a given-up one as failed. The UI and the API show the resolution next to
+the status; who closed it, when and why is in its `delivery.closed` event. A closed recipient is final: retention's
+raw expiry only touches `queued` and `unknown`, a claim only `queued`, and neither close nor resend takes a recipient
+that has a resolution. The rules are `store.CloseCheck` and `store.ResendCheck`; the store applies them inside the
+transaction that makes the change, and `internal/resolve` uses the same functions to show what is possible.
+
+| Action | Takes the recipients of one delivery that are | Refused while | Result |
+|---|---|---|---|
+| close `confirmed` | `unknown`, or `failed` without a resolution | any is `sending`; any to close is `queued` | `handed_off` + `confirmed`; next attempt cleared; raw removed if nothing else needs it |
+| close `given_up` | `queued`, `unknown`, or `failed` without a resolution | any is `sending` | `failed` + `given_up`; the same |
+| resend | `unknown` (with the admin's consent to a duplicate), or `failed` without a resolution | any is `sending`; the message is gone | `queued`, due at once; the workers are woken |
+
+"Nothing else needs it" means no recipient of the mail, at any target, is `queued`, `sending`, `unknown` or `failed`
+without a resolution. `Finish` removes the message at the last hand-off when the others are handed off, skipped or
+closed.
 
 Event kinds. Every result is an event per recipient: it carries the recipient's position, never its address.
 `mail.accepted`, `delivery.attempt` and `retention.purged` carry none; `target.down` and `target.recovered` carry no
@@ -145,6 +171,8 @@ mail id either.
 | `tls.reloaded` | info | a changed certificate and key pair loaded and is served from the next handshake; text names the listener, subject and expiry |
 | `tls.reload_failed` | error | a changed pair did not load (unreadable, no match, expired), also after a second read 2 s later; the old one stays. Once per content |
 | `tls.expiring` | warn; error below 7 days and once expired | the served certificate has less than 14 days left; at most once a day, and at once when it turns into an error; the time left is rounded down |
+| `delivery.closed` | info | an admin closed this recipient; `actor` is the account or API token, text `resolution=<confirmed\|given_up> was=<status> via=<ui\|api>` and `: <note>` if given (redacted) |
+| `delivery.resend` | info | an admin queued this recipient again; `actor`, text `was=<status> via=<ui\|api>` |
 | `ui.login` | info | someone logged in to the UI; `actor` is the account, text `file` or `database` |
 | `ui.login_failed` | warn | a failed password check; `actor` only if the name is an account; text empty for a login, `confirm` for the password asked for a change |
 | `ui.login_throttled` | warn | failed checks started a wait; `actor` as above, text `account` or `source` |
@@ -298,7 +326,9 @@ start, and then every 10 minutes. The steps run
 in order, each in transactions of at most 200 rows so ingress and workers never wait long for the single connection:
 
 All steps look at the recipient statuses: the message stays while any recipient of any target is `queued`,
-`sending` or `unknown` (within the limits below).
+`sending` or `unknown` (within the limits below). A recipient an admin closed is `handed_off` or `failed` and never
+changes again; an admin's close removes the message itself when nothing else needs it, and a resend needs the message
+and never keeps it longer (D54).
 
 1. Remove the message of mails whose recipients are all `handed_off`/`skipped`, `RAW_KEEP_AFTER_HANDOFF` after the last
    change. With the default 0 this already happened in `Finish` (or at `Accept`, when every delivery is skipped).
@@ -325,7 +355,9 @@ the derived state in SQL: it counts each mail's recipients per status and applie
 (a test checks both agree for every combination), so pages stay correct with a state filter. A mail's state counts
 the recipients of its required targets only: `MailFilter.Optional` (from `query.Options.Optional`) leaves the
 optional targets out of the join unless the mail has no other delivery, and `store.MailStatus` does the same for one
-mail's detail (a randomized test compares both). The query layer decides
+mail's detail (a randomized test compares both). `MailEvents` returns a
+mail's history: the relay's events and the admin's `delivery.closed` and `delivery.resend`, not who looked at it. The
+query layer decides
 what a reader may see: `query.Full` (the UI, and API tokens with role `admin`) returns addresses, `query.Masked` (API
 tokens with role `read`, the zero value) returns `j•••@e•••.com` and masks the `Message-ID` (`query.MaskMessageID`),
 and a pseudonymized mail returns no address at all. No function returns the stored message.
@@ -401,6 +433,12 @@ starts from the newest of its events in the event log (`store.LastOf`), so a res
   their folded events, both rate limits, method, content type, body size and browser checks, the Host allow-list, security headers, and a
   leak test (no content, subject or other header in any response; the query never in an event, log or the exported
   stream). `cmd/postwerk` runs the whole program with the API over TLS.
+- Close and resend are tested in the store (every transition, refusals that change nothing, the note redacted, the
+  message removed at the last close and kept while another delivery needs it, a closed `unknown` untouched by raw
+  expiry, no resend after it, the timeline), in the UI and the API (roles, CSRF, the password asked again, 409s with
+  their reasons, events with the actor) and end to end with a running worker: eight resends at once queue the mail
+  once, and while the worker holds the delivery every close and resend is refused, so the target gets exactly one
+  more copy.
 - The end-to-end harness also runs the Sentry sink against a fake endpoint, and the leak check searches every
   envelope it received for the canary addresses and the message content. `internal/report` tests the Sentry sink on
   its own: envelope and event fields, level filter, rate limits, backoff, timeout, redirects, and catching up after

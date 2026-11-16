@@ -1,7 +1,7 @@
 # Postwerk design
 
 Status: foundation built. SMTP ingress, the store, per-target delivery with the retry policy, the event log with the
-stdout output and the Sentry-protocol sink, retention, encryption at rest, an internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
+stdout output and the Sentry-protocol sink, retention, encryption at rest, an internal UI and a query API, with an admin's close and resend of a delivery, exist and are tested. Parts marked *(planned)* are not built yet; their
 details may change. The code layout is in [architecture.md](architecture.md), every setting in
 [configuration.md](configuration.md), and whether Postwerk fits a given setup in [scope.md](scope.md).
 
@@ -14,8 +14,8 @@ every step, so every mail can be audited and tracked from one place.
 - **In:** finished RFC 5322 messages over SMTP, from known senders (login required).
 - **Out:** the same messages, unchanged except for Postwerk's own headers, to a list of targets: a sending provider such
   as Mailjet, a capture tool such as Mailpit, or any other SMTP server.
-- **Beside:** an append-only event log, exported to observability tools, a small read-only UI and a read-only query
-  API.
+- **Beside:** an append-only event log, exported to observability tools, a small UI and a query API, both read-only
+  except for an admin's close and resend of a delivery.
 
 Postwerk does not read or change message content. It does not receive mail for mailboxes, sign messages, render
 templates, build links, check link expiry or decide what an alert is.
@@ -34,8 +34,8 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Reporter | event log → sinks, each with its own cursor and loop | built for stdout and Sentry protocol; other sinks planned | standard library |
 | Health | `/healthz`, `/readyz` on the internal HTTP listener; free space of the data volume and the age of each target's queue as events (section 9.1) | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
-| UI | HTML pages on the loopback admin listener: overview, mails, search, one mail, accounts | built | standard library, `html/template` |
-| Query API | read-only JSON API on its own listener for other applications ([api.md](api.md)); admin-only resend and close later | built (read-only) | standard library |
+| UI | HTML pages on the loopback admin listener: overview, mails, search, one mail with close and resend, accounts | built | standard library, `html/template` |
+| Query API | JSON API on its own listener for other applications ([api.md](api.md)): lookups, and close and resend for `admin` tokens | built | standard library |
 
 One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
 ([kubernetes.md](kubernetes.md)). [architecture.svg](architecture.svg) shows the full design, including the
@@ -135,12 +135,16 @@ queued ──▶ sending ──250──▶ handed_off ──(provider status, p
              ├─ 5xx, retry window over ──▶ failed                  └──▶ complained
              └─ no reply after the message was sent ──▶ unknown ──(section 6)
 
+admin (section 6.1): queued, unknown, failed ──close──▶ handed_off (confirmed) or failed (given up), final
+                     unknown, failed ──resend, while the message is stored──▶ queued
+
 skipped: excluded by X-Postwerk-Skip, or a recipient is outside the target's allow-list
 ```
 
 Built statuses: `queued`, `sending`, `handed_off`, `failed`, `unknown`, `skipped`, per (mail, target, recipient). The
-provider statuses (per recipient, matching Mailjet's one message per recipient) and closing an `unknown` delivery by
-hand are planned.
+provider statuses (per recipient, matching Mailjet's one message per recipient) are planned. A recipient an admin
+closed keeps the status its resolution implies and records the resolution beside it (D53), so every summary stays the
+same.
 
 Scheduling and attempts stay per (mail, target): one SMTP transaction carries several recipients. But every result,
 every retry decision and every event is per recipient. As in any SMTP relay (RFC 5321), the target answers each
@@ -219,12 +223,31 @@ risks a duplicate, not resending risks a lost mail. The choice is per target (`O
 
 | Policy | Postwerk does | Fits |
 |---|---|---|
-| `hold` | stays `unknown`, raises an error, an admin decides (resend or close, planned) | targets without status lookup |
+| `hold` | stays `unknown`, raises an error, an admin decides: close it (confirmed or given up) or resend it while the message is stored (section 6.1) | targets without status lookup |
 | `check` | *(planned)* looks the mail up at the provider by its tracking id; found → `handed_off`; still not found after a grace period (default 15 min) → resend once. Until the status adapter exists, `check` behaves like `hold`. | providers with a status adapter |
 | `retry` | resends like a temporary error | capture tools and tests, where a duplicate does no harm |
 
 The grace period exists because a provider may need a moment before a new mail shows up in its API. How long that is
 for Mailjet has not been measured yet.
+
+### 6.1 Close and resend (admin)
+
+An admin resolves a delivery that Postwerk cannot finish alone, in the UI or with an `admin` API token (D53–D55):
+
+- **Close** a delivery that has a `queued`, `unknown` or `failed` recipient, with a resolution: `confirmed` (the admin
+  checked at the target that it has the mail; the recipients become `handed_off`) or `given_up` (they become
+  `failed`), and an optional short note. A closed recipient is final: retention no longer turns an `unknown` one into
+  `failed` when the message expires, and nothing sends it again. Closing removes the stored message at once if no
+  other recipient of the mail may still need it. `confirmed` is not offered while a recipient is `queued`, because a
+  queued recipient was never handed to the target.
+- **Resend** a delivery that has a `failed` or `unknown` recipient, only while the stored message still exists: those
+  recipients are queued again and sent at once, with the retries left in the retry window. For `unknown` the admin
+  must accept that the mail may arrive twice. Retention is never extended for a resend; once the message is gone,
+  resend is no longer offered.
+
+Both act on every open recipient of one delivery (mail and target) at once, never while a worker is sending it, and
+write one event per recipient (`delivery.closed`, `delivery.resend`) with the admin's name as `actor` in the same
+transaction.
 
 ## 7. Store
 
@@ -298,6 +321,8 @@ Kinds written today:
 | `tls.reloaded` | info | a renewed STARTTLS certificate is served |
 | `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
 | `tls.expiring` | warn; error below 7 days and once expired | the served certificate has less than 14 days left; once a day, and at once when it turns into an error. The text says the time left rounded down ("9 days 23 hours", hours below 2 days) |
+| `delivery.closed` | info | an admin closed this recipient; `actor`, text `resolution=… was=… via=ui\|api` and the note, redacted |
+| `delivery.resend` | info | an admin queued this recipient again; `actor`, text `was=… via=…` |
 | `ingress.auth_failed` | warn | failed `AUTH` attempts, counted: at most one event per sender and minute with `failures=<n>`; `sender` only if the name is in the senders file. Never the password |
 | `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients` or `line_too_long`, with `rejected=<n>`; at most one event per sender, reason and minute. Never an address |
 | `queue.stale` | error (warn if optional) | the oldest mail queued for a target has waited longer than `POSTWERK_QUEUE_STALE_AFTER` (15 min); once per change (section 9.1) |
@@ -306,7 +331,7 @@ Kinds written today:
 | `disk.ok` | info | the volume has a quarter more than the reserve free again |
 | `ui.login`, `ui.login_failed`, `ui.login_throttled`, `ui.search`, `ui.view`, `ui.account_created`, `ui.password_set`, `ui.account_deleted` | info (failures and throttling: warn) | someone used the UI; the event carries `"actor"` (the account) and `"text"` (where the account is kept, what was searched by, or the changed account's name), and `ui.view` the mail id; never a query, an address or a password ([ui.md](ui.md#4-audit-of-the-ui-itself)) |
 
-Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.delivered`, `provider.bounced`,
+Planned kinds: `mail.rejected`, `provider.delivered`, `provider.bounced`,
 `provider.blocked`, `provider.complained`, `provider.stuck`. The retention job's own events are listed in
 [architecture.md](architecture.md).
 
@@ -373,7 +398,8 @@ with the platform's monitoring. Rule examples for GlitchTip: [kubernetes.md](kub
 
 ## 10. Query API
 
-Built: a read-only JSON API for other applications in the cluster ([api.md](api.md), D32–D34). It has its own
+Built: a JSON API for other applications in the cluster ([api.md](api.md), D32–D34): lookups, and for `admin`
+tokens close and resend (D53–D55). It has its own
 listener, `POSTWERK_API_LISTEN`, off by default; unlike the UI it may bind the pod address, because other pods call
 it. In the chart the NetworkPolicy lets in only the pods in `api.allowFrom`, and TLS is on. Its bearer tokens
 `<name>.<token>` come from a file of their own, `POSTWERK_API_TOKENS_FILE`, never from the UI tokens file, and are
@@ -386,16 +412,14 @@ listener, without a token.
 | `GET /v1/mails/{id}` | one mail: deliveries per target with attempts and last reply, recipients, events; addresses and the `Message-ID` masked for `read` | read, admin |
 | `GET /v1/mails?state=…&target=…&from=…&to=…&page=…` | the list, newest first, 50 per page; filters never hold an address | admin |
 | `GET /v1/overview` | per target: recipients of the last 24 h by status, queued now, oldest queued; the recent problems | admin |
+| `POST /v1/mails/{id}/targets/{target}/close` | closes the delivery's open recipients with a resolution and a note (section 6.1) | admin |
+| `POST /v1/mails/{id}/targets/{target}/resend` | queues its failed and unknown recipients again while the message is stored | admin |
 
-Every request is an event (`api.request`, or `api.view` for a returned mail), and is answered only once that event is
-written; failed tokens are counted, one `api.auth_failed` per token name and minute (D42). The API never returns
+Every request is an event (`api.request`; `api.view` for a returned mail; `delivery.closed` or `delivery.resend`
+for a close or resend), and is answered only once that event is written; failed tokens are counted, one `api.auth_failed` per token name and minute (D42). The API never returns
 message content, the subject or headers other than `Message-ID`. Searching by address takes a request body, as the
 UI's search does, so addresses stay out of URLs and access logs
 ([privacy-and-security.md](privacy-and-security.md#82-privacy-changes-and-their-status)).
-
-Planned, for `admin` tokens: `POST /v1/mails/{id}/resend?target=…` (a new attempt for a `failed` or `unknown`
-delivery, while the raw message exists) and `POST /v1/mails/{id}/close?target=…` (mark an `unknown` delivery as done
-without resending), D13.
 
 Senders can set `X-Postwerk-Ref: <their id>` to find a mail by their own reference later. A `ref` that contains `@` is
 not stored, because a reference must be an opaque id, not an address. Postwerk also returns its id in the SMTP reply
@@ -403,7 +427,7 @@ not stored, because a reference must be an opaque id, not an address. Postwerk a
 
 ## 11. UI
 
-Built: a small web UI ([ui.md](ui.md)), read-only for mail records. It runs on its own admin listener,
+Built: a small web UI ([ui.md](ui.md)). It changes mail records only by an admin's close or resend (section 6.1). It runs on its own admin listener,
 `127.0.0.1:8081` by default, loopback only, and is opened through `kubectl port-forward` or an SSH tunnel; it never
 shares the health listener and is never on a Service or Ingress. Every account is an admin (D35). People log in with
 a name and a password from an account kept in the database and managed on the UI's account pages, or, for the first
@@ -412,9 +436,8 @@ overview per target (last 24 hours by recipient status, queued now, oldest queue
 with filters, a search by id, ref, `Message-ID` or address, one mail with its deliveries, recipients and events, and
 the accounts. Addresses are shown in full; after pseudonymization nobody sees them. Server-rendered HTML, no
 JavaScript, no message content; a Host check, CSRF tokens and a strict Content-Security-Policy guard against attacks
-through the browser. Every login, search, opened mail and account change is an event.
-
-Planned: resend and close (D13) as forms.
+through the browser. Every login, search, opened mail, account change, close and resend is an event. Close and resend are forms on the
+mail page, per target, with the admin's own password asked again.
 
 ## 12. Provider status (planned)
 

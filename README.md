@@ -67,7 +67,7 @@ options: [docs/scope.md](docs/scope.md).
 - [Kubernetes](docs/kubernetes.md): Helm chart, secrets, network rules, TLS inside the cluster, wiring an app
 - [FAQ](docs/faq.md): short answers to common questions
 - [Internal UI](docs/ui.md): status, mail history and search, on a loopback listener reached by tunnel
-- [Query API](docs/api.md): read-only JSON lookups for other applications, bearer tokens, roles, examples
+- [Query API](docs/api.md): JSON lookups for other applications, close and resend for admins, bearer tokens, roles, examples
 - [Configuration](docs/configuration.md): every environment variable, secret files and key files
 - [Design](docs/design.md): components, targets, mail lifecycle, retry policy, event model
 - [Code architecture](docs/architecture.md): packages, data flow, store schema, delivery worker
