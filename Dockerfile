@@ -1,4 +1,8 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+
+# Every input is pinned by digest (D43): the Dockerfile frontend above and
+# the build image below. Dependabot updates the FROM line; the frontend is
+# updated by hand.
 
 # Build stage: static binary, no cgo (O2). It runs on the build machine's
 # platform and cross-compiles for the target platform, so a multi-platform

@@ -41,7 +41,9 @@ send in progress always finishes (configuration.md, section "Shutdown").
 ### Image
 
 Each release tag `v<version>` publishes `ghcr.io/eneuberg/postwerk:<version>` for `linux/amd64` and `linux/arm64`,
-with an SBOM and a build provenance attached. There is no `latest` tag. The image is signed keyless with
+with an SBOM and a build provenance attached. There is no `latest` tag. Only a tag on a commit of `main` is released,
+and every build input (actions, the Dockerfile frontend, the Go and BuildKit images) is pinned by digest. The image is
+signed keyless with
 [cosign](https://docs.sigstore.dev/cosign/) by the release workflow, so the signature names the workflow and the tag
 it ran for. Check it with cosign 3 or newer before you use a version:
 

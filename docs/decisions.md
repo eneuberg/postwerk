@@ -545,3 +545,24 @@ in full it can tell a support tool more than masked addresses do.
   recipient finds the mail, and the response does not hand it back in full.
 - **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
   gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.
+
+## D43 Build inputs pinned by digest, releases only from `main`
+
+D39 pinned the actions by commit and the SBOM scanner by digest, but other inputs of the release could still change
+under the same name: the Dockerfile frontend (`# syntax=docker/dockerfile:1`) and the BuildKit image that
+`setup-buildx` starts (`moby/buildkit:buildx-stable-1`) both run with the build, and a tag pushed on any branch
+would have been released.
+
+- **Everything by digest.** The frontend (`docker/dockerfile:1.27.1@sha256:…`, the version `1` pointed to), the Go
+  build image (`golang:1.27@sha256:…`) and BuildKit (`moby/buildkit:v0.34.2@sha256:…`, the version
+  `buildx-stable-1` pointed to, through `driver-opts`) are fixed, like the scanner and the CI tool images. The final
+  stage is `scratch`, which is no image and needs no pin. The digests were read from the registry
+  (`docker buildx imagetools inspect <image>:<tag>`), not copied from elsewhere.
+- **Dependabot keeps them current**, weekly, and only with releases at least a week old, so a hijacked release has
+  time to be noticed before a pull request proposes it. It covers the actions, the Dockerfile's `FROM` line and the Go
+  modules. It does not read the `# syntax=` line, `driver-opts` or images in workflow variables; those (the frontend,
+  BuildKit, helm, kubeconform, the SBOM scanner) are updated by hand with the command above. Renovate would cover them
+  too, but needs an app with write access to the repository; Dependabot is part of GitHub and needs only its file.
+- **A release tag must be on `main`.** The release workflow checks that the tagged commit is an ancestor of
+  `origin/main` before the tests run, and stops otherwise. A tag on a branch nobody reviewed can no longer publish
+  a signed image. The check runs in the job without write rights, so nothing is pushed or signed before it passes.
