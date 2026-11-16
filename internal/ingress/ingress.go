@@ -86,7 +86,7 @@ type Options struct {
 	Hostname       string
 	TLSCertificate *tls.Certificate // nil: no STARTTLS (unless GetCertificate is set)
 	// GetCertificate, if set, supplies the certificate for each STARTTLS
-	// handshake instead of TLSCertificate (tlsreload.Reloader, S13).
+	// handshake instead of TLSCertificate (tlsreload.Reloader, I16).
 	GetCertificate  func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	AllowInsecure   bool // AUTH without TLS
 	MaxMessageBytes int64

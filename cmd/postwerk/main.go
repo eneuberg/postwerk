@@ -242,7 +242,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	// maximum age is sent after a long downtime.
 	_, _ = ret.Once(ctx)
 	// The STARTTLS certificate is re-read every minute, so a renewed one
-	// is served without a restart (S13).
+	// is served without a restart (I16).
 	var smtpTLS *tlsreload.Reloader
 	if cfg.TLSCertFile != "" {
 		smtpTLS, err = tlsreload.New(tlsreload.Options{

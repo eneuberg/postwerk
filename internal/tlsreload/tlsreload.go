@@ -1,5 +1,5 @@
 // Package tlsreload serves a TLS certificate from a certificate and a key
-// file and picks up a new pair without a restart (S13).
+// file and picks up a new pair without a restart (I16).
 //
 // cert-manager renews a certificate long before it expires, and Kubernetes
 // swaps the files of a Secret volume with an atomic symlink change. A

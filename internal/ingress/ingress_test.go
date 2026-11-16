@@ -257,7 +257,7 @@ func TestTLSRequiredForAuth(t *testing.T) {
 }
 
 // A certificate renewed on disk is served to the next STARTTLS without a
-// restart (S13).
+// restart (I16).
 func TestTLSCertificateReload(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")

@@ -244,8 +244,7 @@ The chart encodes what the design needs, so a default install is a safe one:
 - **Hardened pod.** Non-root uid 65532, read-only root file system, all capabilities dropped, seccomp
   `RuntimeDefault`; the image has no shell to begin with.
 - **TLS by default, cert-manager optional.** STARTTLS from an internal CA, because common clients (Go's `net/smtp`)
-  refuse to send a password without it. Postwerk reads the certificate at start, so a renewal needs a restart; hot
-  reloading is an open point.
+  refuse to send a password without it. A renewed certificate is picked up without a restart (D38).
 
 ## D29 The UI on a loopback admin listener, reached through a tunnel, with a login anyway
 
@@ -278,3 +277,22 @@ reuses access control that already exists and is already audited.
   query (privacy-and-security.md, changes 8 and 10).
 - **Masking in the query layer.** `read` sees `j•••@e•••.com`, `admin` the full address. The masking happens where the
   data is read (`internal/query`), not in the templates, so the later JSON API cannot forget it.
+
+## D38 TLS certificates reload from their files, checked every minute
+
+cert-manager renews a certificate long before it expires, and Kubernetes swaps the files of a Secret volume through a
+symlink. A process that reads the certificate only at start would keep serving the old one until it expires; then
+in-cluster clients, which need TLS for `AUTH PLAIN`, could no longer send. Options were a restart on every renewal (an
+extra controller or a cron job, and a short outage), file system notifications, or polling.
+
+- **Polling, by content, every 60 s.** Notifications on a symlink swap are easy to miss (the watched path itself does
+  not change), and the modification time of the target can stay the same. Reading two small files once a minute
+  costs nothing and catches every way of replacing them. Kubernetes takes up to about a minute to update the volume,
+  so faster polling would gain little.
+- **Validate before swapping.** A new pair must parse, the key must match and the certificate must still be valid.
+  Otherwise the old certificate stays: a broken renewal must not take TLS down while the old certificate still works.
+  A pair read in the middle of a replacement is read once more after 2 s before it counts as failed.
+- **Report, not spam.** `tls.reload_failed` once per content, `tls.reloaded` per reload, `tls.expiring` once a day
+  under 14 days. cert-manager renews 15 days ahead, so the warning means the renewal did not arrive.
+- **One package for every listener.** `internal/tlsreload` has no Postwerk dependencies; the STARTTLS ingress uses it,
+  and any later TLS listener uses the same code. At start an invalid pair still stops Postwerk (O1).

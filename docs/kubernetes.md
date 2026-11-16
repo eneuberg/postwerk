@@ -261,10 +261,12 @@ ConfigMap in each client namespace, by hand or with cert-manager's trust-manager
   library's CA option, Java a trust store, PHP `openssl.cafile`. Turning certificate checks off is not an option: it
   sends the password to whoever answers.
 
-**Renewal.** Postwerk reads the certificate once at start. cert-manager renews it `renewBefore` (15 days) before it
-expires and updates the Secret, but the running process keeps the old one. Restart Postwerk after a renewal, for
-example with a tool that restarts a Deployment when a referenced Secret changes, or a scheduled
-`kubectl rollout restart` well inside the 15 days. A restart is a short SMTP outage (section 9).
+**Renewal.** cert-manager renews the certificate `renewBefore` (15 days) before it expires and updates the Secret.
+The kubelet swaps the mounted files within a minute or two, and Postwerk re-reads them every minute: the next STARTTLS
+gets the new certificate, no restart needed. A pair that does not load (key does not match, expired, unreadable)
+is not used; Postwerk keeps the old one and writes `tls.reload_failed`. If the served certificate has less than 14
+days left, `tls.expiring` is written once a day, so a stuck renewal shows up before clients fail. Alert on both.
+Mount the Secret as a volume (the chart does); a `subPath` mount is never updated by Kubernetes.
 
 **Without TLS.** Only if the cluster network encrypts traffic between nodes (for example WireGuard in Cilium or
 Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down why.

@@ -247,6 +247,9 @@ Kinds written today:
 | `delivery.too_large` | error (warn if optional) | the message is larger than the `SIZE` the target offers; not sent |
 | `target.auth_failed` | error (warn if optional) | the target replied `535` |
 | `target.unreachable` | warn | no reply before the message was sent: connection, TLS or protocol error |
+| `tls.reloaded` | info | a renewed STARTTLS certificate is served |
+| `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
+| `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; once a day |
 | `ui.login`, `ui.login_failed`, `ui.search` | info, warn, info | someone used the UI; the event carries `"actor"` (the token name) and `"text"` (the role, or what was searched by), never a query or an address |
 
 Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.delivered`, `provider.bounced`,

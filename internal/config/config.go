@@ -164,7 +164,7 @@ type Config struct {
 	Senders        *auth.Senders
 	TLSCertificate *tls.Certificate // nil: no STARTTLS on ingress
 	// TLSCertFile and TLSKeyFile name the pair, so it can be reloaded
-	// (S13); empty without STARTTLS.
+	// (I16); empty without STARTTLS.
 	TLSCertFile, TLSKeyFile string
 	AllowInsecureAuth       bool
 	Hostname                string

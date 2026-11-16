@@ -39,6 +39,7 @@ its default is listed in [configuration.md](configuration.md).
 | I13 | At most `runtime.GOMAXPROCS(0)` password checks run at once; a login that finds no slot within 5 s gets `454 4.7.0 Temporary authentication failure, try again later` (not counted as a failure). Cached logins (one HMAC) need no slot. | F |
 | I14 | A connection that has not logged in within 30 s is closed (`421 4.4.2`, the SMTP library's fixed idle reply); the deadline also covers a STARTTLS handshake. No per-IP blocking. | F |
 | I15 | Memory budget `POSTWERK_MAX_INFLIGHT_BYTES` (default 256 MiB): each `DATA` reserves the maximum message size, or the declared `SIZE` if smaller, before reading; budget exhausted → fixed `451 4.3.1`, nothing buffered; released when the mail is stored or refused. | F |
+| I16 | The STARTTLS certificate and key are re-read every 60 s and compared by content (a Kubernetes symlink swap counts). A changed pair is served from the next handshake only if it parses, matches and has not expired; otherwise the old one stays and `tls.reload_failed` (error) is written once per content. Each reload writes `tls.reloaded`; less than 14 days left writes `tls.expiring` once a day. | F |
 
 ## Store
 

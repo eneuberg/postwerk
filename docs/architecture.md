@@ -17,6 +17,7 @@ internal/seal         AES-256-GCM sealing of the stored message, keyed by the ke
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
 internal/store        SQLite: open, migrate, all reads and writes, retention steps; the only package that speaks SQL (S1–S12)
 internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I1–I9)
+internal/tlsreload    TLS certificate from files, re-read every minute, validated before it is served (I16)
 internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop and sinks (A2, A3)
@@ -130,6 +131,9 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
 | `retention.purged` | info | a retention run changed something; text holds counts only (`raw_purged=… raw_expired=… pseudonymized=… records_deleted=… events_deleted=…`) |
 | `store.decrypt_failed` | error | the stored message could not be decrypted (unknown key id, failed authentication); the delivery is `failed`, nothing was sent |
+| `tls.reloaded` | info | a changed certificate and key pair loaded and is served from the next handshake; text names the listener, subject and expiry |
+| `tls.reload_failed` | error | a changed pair did not load (unreadable, no match, expired), also after a second read 2 s later; the old one stays. Once per content |
+| `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; at most once a day |
 | `ui.login` | info | someone logged in to the UI; `actor` is the token name, text the role |
 | `ui.login_failed` | warn | a failed UI login; `actor` only if the name is in the tokens file |
 | `ui.search` | info | a UI search; `actor` is the token name, text the search kind (`id`, `ref`, `message_id`, `address`, `any`), never the query |
