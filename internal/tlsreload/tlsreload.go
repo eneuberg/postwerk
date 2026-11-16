@@ -45,6 +45,9 @@ const (
 const (
 	DefaultInterval      = time.Minute
 	DefaultExpiryWarning = 14 * 24 * time.Hour
+	// DefaultExpiryError: from here on the expiry report is an error, so
+	// it reaches alerting that only takes errors (D51).
+	DefaultExpiryError = 7 * 24 * time.Hour
 	// DefaultSettle is how long a check waits before it reads a changed
 	// pair that failed once a second time. It covers a read between the
 	// certificate file and the key file while they are being replaced.
@@ -84,6 +87,9 @@ type Options struct {
 	// ExpiryWarning: a served certificate that expires within this time is
 	// reported as KindExpiring; 0 means DefaultExpiryWarning.
 	ExpiryWarning time.Duration
+	// ExpiryError: within this time the report is an error instead of a
+	// warning; 0 means DefaultExpiryError.
+	ExpiryError time.Duration
 	// Settle: see DefaultSettle; 0 means DefaultSettle.
 	Settle time.Duration
 	// OnEvent, if set, receives every event; it must not block for long.
@@ -103,6 +109,7 @@ type Reloader struct {
 	failed     [sha256.Size]byte // content of the last pair reported as failed
 	hasFailed  bool
 	lastExpiry time.Time // when the last expiry warning went out
+	lastLevel  Level     // its level
 }
 
 // New loads the pair and returns a Reloader serving it. It fails if the pair
@@ -116,6 +123,9 @@ func New(opts Options) (*Reloader, error) {
 	}
 	if opts.ExpiryWarning <= 0 {
 		opts.ExpiryWarning = DefaultExpiryWarning
+	}
+	if opts.ExpiryError <= 0 {
+		opts.ExpiryError = DefaultExpiryError
 	}
 	if opts.Settle <= 0 {
 		opts.Settle = DefaultSettle
@@ -199,7 +209,7 @@ func (r *Reloader) Check(ctx context.Context) bool {
 	}
 	r.cert.Store(cert)
 	r.digest, r.hasFailed = digest, false
-	r.lastExpiry = time.Time{} // a new certificate gets its own warning
+	r.lastExpiry, r.lastLevel = time.Time{}, "" // a new certificate gets its own warning
 	r.emit(Event{Kind: KindReloaded, Level: Info, Text: fmt.Sprintf(
 		"%s: certificate reloaded (%s)", r.opts.Name, describe(cert))})
 	r.checkExpiry(cert)
@@ -238,8 +248,9 @@ func (r *Reloader) load() (*tls.Certificate, [sha256.Size]byte, error) {
 	return &cert, digest, nil
 }
 
-// checkExpiry warns about a served certificate close to its expiry, at most
-// once per expiryRepeat. r.mu must be held.
+// checkExpiry reports a served certificate close to its expiry, at most
+// once per expiryRepeat, and at once when the report becomes more severe
+// (warning to error). r.mu must be held.
 func (r *Reloader) checkExpiry(cert *tls.Certificate) {
 	if cert == nil || cert.Leaf == nil {
 		return
@@ -249,18 +260,23 @@ func (r *Reloader) checkExpiry(cert *tls.Certificate) {
 	if left >= r.opts.ExpiryWarning {
 		return
 	}
-	if !r.lastExpiry.IsZero() && now.Sub(r.lastExpiry) < expiryRepeat {
+	level := Warn
+	if left < r.opts.ExpiryError {
+		level = Error
+	}
+	escalated := level == Error && r.lastLevel != Error
+	if !r.lastExpiry.IsZero() && now.Sub(r.lastExpiry) < expiryRepeat && !escalated {
 		return
 	}
-	r.lastExpiry = now
+	r.lastExpiry, r.lastLevel = now, level
 	if left <= 0 {
 		r.emit(Event{Kind: KindExpiring, Level: Error, Text: fmt.Sprintf(
 			"%s: the served certificate has expired (%s); clients that verify it cannot connect",
 			r.opts.Name, describe(cert))})
 		return
 	}
-	r.emit(Event{Kind: KindExpiring, Level: Warn, Text: fmt.Sprintf(
-		"%s: the served certificate expires in %s (%s)", r.opts.Name, roundDays(left), describe(cert))})
+	r.emit(Event{Kind: KindExpiring, Level: level, Text: fmt.Sprintf(
+		"%s: the served certificate expires in %s (%s)", r.opts.Name, Remaining(left), describe(cert))})
 }
 
 func (r *Reloader) emit(e Event) {
@@ -295,11 +311,32 @@ func describe(cert *tls.Certificate) string {
 	return strings.Join(parts, ", ")
 }
 
-func roundDays(d time.Duration) string {
-	if d < 24*time.Hour {
-		return d.Round(time.Minute).String()
+// Remaining writes a time left without rounding it up: days and hours from
+// two days on ("9 days 23 hours"), hours below that ("47 hours"), minutes
+// below an hour. Rounded down, so a report never promises more time than
+// there is.
+func Remaining(d time.Duration) string {
+	switch {
+	case d >= 48*time.Hour:
+		days, hours := int(d/(24*time.Hour)), int(d%(24*time.Hour)/time.Hour)
+		if hours == 0 {
+			return fmt.Sprintf("%d days", days)
+		}
+		return fmt.Sprintf("%d days %d %s", days, hours, plural(hours, "hour"))
+	case d >= time.Hour:
+		h := int(d / time.Hour)
+		return fmt.Sprintf("%d %s", h, plural(h, "hour"))
+	default:
+		m := int(d / time.Minute)
+		return fmt.Sprintf("%d %s", m, plural(m, "minute"))
 	}
-	return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 func readFile(name string) ([]byte, error) {

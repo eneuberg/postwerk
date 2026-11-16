@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -270,6 +271,9 @@ func TestExpiryWarning(t *testing.T) {
 	if k := rec.kinds(); len(k) != 1 || k[0] != KindExpiring || rec.last().Level != Warn {
 		t.Fatalf("events at start = %v", k)
 	}
+	if txt := rec.last().Text; !strings.Contains(txt, "expires in 9 days 23 hours") {
+		t.Fatalf("text at start = %q", txt)
+	}
 	r.Check(context.Background())
 	if k := rec.kinds(); len(k) != 1 {
 		t.Fatalf("expiry warning repeated within a day: %v", k)
@@ -294,6 +298,56 @@ func TestExpiryWarning(t *testing.T) {
 	}
 	if k := rec.kinds(); len(k) != n+1 || k[n] != KindReloaded {
 		t.Fatalf("events after the fresh certificate = %v", k[n:])
+	}
+}
+
+// TestExpiryEscalates: below 7 days the report is an error at once, even
+// if a warning went out less than a day ago, so an error-only filter sees
+// it a week ahead (D51).
+func TestExpiryEscalates(t *testing.T) {
+	start := time.Now()
+	c := testutil.NewCertUntil(t, start.Add(7*24*time.Hour+time.Hour))
+	s := newSecretDir(t, c)
+	rec := &recorder{}
+	var now atomic.Int64
+	now.Store(start.UnixNano())
+	r := newReloader(t, s, rec, func(o *Options) { o.Now = func() time.Time { return time.Unix(0, now.Load()) } })
+	if e := rec.last(); len(rec.kinds()) != 1 || e.Level != Warn {
+		t.Fatalf("event at start = %+v", e)
+	}
+	now.Add(int64(30 * time.Minute))
+	r.Check(context.Background())
+	if len(rec.kinds()) != 1 {
+		t.Fatalf("still a warning, repeated within a day: %v", rec.kinds())
+	}
+	now.Add(int64(time.Hour))
+	r.Check(context.Background())
+	if e := rec.last(); len(rec.kinds()) != 2 || e.Level != Error || !strings.Contains(e.Text, "expires in 6 days 23 hours") {
+		t.Fatalf("event below 7 days = %+v (%d events)", e, len(rec.kinds()))
+	}
+	now.Add(int64(time.Hour))
+	r.Check(context.Background())
+	if len(rec.kinds()) != 2 {
+		t.Fatalf("error repeated within a day: %v", rec.kinds())
+	}
+}
+
+func TestRemaining(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{9*24*time.Hour + 23*time.Hour + 59*time.Minute, "9 days 23 hours"},
+		{14 * 24 * time.Hour, "14 days"},
+		{2*24*time.Hour + time.Hour, "2 days 1 hour"},
+		{47*time.Hour + 59*time.Minute, "47 hours"},
+		{time.Hour + 30*time.Minute, "1 hour"},
+		{59 * time.Minute, "59 minutes"},
+		{90 * time.Second, "1 minute"},
+	} {
+		if got := Remaining(c.d); got != c.want {
+			t.Errorf("Remaining(%s) = %q, want %q", c.d, got, c.want)
+		}
 	}
 }
 
