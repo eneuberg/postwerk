@@ -5,13 +5,13 @@
   {{if $a.Self}}<span class="tag">you</span>{{end}}
   {{if $a.FromFile}}<span class="tag tag-file">tokens file</span>{{end}}
 </div>
-<p><a href="/accounts">← All accounts</a></p>
+<p><a href="/settings">← Settings</a></p>
 
 {{if $a.FromFile}}
 <section class="card narrow">
   <h2>Kept in the tokens file</h2>
   <p>This account is a line in <span class="mono">POSTWERK_UI_TOKENS_FILE</span>: start and break-glass access. It cannot be changed here. Make a new token with <span class="mono">postwerk gen-token</span>, or remove the line once the accounts in the database work, and restart Postwerk.</p>
-  {{if $a.Self}}<p class="muted">To use a password of your own, create a database account under another name on the accounts page and log in with it.</p>{{end}}
+  {{if $a.Self}}<p class="muted">To use a password of your own, create a database account under another name in the settings and log in with it.</p>{{end}}
 </section>
 {{else}}
 <section class="card">
@@ -26,7 +26,7 @@
   <h2 id="pw-h">{{if $a.Self}}Change your password{{else}}Set a new password{{end}}</h2>
   <p class="muted">{{if $a.Self}}All your sessions end, this one too; you log in again with the new password.{{else}}All sessions of {{$a.Name}} end at once.{{end}}</p>
   {{with .Data.PasswordError}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
-  <form method="post" action="/accounts/{{$a.Name}}/password" autocomplete="off">
+  <form method="post" action="/settings/accounts/{{$a.Name}}/password" autocomplete="off">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label for="password">New password</label>
     <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{.Data.Min}}" maxlength="{{.Data.Max}}" required aria-describedby="pw-rules">
@@ -43,7 +43,7 @@
   <h2 id="del-h">Delete {{if $a.Self}}your account{{else}}this account{{end}}</h2>
   <p class="muted">The account and all its sessions end at once. The last account in the database cannot be deleted.</p>
   {{with .Data.DeleteError}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
-  <form method="post" action="/accounts/{{$a.Name}}/delete" autocomplete="off">
+  <form method="post" action="/settings/accounts/{{$a.Name}}/delete" autocomplete="off">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label for="current-del">Your current password</label>
     <input id="current-del" name="current" type="password" autocomplete="current-password" maxlength="1024" required>

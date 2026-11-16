@@ -12,15 +12,36 @@ import (
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
-// Account pages (U17–U21). Every account is an admin; every change needs
-// the acting account's own current password, ends the sessions of the
-// account it changes, and is written together with its event.
-func (u *UI) accountRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /accounts", u.authed(u.accounts))
-	mux.HandleFunc("POST /accounts", u.authed(u.createAccount))
-	mux.HandleFunc("GET /accounts/{name}", u.authed(u.account))
-	mux.HandleFunc("POST /accounts/{name}/password", u.authed(u.setPassword))
-	mux.HandleFunc("POST /accounts/{name}/delete", u.authed(u.deleteAccount))
+// The settings pages hold the accounts (U17–U21) and, later, other
+// settings sections. Every account is an admin; every change needs the
+// acting account's own current password, ends the sessions of the account
+// it changes, and is written together with its event.
+func (u *UI) settingsRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /settings", u.authed(u.settings))
+	mux.HandleFunc("GET /settings/accounts", u.authed(redirectTo("/settings")))
+	mux.HandleFunc("POST /settings/accounts", u.authed(u.createAccount))
+	mux.HandleFunc("GET /settings/accounts/{name}", u.authed(u.account))
+	mux.HandleFunc("POST /settings/accounts/{name}/password", u.authed(u.setPassword))
+	mux.HandleFunc("POST /settings/accounts/{name}/delete", u.authed(u.deleteAccount))
+	// The old addresses of the account pages, for bookmarks. Only a valid
+	// name is carried over; the query never is.
+	mux.HandleFunc("GET /accounts", u.authed(redirectTo("/settings")))
+	mux.HandleFunc("GET /accounts/{name}", u.authed(func(w http.ResponseWriter, r *http.Request, _ session) {
+		name := r.PathValue("name")
+		if !auth.ValidName(name) {
+			u.fail(w, r, http.StatusNotFound, "There is no account with this name.")
+			return
+		}
+		// A valid name needs no escaping.
+		http.Redirect(w, r, "/settings/accounts/"+name, http.StatusMovedPermanently)
+	}))
+}
+
+// redirectTo sends a GET to a fixed path, without the request's query.
+func redirectTo(path string) func(http.ResponseWriter, *http.Request, session) {
+	return func(w http.ResponseWriter, r *http.Request, _ session) {
+		http.Redirect(w, r, path, http.StatusMovedPermanently)
+	}
 }
 
 type accountRow struct {
@@ -36,7 +57,9 @@ type accountRow struct {
 	UpdatedBy string
 }
 
-type accountsView struct {
+type settingsView struct {
+	// Me is the acting account's own row.
+	Me       accountRow
 	Accounts []accountRow
 	Name     string // the name typed into the create form
 	Error    string
@@ -72,21 +95,29 @@ func (u *UI) accountRows(ctx context.Context, self string) ([]accountRow, error)
 	return rows, nil
 }
 
-func (u *UI) accounts(w http.ResponseWriter, r *http.Request, sess session) {
-	u.renderAccounts(w, r, sess, http.StatusOK, "", "")
+func (u *UI) settings(w http.ResponseWriter, r *http.Request, sess session) {
+	u.renderSettings(w, r, sess, http.StatusOK, "", "")
 }
 
-func (u *UI) renderAccounts(w http.ResponseWriter, r *http.Request, sess session, status int, name, msg string) {
+// renderSettings shows the settings page; name and msg belong to the form
+// for a new account.
+func (u *UI) renderSettings(w http.ResponseWriter, r *http.Request, sess session, status int, name, msg string) {
 	rows, err := u.accountRows(r.Context(), sess.name)
 	if err != nil {
-		u.queryFailed(w, r, "accounts", err)
+		u.queryFailed(w, r, "settings", err)
 		return
 	}
-	v := pageView(sess, "accounts", "Accounts", accountsView{
+	sv := settingsView{
+		Me:       accountRow{Name: sess.name, FromFile: u.fileAccount(sess.name)},
 		Accounts: rows, Name: name, Error: msg, Min: auth.MinPasswordChars, Max: auth.MaxPasswordChars,
-	})
+	}
+	// The file row comes first for a shadowed name.
+	if i := slices.IndexFunc(rows, func(a accountRow) bool { return a.Self }); i >= 0 {
+		sv.Me = rows[i]
+	}
+	v := pageView(sess, "settings", "Settings", sv)
 	v.Flash = u.sessions.takeFlash(sess.id)
-	u.render(w, r, status, "accounts", v)
+	u.render(w, r, status, "settings", v)
 }
 
 // accountFor returns the row of the account in the path, or false after
@@ -118,7 +149,7 @@ func (u *UI) account(w http.ResponseWriter, r *http.Request, sess session) {
 
 func (u *UI) renderAccount(w http.ResponseWriter, r *http.Request, sess session, status int, v accountView) {
 	v.Min, v.Max = auth.MinPasswordChars, auth.MaxPasswordChars
-	pv := pageView(sess, "accounts", "Account "+v.Account.Name, v)
+	pv := pageView(sess, "settings", "Account "+v.Account.Name, v)
 	pv.Flash = u.sessions.takeFlash(sess.id)
 	u.render(w, r, status, "account", pv)
 }
@@ -128,19 +159,19 @@ func (u *UI) createAccount(w http.ResponseWriter, r *http.Request, sess session)
 	name := strings.TrimSpace(r.PostForm.Get("name"))
 	switch {
 	case !auth.ValidName(name):
-		u.renderAccounts(w, r, sess, http.StatusBadRequest, name,
+		u.renderSettings(w, r, sess, http.StatusBadRequest, name,
 			"Names have 1 to 64 characters: lower-case letters, digits, '.', '_' and '-', starting with a letter or digit.")
 		return
 	case u.fileAccount(name):
-		u.renderAccounts(w, r, sess, http.StatusBadRequest, name, "This name is in the tokens file. Choose another name.")
+		u.renderSettings(w, r, sess, http.StatusBadRequest, name, "This name is in the tokens file. Choose another name.")
 		return
 	}
 	if msg := newPasswordProblem(name, r); msg != "" {
-		u.renderAccounts(w, r, sess, http.StatusBadRequest, name, msg)
+		u.renderSettings(w, r, sess, http.StatusBadRequest, name, msg)
 		return
 	}
 	if status, msg := u.confirm(r, sess); msg != "" {
-		u.renderAccounts(w, r, sess, status, name, msg)
+		u.renderSettings(w, r, sess, status, name, msg)
 		return
 	}
 	hash, err := u.hashPassword(r)
@@ -149,14 +180,14 @@ func (u *UI) createAccount(w http.ResponseWriter, r *http.Request, sess session)
 	}
 	switch {
 	case errors.Is(err, store.ErrAccountExists):
-		u.renderAccounts(w, r, sess, http.StatusConflict, name, "An account with this name exists.")
+		u.renderSettings(w, r, sess, http.StatusConflict, name, "An account with this name exists.")
 		return
 	case err != nil:
 		u.changeFailed(w, r, err)
 		return
 	}
 	u.sessions.setFlash(sess.id, "Account "+name+" created.")
-	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 // setPassword sets a new password for a database account, the acting
@@ -194,7 +225,7 @@ func (u *UI) setPassword(w http.ResponseWriter, r *http.Request, sess session) {
 		return
 	}
 	u.sessions.setFlash(sess.id, "New password for "+a.Name+" set. Its sessions were ended.")
-	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 // deleteAccount deletes a database account; never the last one (U20).
@@ -229,7 +260,7 @@ func (u *UI) deleteAccount(w http.ResponseWriter, r *http.Request, sess session)
 		return
 	}
 	u.sessions.setFlash(sess.id, "Account "+a.Name+" deleted. Its sessions were ended.")
-	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 // newPasswordProblem checks the new password and its repetition (U19).

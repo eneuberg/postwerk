@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -36,15 +37,15 @@ func TestAccountLifecycle(t *testing.T) {
 	h := newHarness(t)
 	ops := h.loggedIn("ops", adminToken)
 
-	list := ops.get("/accounts")
-	for _, want := range []string{">ops<", ">tokens file<", `href="/accounts/viewer"`, ">database<", "by ops"} {
+	list := ops.get("/settings")
+	for _, want := range []string{">ops<", ">tokens file<", `href="/settings/accounts/viewer"`, ">database<", "by ops"} {
 		if !strings.Contains(list.body, want) {
 			t.Errorf("account list lacks %q", want)
 		}
 	}
 
 	create := func(b *browser, name, pw, again, current string) response {
-		return b.post("/accounts", "/accounts", url.Values{"name": {name}, "password": {pw}, "confirm": {again}, "current": {current}})
+		return b.post("/settings", "/settings/accounts", url.Values{"name": {name}, "password": {pw}, "confirm": {again}, "current": {current}})
 	}
 	for _, c := range []struct {
 		name, pw, again, current string
@@ -69,12 +70,12 @@ func TestAccountLifecycle(t *testing.T) {
 		}
 	}
 	r := create(ops, "alice", newPassword, newPassword, adminToken)
-	if r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/accounts" {
+	if r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/settings" {
 		t.Fatalf("create: %d %s", r.StatusCode, r.body)
 	}
-	if page := ops.get("/accounts"); !strings.Contains(page.body, "Account alice created.") {
+	if page := ops.get("/settings"); !strings.Contains(page.body, "Account alice created.") {
 		t.Error("no notice after create")
-	} else if again := ops.get("/accounts"); strings.Contains(again.body, "Account alice created.") {
+	} else if again := ops.get("/settings"); strings.Contains(again.body, "Account alice created.") {
 		t.Error("the notice stays")
 	}
 
@@ -84,7 +85,7 @@ func TestAccountLifecycle(t *testing.T) {
 	alice2 := h.loggedIn("alice", newPassword)
 	viewer := h.loggedIn("viewer", viewerPassword)
 	setPw := func(b *browser, name, pw, current string) response {
-		return b.post("/accounts/"+name, "/accounts/"+name+"/password",
+		return b.post("/settings/accounts/"+name, "/settings/accounts/"+name+"/password",
 			url.Values{"password": {pw}, "confirm": {pw}, "current": {current}})
 	}
 	if r := setPw(ops, "alice", "another new password", "wrong"); r.StatusCode != 403 {
@@ -126,25 +127,25 @@ func TestAccountLifecycle(t *testing.T) {
 	if r := setPw(alice, "ops", newPassword, "alice's own password!"); r.StatusCode != 400 || !strings.Contains(r.body, "tokens file") {
 		t.Fatalf("set password of a file account: %d", r.StatusCode)
 	}
-	if r := alice.post("/accounts/ops", "/accounts/ops/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != 400 {
+	if r := alice.post("/settings/accounts/ops", "/settings/accounts/ops/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != 400 {
 		t.Fatalf("delete a file account: %d", r.StatusCode)
 	}
-	if r := alice.get("/accounts/nobody"); r.StatusCode != 404 {
+	if r := alice.get("/settings/accounts/nobody"); r.StatusCode != 404 {
 		t.Fatalf("unknown account page: %d", r.StatusCode)
 	}
 
 	// Delete viewer: its session ends.
-	if r := alice.post("/accounts/viewer", "/accounts/viewer/delete", url.Values{"current": {"wrong"}}); r.StatusCode != 403 {
+	if r := alice.post("/settings/accounts/viewer", "/settings/accounts/viewer/delete", url.Values{"current": {"wrong"}}); r.StatusCode != 403 {
 		t.Fatalf("delete with a wrong confirmation: %d", r.StatusCode)
 	}
-	if r := alice.post("/accounts/viewer", "/accounts/viewer/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != http.StatusSeeOther {
+	if r := alice.post("/settings/accounts/viewer", "/settings/accounts/viewer/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete: %d %s", r.StatusCode, r.body)
 	}
 	if r := viewer.get("/"); r.StatusCode != http.StatusSeeOther {
 		t.Fatal("deleted account still logged in")
 	}
 	// alice is the last account in the database.
-	if r := alice.post("/accounts/alice", "/accounts/alice/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != http.StatusConflict ||
+	if r := alice.post("/settings/accounts/alice", "/settings/accounts/alice/delete", url.Values{"current": {"alice's own password!"}}); r.StatusCode != http.StatusConflict ||
 		!strings.Contains(r.body, "last account") {
 		t.Fatalf("delete the last account: %d", r.StatusCode)
 	}
@@ -192,7 +193,7 @@ func TestAccountLifecycle(t *testing.T) {
 func TestAccountChangesNeedCSRF(t *testing.T) {
 	h := newHarness(t)
 	ops := h.loggedIn("ops", adminToken)
-	for _, path := range []string{"/accounts", "/accounts/viewer/password", "/accounts/viewer/delete"} {
+	for _, path := range []string{"/settings/accounts", "/settings/accounts/viewer/password", "/settings/accounts/viewer/delete"} {
 		form := url.Values{"name": {"mallory"}, "password": {newPassword}, "confirm": {newPassword}, "current": {adminToken}}
 		if r := ops.do("POST", path, form); r.StatusCode != 403 {
 			t.Errorf("%s without csrf: %d", path, r.StatusCode)
@@ -201,7 +202,7 @@ func TestAccountChangesNeedCSRF(t *testing.T) {
 		if r := ops.do("POST", path, form); r.StatusCode != 403 {
 			t.Errorf("%s with a wrong csrf: %d", path, r.StatusCode)
 		}
-		if r := ops.get(path + "?name=mallory"); path != "/accounts" && r.StatusCode != http.StatusMethodNotAllowed {
+		if r := ops.get(path + "?name=mallory"); path != "/settings/accounts" && r.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s: %d", path, r.StatusCode)
 		}
 		if r := h.browser().do("POST", path, form); r.StatusCode != http.StatusSeeOther {
@@ -213,6 +214,69 @@ func TestAccountChangesNeedCSRF(t *testing.T) {
 	}
 	if h.ui.checks.Load() != 1 { // the login only
 		t.Fatalf("%d password checks", h.ui.checks.Load())
+	}
+}
+
+// The accounts are under Settings; the old addresses send the browser
+// there, without the query, and the old forms are gone.
+func TestSettingsPages(t *testing.T) {
+	h := newHarness(t)
+	ops := h.loggedIn("ops", adminToken)
+	viewer := h.loggedIn("viewer", viewerPassword)
+
+	page := viewer.get("/settings")
+	nav := regexp.MustCompile(`(?s)<nav aria-label="Main">(.*?)</nav>`).FindStringSubmatch(page.body)
+	if page.StatusCode != 200 || nav == nil {
+		t.Fatalf("settings: %d", page.StatusCode)
+	}
+	links := regexp.MustCompile(`>([A-Za-z]+)</a>`).FindAllStringSubmatch(nav[1], -1)
+	var names []string
+	for _, l := range links {
+		names = append(names, l[1])
+	}
+	if !slices.Equal(names, []string{"Overview", "Mails", "Settings"}) {
+		t.Errorf("navigation: %v", names)
+	}
+	for _, want := range []string{`href="/settings" aria-current="page"`, "<h1>Settings</h1>", "Your account",
+		`href="/settings/accounts/viewer">Change your password`, `action="/settings/accounts"`} {
+		if !strings.Contains(page.body, want) {
+			t.Errorf("settings page lacks %q", want)
+		}
+	}
+	if p := ops.get("/settings").body; strings.Contains(p, "Change your password") || !strings.Contains(p, "cannot be changed here") {
+		t.Error("the settings page offers a password change for a tokens file account")
+	}
+	if p := viewer.get("/settings/accounts/viewer").body; !strings.Contains(p, `aria-current="page">Settings`) ||
+		!strings.Contains(p, `action="/settings/accounts/viewer/password"`) || !strings.Contains(p, `href="/settings">`) {
+		t.Error("the account page is not under Settings")
+	}
+
+	for old, want := range map[string]string{
+		"/accounts":                    "/settings",
+		"/accounts?name=x":             "/settings",
+		"/accounts/viewer":             "/settings/accounts/viewer",
+		"/accounts/viewer?x=" + canary: "/settings/accounts/viewer",
+		"/settings/accounts":           "/settings",
+	} {
+		if r := ops.get(old); r.StatusCode != http.StatusMovedPermanently || r.Header.Get("Location") != want {
+			t.Errorf("GET %s: %d %q", old, r.StatusCode, r.Header.Get("Location"))
+		}
+	}
+	if r := ops.get("/accounts/Not%20A%20Name"); r.StatusCode != 404 {
+		t.Errorf("old address with a bad name: %d", r.StatusCode)
+	}
+	if r := h.browser().get("/accounts"); r.Header.Get("Location") != "/login" {
+		t.Errorf("old address without a session: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	token := csrf(t, page.body)
+	for _, path := range []string{"/accounts", "/accounts/viewer/password", "/accounts/viewer/delete"} {
+		form := url.Values{"csrf": {token}, "name": {"mallory"}, "password": {newPassword}, "confirm": {newPassword}, "current": {viewerPassword}}
+		if r := viewer.do("POST", path, form); r.StatusCode != http.StatusMethodNotAllowed && r.StatusCode != http.StatusNotFound {
+			t.Errorf("POST %s: %d", path, r.StatusCode)
+		}
+	}
+	if n, _ := h.st.CountUIAccounts(context.Background()); n != 1 {
+		t.Fatalf("%d accounts", n)
 	}
 }
 

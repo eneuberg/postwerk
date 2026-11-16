@@ -96,8 +96,8 @@ func mailLinks(page string) []string {
 
 func (b *browser) search(by, q string) response {
 	b.h.t.Helper()
-	form := b.get("/search")
-	return b.do("POST", "/search", url.Values{"csrf": {csrf(b.h.t, form.body)}, "by": {by}, "q": {q}})
+	form := b.get("/mails")
+	return b.do("POST", "/mails", url.Values{"csrf": {csrf(b.h.t, form.body)}, "by": {by}, "q": {q}})
 }
 
 // No page ever shows message content; every account sees addresses in
@@ -121,9 +121,9 @@ func TestPages(t *testing.T) {
 			"filtered": c.b.get("/mails?state=partial&target=mailjet"),
 			"detail":   c.b.get("/mails/pw_01"),
 			"queued":   c.b.get("/mails/pw_02"),
-			"search":   c.b.get("/search"),
 			"results":  c.b.search("any", "order-pw_01"),
-			"accounts": c.b.get("/accounts"),
+			"settings": c.b.get("/settings"),
+			"account":  c.b.get("/settings/accounts/viewer"),
 		}
 		for name, r := range pages {
 			if r.StatusCode != 200 {
@@ -160,7 +160,7 @@ func TestPages(t *testing.T) {
 			t.Errorf("search by ref: %v", got)
 		}
 		ov := pages["overview"].body
-		for _, want := range []string{">mailjet<", ">capture<", "Recent problems", "/mails/pw_01", "/mails/pw_03", `href="/accounts"`} {
+		for _, want := range []string{">mailjet<", ">capture<", "Recent problems", "/mails/pw_01", "/mails/pw_03", `href="/settings"`} {
 			if !strings.Contains(ov, want) {
 				t.Errorf("overview lacks %q", want)
 			}
@@ -227,6 +227,9 @@ func TestUISearchCanaryLeak(t *testing.T) {
 		}
 		if ref := r.Header.Get("Location"); ref != "" {
 			t.Errorf("%s: search redirected to %s", c.comment, ref)
+		}
+		if !strings.Contains(r.body, "Results for your search") || !strings.Contains(r.body, `href="/mails">← Back to all mails`) {
+			t.Errorf("%s: the results page lacks its header or the way back", c.comment)
 		}
 	}
 	if d := admin.get("/mails/pw_01").body; !strings.Contains(d, canary) {
@@ -393,26 +396,34 @@ func TestMailNotFound(t *testing.T) {
 func TestSearchChecks(t *testing.T) {
 	h := newHarness(t, func(o *Options) { o.SearchesPerMinute = 3 })
 	b := h.loggedIn("ops", adminToken)
-	token := csrf(t, b.get("/search").body)
+	token := csrf(t, b.get("/mails").body)
 
-	if r := b.do("POST", "/search", url.Values{"by": {"address"}, "q": {canary}}); r.StatusCode != 403 {
+	if r := b.do("POST", "/mails", url.Values{"by": {"address"}, "q": {canary}}); r.StatusCode != 403 {
 		t.Fatalf("search without csrf: %d", r.StatusCode)
 	}
-	if r := b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"subject"}, "q": {"x"}}); r.StatusCode != 400 {
+	if r := b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"subject"}, "q": {"x"}}); r.StatusCode != 400 {
 		t.Fatalf("unknown kind: %d", r.StatusCode)
 	}
-	if r := b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"  "}}); r.StatusCode != 400 ||
+	if r := b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"any"}, "q": {"  "}}); r.StatusCode != 400 ||
 		!strings.Contains(r.body, "Enter something") {
 		t.Fatalf("empty search: %d", r.StatusCode)
 	}
-	// The form posts; there is no GET search with a query.
-	if r := b.get("/search?q=" + url.QueryEscape(canary)); r.StatusCode != 200 || strings.Contains(r.body, canary) ||
-		!strings.Contains(r.body, `method="post" action="/search"`) {
-		t.Fatalf("GET search: %d", r.StatusCode)
+	// The form posts; there is no GET search with a query. The old search
+	// page sends the browser to the mails page and drops the query.
+	if r := b.get("/search?q=" + url.QueryEscape(canary)); r.StatusCode != http.StatusMovedPermanently ||
+		r.Header.Get("Location") != "/mails" {
+		t.Fatalf("GET /search: %d %q", r.StatusCode, r.Header.Get("Location"))
 	}
-	b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"x"}})
-	b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"y"}})
-	if r := b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"z"}}); r.StatusCode != http.StatusTooManyRequests {
+	if r := b.get("/mails?q=" + url.QueryEscape(canary)); r.StatusCode != 200 || strings.Contains(r.body, canary) ||
+		!strings.Contains(r.body, `method="post" action="/mails"`) || strings.Contains(r.body, "Results for your search") {
+		t.Fatalf("GET mails with a query: %d", r.StatusCode)
+	}
+	if r := b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"x"}}); r.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /search: %d", r.StatusCode)
+	}
+	b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"any"}, "q": {"x"}})
+	b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"any"}, "q": {"y"}})
+	if r := b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"any"}, "q": {"z"}}); r.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("over the limit: %d", r.StatusCode)
 	}
 	// The limit is per token name, not per session.
@@ -423,7 +434,7 @@ func TestSearchChecks(t *testing.T) {
 		t.Fatalf("another name: %d", r.StatusCode)
 	}
 	h.clock.Add(time.Minute)
-	if r := b.do("POST", "/search", url.Values{"csrf": {token}, "by": {"any"}, "q": {"x"}}); r.StatusCode != 200 {
+	if r := b.do("POST", "/mails", url.Values{"csrf": {token}, "by": {"any"}, "q": {"x"}}); r.StatusCode != 200 {
 		t.Fatalf("after a minute: %d", r.StatusCode)
 	}
 }

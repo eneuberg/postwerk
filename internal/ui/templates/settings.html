@@ -1,0 +1,61 @@
+{{define "content"}}
+{{$me := .Data.Me}}
+<div class="page-head">
+  <h1>Settings</h1>
+</div>
+
+<section class="card narrow" aria-labelledby="me-h">
+  <h2 id="me-h">Your account</h2>
+  {{if $me.FromFile}}
+  <p>You are logged in as <strong>{{$me.Name}}</strong> <span class="tag tag-file">tokens file</span></p>
+  <p class="muted">This account is a line in <span class="mono">POSTWERK_UI_TOKENS_FILE</span> and cannot be changed here. For a password of your own, create a database account below under another name and log in with it.</p>
+  {{else}}
+  <p>You are logged in as <strong>{{$me.Name}}</strong>, an account in the database.</p>
+  <p><a href="/settings/accounts/{{$me.Name}}">Change your password</a></p>
+  {{end}}
+</section>
+
+<section class="settings-section" aria-labelledby="accounts-h">
+  <div class="section-head">
+    <h2 id="accounts-h">Accounts</h2>
+    <p class="muted">Every account sees all pages and addresses in full, and may manage accounts.</p>
+  </div>
+  <div class="card">
+    <div class="table-wrap">
+    <table class="accounts">
+      <thead><tr><th scope="col">Name</th><th scope="col">Kept in</th><th scope="col">Created</th><th scope="col">Last change</th></tr></thead>
+      <tbody>
+      {{range .Data.Accounts}}
+      <tr>
+        <td><a href="/settings/accounts/{{.Name}}">{{.Name}}</a>{{if .Self}} <span class="tag">you</span>{{end}}</td>
+        <td>{{if .FromFile}}<span class="tag tag-file" title="POSTWERK_UI_TOKENS_FILE: start and break-glass access, not editable here">tokens file</span>{{else}}database{{if .Shadowed}} <span class="tag tag-warn" title="The tokens file has the same name and wins at login">shadowed by the file</span>{{end}}{{end}}</td>
+        <td class="nowrap">{{if .FromFile}}<span class="muted">—</span>{{else}}{{when .CreatedAt}} <span class="muted">by {{.CreatedBy}}</span>{{end}}</td>
+        <td class="nowrap">{{if .FromFile}}<span class="muted">—</span>{{else}}{{when .UpdatedAt}} <span class="muted">by {{.UpdatedBy}}</span>{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="empty">No accounts.</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card narrow">
+    <h3 id="create-h">New account</h3>
+    {{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+    <form method="post" action="/settings/accounts" autocomplete="off" aria-labelledby="create-h">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" value="{{.Data.Name}}" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" pattern="[a-z0-9][a-z0-9._\-]{0,63}" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{.Data.Min}}" maxlength="{{.Data.Max}}" required aria-describedby="pw-rules">
+      <label for="confirm">Repeat the password</label>
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{.Data.Min}}" maxlength="{{.Data.Max}}" required>
+      <p id="pw-rules" class="muted small">{{.Data.Min}} to {{.Data.Max}} characters, any characters, not the name. A passphrase of a few words works well. Give it to the person through a safe channel; they can change it on their account page.</p>
+      <label for="current">Your current password</label>
+      <input id="current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit">Create account</button></div>
+    </form>
+  </div>
+</section>
+{{end}}

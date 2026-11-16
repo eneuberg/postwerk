@@ -6,7 +6,7 @@
 // page needs a session from a login; every POST needs the session's CSRF
 // token and must not come from another site. There is one kind of account,
 // admin: from the tokens file (start and break-glass access) or from the
-// database (managed on the accounts pages). The pages read through
+// database (managed on the settings pages). The pages read through
 // internal/query; nothing here touches message content. Searches are POSTs,
 // and neither the query, an address nor a password is ever logged or
 // written to an event.
@@ -175,7 +175,7 @@ func New(opts Options) (*UI, error) {
 	mux.HandleFunc("POST /login", u.login)
 	mux.HandleFunc("POST /logout", u.authed(u.logout))
 	u.pageRoutes(mux)
-	u.accountRoutes(mux)
+	u.settingsRoutes(mux)
 
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -18,11 +18,10 @@
     <nav aria-label="Main">
       <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
       <a href="/mails"{{if eq .Nav "mails"}} aria-current="page"{{end}}>Mails</a>
-      <a href="/search"{{if eq .Nav "search"}} aria-current="page"{{end}}>Search</a>
-      <a href="/accounts"{{if eq .Nav "accounts"}} aria-current="page"{{end}}>Accounts</a>
+      <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
     </nav>
     <form class="who" method="post" action="/logout">
-      <span><a class="who-name" href="/accounts/{{.User}}" title="Your account">{{.User}}</a>{{if .FileUser}} <span class="role" title="This account is in the tokens file">file</span>{{end}}</span>
+      <span><a class="who-name" href="/settings/accounts/{{.User}}" title="Your account">{{.User}}</a>{{if .FileUser}} <span class="role" title="This account is in the tokens file">file</span>{{end}}</span>
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="link">Log out</button>
     </form>

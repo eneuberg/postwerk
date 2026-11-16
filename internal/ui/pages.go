@@ -16,9 +16,11 @@ import (
 func (u *UI) pageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", u.authed(u.overview))
 	mux.HandleFunc("GET /mails", u.authed(u.mails))
+	// The search form is on the mails page and posts to it.
+	mux.HandleFunc("POST /mails", u.authed(u.search))
 	mux.HandleFunc("GET /mails/{id}", u.authed(u.mail))
-	mux.HandleFunc("GET /search", u.authed(u.searchForm))
-	mux.HandleFunc("POST /search", u.authed(u.search))
+	// The old search page; its query, if any, is dropped.
+	mux.HandleFunc("GET /search", u.authed(redirectTo("/mails")))
 }
 
 // overview shows every target and the recent problems (U10).
@@ -32,6 +34,7 @@ func (u *UI) overview(w http.ResponseWriter, r *http.Request, sess session) {
 }
 
 type mailsView struct {
+	Search  searchView
 	List    query.ListPage
 	States  []store.Status
 	Targets []string
@@ -47,6 +50,7 @@ type mailsView struct {
 func (u *UI) mails(w http.ResponseWriter, r *http.Request, sess session) {
 	q := r.URL.Query()
 	v := mailsView{
+		Search: newSearchView(query.ByAny),
 		States: query.States, Targets: u.opts.Query.Targets(),
 		State: q.Get("state"), Target: q.Get("target"), From: q.Get("from"), To: q.Get("to"),
 	}
@@ -165,32 +169,41 @@ var searchKinds = []searchKind{
 	{query.ByAddress, "Recipient or sender address"},
 }
 
+// searchView is the search form at the top of the mails page and, after a
+// search, its outcome in place of the list.
 type searchView struct {
-	Kinds    []searchKind
-	By       query.SearchBy
-	Searched bool
-	Results  []store.MailSummary
-	Error    string
-	Max      int
+	Kinds []searchKind
+	By    query.SearchBy
+	// Done: the page shows the outcome of a search, Results or Error,
+	// instead of the list.
+	Done    bool
+	Results []store.MailSummary
+	Error   string
+	Max     int
 }
 
-func (u *UI) searchForm(w http.ResponseWriter, r *http.Request, sess session) {
-	u.render(w, r, http.StatusOK, "search", pageView(sess, "search", "Search", searchView{Kinds: searchKinds, By: query.ByAny}))
+func newSearchView(by query.SearchBy) searchView {
+	return searchView{Kinds: searchKinds, By: by, Max: query.MaxResults}
 }
 
-// search runs a search from a POST body (U11). The query is never logged,
-// never written to an event and never echoed back into the page; the event
-// names only who searched and by what.
+// search runs a search from a POST body (U11) and shows the mails page
+// with the results in place of the list. The query is never logged, never
+// written to an event and never echoed back into the page; the event names
+// only who searched and by what.
 func (u *UI) search(w http.ResponseWriter, r *http.Request, sess session) {
-	v := searchView{Kinds: searchKinds, By: query.SearchBy(r.PostForm.Get("by")), Max: query.MaxResults}
+	v := newSearchView(query.SearchBy(r.PostForm.Get("by")))
+	v.Done = true
+	show := func(status int) {
+		u.render(w, r, status, "mails", pageView(sess, "mails", "Search results", mailsView{Search: v}))
+	}
 	if !query.ValidSearchBy(v.By) {
 		v.By, v.Error = query.ByAny, "Choose what to search by."
-		u.render(w, r, http.StatusBadRequest, "search", pageView(sess, "search", "Search", v))
+		show(http.StatusBadRequest)
 		return
 	}
 	if !u.searches.allow(sess.name) {
 		v.Error = "Too many searches. Please wait a minute."
-		u.render(w, r, http.StatusTooManyRequests, "search", pageView(sess, "search", "Search", v))
+		show(http.StatusTooManyRequests)
 		return
 	}
 	if err := u.event(r.Context(), store.KindUISearch, store.Info, sess.name, string(v.By)); err != nil {
@@ -211,11 +224,11 @@ func (u *UI) search(w http.ResponseWriter, r *http.Request, sess session) {
 		return
 	}
 	if v.Error != "" {
-		u.render(w, r, http.StatusBadRequest, "search", pageView(sess, "search", "Search", v))
+		show(http.StatusBadRequest)
 		return
 	}
-	v.Searched, v.Results = true, results
-	u.render(w, r, http.StatusOK, "search", pageView(sess, "search", "Search", v))
+	v.Results = results
+	show(http.StatusOK)
 }
 
 func (u *UI) queryFailed(w http.ResponseWriter, r *http.Request, page string, err error) {

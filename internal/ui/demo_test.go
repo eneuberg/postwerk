@@ -88,11 +88,11 @@ func TestDemo(t *testing.T) {
 			if _, err := r.Cookie(sessionCookie); err != nil && r.URL.Path != "/login" {
 				r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess.id})
 			}
-			// A screenshot tool cannot post a form: GET /search?demo_by=…&demo_q=…
-			// becomes the POST the form would send.
-			if q := r.URL.Query(); r.URL.Path == "/search" && q.Has("demo_q") {
+			// A screenshot tool cannot post a form: GET /mails?demo_by=…&demo_q=…
+			// becomes the search POST the form would send.
+			if q := r.URL.Query(); r.URL.Path == "/mails" && q.Has("demo_q") {
 				form := url.Values{"csrf": {sess.csrf}, "by": {q.Get("demo_by")}, "q": {q.Get("demo_q")}}
-				r2 := httptest.NewRequest("POST", "/search", strings.NewReader(form.Encode()))
+				r2 := httptest.NewRequest("POST", "/mails", strings.NewReader(form.Encode()))
 				r2.Host = r.Host
 				r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 				r2.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess.id})
