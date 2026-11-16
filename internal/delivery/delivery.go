@@ -226,6 +226,9 @@ func (w *worker) run(ctx context.Context) {
 		w.log.Error("recovery of interrupted deliveries failed, will retry", "err", err)
 		w.sleep(ctx, w.opts.PollInterval)
 	}
+	// The first contact with the target does not wait for the backoff of
+	// mails queued before the start (D45).
+	w.resume(ctx, w.opts.Now())
 	for ctx.Err() == nil {
 		if down, _, _ := w.health.get(); down {
 			w.whileDown(ctx)

@@ -315,6 +315,8 @@ type harnessOpts struct {
 	// workerSealer, if set, replaces sealer for the workers only.
 	workerSealer *seal.Sealer
 	store        store.Options
+	// backoff replaces the 20 ms between attempts.
+	backoff time.Duration
 }
 
 // newSealer returns a Sealer with one new key.
@@ -374,7 +376,12 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 
 	opts := Options{
 		Store: st, Sealer: ho.workerSealer, Targets: targets, Logger: logger, HeloName: "postwerk.test",
-		Backoff:       func(int) time.Duration { return 20 * time.Millisecond },
+		Backoff: func(int) time.Duration {
+			if ho.backoff > 0 {
+				return ho.backoff
+			}
+			return 20 * time.Millisecond
+		},
 		PollInterval:  50 * time.Millisecond,
 		ProbeInterval: 20 * time.Millisecond, ProbeMaxInterval: 80 * time.Millisecond,
 		DialTimeout: 2 * time.Second, CommandTimeout: 2 * time.Second, SubmissionTimeout: 3 * time.Second,
@@ -1202,4 +1209,37 @@ func TestTargetCAFile(t *testing.T) {
 	if len(g.got()) != 0 {
 		t.Fatal("sent to a target whose certificate the CA file does not vouch for")
 	}
+}
+
+// When the target comes back, the mails that waited for it go out at once,
+// not after their own backoff; so do mails queued before a start (D45).
+func TestQueueResumesAtOnce(t *testing.T) {
+	cert := testutil.NewCert(t)
+	mj := newTarget(t, startTLS, &cert, "apikey", "apisecret")
+	mj.set(func(b *behavior) { b.authFail = true })
+	dbPath := filepath.Join(t.TempDir(), "pw.db")
+	sealer := newSealer(t)
+	targets := []config.Target{target("mailjet", mj, startTLS)}
+	h := startPostwerk(t, targets, harnessOpts{rootCAs: &cert, backoff: time.Hour, dbPath: dbPath, sealer: sealer})
+
+	first := h.send([]string{canary}, testMsg)
+	testutil.Eventually(t, timeout, "target down", func() bool { return len(h.targetEvents("mailjet", store.KindTargetDown)) == 1 })
+	if d := h.delivery(first, "mailjet"); time.Until(d.NextAttempt) < 50*time.Minute {
+		t.Fatalf("first mail not in its hour of backoff: %+v", d)
+	}
+	second := h.send([]string{canary}, testMsg)
+	mj.set(func(b *behavior) { b.authFail = false })
+	for _, id := range []string{first, second} {
+		h.waitStatus(id, "mailjet", store.HandedOff)
+	}
+
+	// A mail in its backoff when Postwerk stops goes out right after the
+	// next start.
+	mj.set(func(b *behavior) { b.authFail = true })
+	third := h.send([]string{canary}, testMsg)
+	testutil.Eventually(t, timeout, "target down again", func() bool { return len(h.targetEvents("mailjet", store.KindTargetDown)) == 2 })
+	h.stop()
+	mj.set(func(b *behavior) { b.authFail = false })
+	h2 := startPostwerk(t, targets, harnessOpts{rootCAs: &cert, backoff: time.Hour, dbPath: dbPath, sealer: sealer})
+	h2.waitStatus(third, "mailjet", store.HandedOff)
 }

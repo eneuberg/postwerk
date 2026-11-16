@@ -24,7 +24,8 @@ import (
 // failed logins sees one login per probe, not one per mail.
 //
 // The state lives in memory only. After a restart every target starts up,
-// and the first attempt finds out again.
+// and the first attempt finds out again. At start and on recovery every
+// queued delivery of the target becomes due at once (resume).
 
 // Reason says why a target is down.
 type Reason string
@@ -125,6 +126,7 @@ func (w *worker) whileDown(ctx context.Context) {
 	}
 	down := now.Sub(since).Round(time.Second)
 	w.health.set(false, now, "")
+	w.resume(ctx, now)
 	w.log.Info("target up again, sending resumes", "down_for", down.String())
 	if err := w.opts.Store.Append(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetRecovered,
 		Level: store.Info, Text: fmt.Sprintf("%s, down for %s", was, down)}); err != nil {
@@ -132,7 +134,22 @@ func (w *worker) whileDown(ctx context.Context) {
 	}
 }
 
-// probe connects, says EHLO and logs in, without sending a mail. It
+// resume makes every queued delivery of the target due now, so the mails
+// that waited go out at once instead of after their own backoff. It runs
+// when the worker starts and when the target comes back (D45).
+func (w *worker) resume(ctx context.Context, now time.Time) {
+	n, err := w.opts.Store.MakeDue(ctx, w.target.Name, now)
+	if err != nil {
+		w.log.Error("making queued deliveries due failed; they keep their backoff", "err", err)
+		return
+	}
+	if n > 0 {
+		w.log.Info("queued deliveries due now", "deliveries", n)
+	}
+}
+
+// probe connects (with STARTTLS or implicit TLS as the URL says), says
+// EHLO and logs in, without sending a mail. It
 // returns why the target is still down if it fails.
 func (w *worker) probe(ctx context.Context) (Reason, int, error) {
 	client, err := w.connect(ctx)

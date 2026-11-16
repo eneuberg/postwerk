@@ -110,3 +110,22 @@ func queryInts(ctx context.Context, tx *sql.Tx, q string, args ...any) ([]int, e
 	}
 	return out, rows.Err()
 }
+
+// MakeDue moves the next attempt of every queued delivery of the target
+// that is due later than at forward to at. A worker calls it when it starts
+// and when its target came back from down (D45): the mails that waited for
+// the target go out at once, not after their own backoff. It returns the
+// number of deliveries changed.
+func (s *Store) MakeDue(ctx context.Context, target string, at time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE deliveries SET next_attempt_at = ? WHERE target = ? AND next_attempt_at > ?`,
+		ms(at), target, ms(at))
+	if err != nil {
+		return 0, fmt.Errorf("store: make due for %s: %w", target, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: make due for %s: %w", target, err)
+	}
+	return int(n), nil
+}
