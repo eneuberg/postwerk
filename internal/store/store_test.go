@@ -242,7 +242,7 @@ func TestClaimFinishCycle(t *testing.T) {
 	d := ds[0]
 	if d.Status != Queued || !d.NextAttempt.Equal(next) || d.LastCode != 250 || d.LastText != "2.0.0 ok <redacted>" ||
 		d.Attempts != 1 || len(d.Recipients) != 2 || d.Recipients[0].Status != HandedOff ||
-		d.Recipients[1] != (RecipientState{1, Queued, 452, "4.2.2 mailbox <redacted> full"}) {
+		d.Recipients[1] != (RecipientState{Position: 1, Status: Queued, LastCode: 452, LastText: "4.2.2 mailbox <redacted> full"}) {
 		t.Fatalf("delivery = %+v", d)
 	}
 
@@ -367,7 +367,7 @@ func TestMigrationFromVersion3(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ds) != 2 || ds[0].Target != "h" || ds[0].Status != HandedOff || len(ds[0].Recipients) != 2 ||
-		ds[1].Status != Queued || ds[1].Recipients[1] != (RecipientState{1, Queued, 451, ""}) || ds[1].NextAttempt.UnixMilli() != 5 {
+		ds[1].Status != Queued || ds[1].Recipients[1] != (RecipientState{Position: 1, Status: Queued, LastCode: 451}) || ds[1].NextAttempt.UnixMilli() != 5 {
 		t.Fatalf("deliveries after migration = %+v", ds)
 	}
 	c, err := s.Claim(ctx, "q", time.UnixMilli(10))

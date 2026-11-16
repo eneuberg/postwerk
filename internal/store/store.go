@@ -670,7 +670,7 @@ type Result struct {
 // per recipient and schedules the next attempt if a recipient is queued, in
 // one transaction. With PurgeRawOnHandoff, the same transaction removes the
 // stored message once every recipient of every delivery of the mail is
-// handed_off or skipped.
+// handed_off, skipped or closed by an admin.
 func (s *Store) Finish(ctx context.Context, r Result) error {
 	text := redact.Text(r.Text)
 	err := s.eventTx(ctx, func(tx *sql.Tx) error {
@@ -708,7 +708,8 @@ func (s *Store) Finish(ctx context.Context, r Result) error {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE mails SET raw = NULL, raw_purged_at = ?
 				WHERE id = ? AND raw IS NOT NULL AND NOT EXISTS (
-					SELECT 1 FROM delivery_recipients WHERE mail_id = ? AND status NOT IN ('handed_off', 'skipped'))`,
+					SELECT 1 FROM delivery_recipients WHERE mail_id = ? AND status NOT IN ('handed_off', 'skipped')
+						AND resolution IS NULL)`,
 				ms(r.At), r.MailID, r.MailID); err != nil {
 				return fmt.Errorf("purge raw: %w", err)
 			}
@@ -810,6 +811,8 @@ type RecipientState struct {
 	Status   Status
 	LastCode int
 	LastText string
+	// Resolution is set when an admin closed the recipient (D53).
+	Resolution Resolution
 }
 
 // Delivery is the current state of one delivery.
@@ -876,7 +879,7 @@ func deliveries(ctx context.Context, tx *sql.Tx, mailID string) ([]Delivery, err
 	rows.Close()
 
 	rrows, err := tx.QueryContext(ctx, `
-		SELECT target, position, status, last_code, last_text FROM delivery_recipients
+		SELECT target, position, status, last_code, last_text, resolution FROM delivery_recipients
 		WHERE mail_id = ? ORDER BY target, position`, mailID)
 	if err != nil {
 		return nil, err
@@ -890,11 +893,12 @@ func deliveries(ctx context.Context, tx *sql.Tx, mailID string) ([]Delivery, err
 		var target, status string
 		var r RecipientState
 		var code sql.NullInt64
-		var text sql.NullString
-		if err := rrows.Scan(&target, &r.Position, &status, &code, &text); err != nil {
+		var text, res sql.NullString
+		if err := rrows.Scan(&target, &r.Position, &status, &code, &text, &res); err != nil {
 			return nil, err
 		}
 		r.Status, r.LastCode, r.LastText = Status(status), int(code.Int64), text.String
+		r.Resolution = Resolution(res.String)
 		if d := byTarget[target]; d != nil {
 			d.Recipients = append(d.Recipients, r)
 		}

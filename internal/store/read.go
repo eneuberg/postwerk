@@ -345,14 +345,14 @@ func (s *Store) MailIDsByMessageID(ctx context.Context, messageIDs []string, lim
 	return ids, nil
 }
 
-// MailEvents returns the relay's events of one mail in order, at most
-// limit. Events caused by people (an Actor, such as ui.view) are left out:
-// the timeline is the mail's history, and who looked at it is in the
-// event log.
+// MailEvents returns the events of one mail's history in order, at most
+// limit: the relay's events and an admin's close and resend, which change
+// the mail's state. Other events caused by people (an Actor, such as
+// ui.view) are left out: who looked at a mail is in the event log.
 func (s *Store) MailEvents(ctx context.Context, mailID string, limit int) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+eventColumns+` FROM events
-		WHERE mail_id = ? AND actor IS NULL ORDER BY seq LIMIT ?`,
-		mailID, limit)
+		WHERE mail_id = ? AND (actor IS NULL OR kind IN (?, ?)) ORDER BY seq LIMIT ?`,
+		mailID, KindDeliveryClosed, KindDeliveryResend, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: events of %s: %w", mailID, err)
 	}
