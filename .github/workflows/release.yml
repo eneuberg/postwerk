@@ -1,0 +1,97 @@
+name: release
+
+# A tag v<semver> (for example v0.1.0) publishes ghcr.io/eneuberg/postwerk:<semver>
+# for linux/amd64 and linux/arm64, with an SBOM and a provenance attestation,
+# signed keyless with cosign. No "latest" tag (D39). Verification:
+# docs/kubernetes.md, section "Image".
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+      id-token: write # OIDC token for the keyless cosign signature
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      # SBOM scanner pinned by digest: docker/buildkit-syft-scanner 1.12.1.
+      SBOM_SCANNER: docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-<pre>]"; exit 1
+          fi
+          if ! grep -Fxq "appVersion: \"$version\"" deploy/helm/postwerk/Chart.yaml; then
+            echo "deploy/helm/postwerk/Chart.yaml: appVersion must be \"$version\""; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache: false # a release never builds from a cache
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push
+        run: |
+          source="https://github.com/$GITHUB_REPOSITORY"
+          docker buildx build . \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
+            --label org.opencontainers.image.source="$source" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.licenses=MIT \
+            --annotation index:org.opencontainers.image.source="$source" \
+            --annotation index:org.opencontainers.image.revision="$GITHUB_SHA" \
+            --annotation index:org.opencontainers.image.version="$VERSION" \
+            --annotation index:org.opencontainers.image.licenses=MIT \
+            --annotation "index:org.opencontainers.image.description=Postwerk, a small SMTP relay for outgoing transactional mail" \
+            --sbom=generator="$SBOM_SCANNER" \
+            --provenance=mode=max \
+            --tag "$IMAGE:$VERSION" \
+            --metadata-file metadata.json \
+            --push
+          digest="$(jq -r '."containerimage.digest"' metadata.json)"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "no digest in the build metadata"; exit 1
+          fi
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3 (cosign v3.1.4)
+      - name: Sign
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - name: Verify the signature
+        run: |
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+      - name: Summary
+        run: |
+          {
+            echo "### $IMAGE:$VERSION"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            echo "Platforms: linux/amd64, linux/arm64. Signed with cosign (keyless), SBOM and provenance attached."
+          } >> "$GITHUB_STEP_SUMMARY"

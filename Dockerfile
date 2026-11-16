@@ -1,14 +1,17 @@
 # syntax=docker/dockerfile:1
 
-# Build stage: static binary, no cgo (O2).
-FROM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS build
+# Build stage: static binary, no cgo (O2). It runs on the build machine's
+# platform and cross-compiles for the target platform, so a multi-platform
+# build needs no emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY cmd ./cmd
 COPY internal ./internal
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/postwerk ./cmd/postwerk \
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/postwerk ./cmd/postwerk \
     && mkdir -p /out/root/data && chmod 0700 /out/root/data
 
 # Final stage: the binary and CA certificates, nothing else. No shell.

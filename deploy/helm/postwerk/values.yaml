@@ -8,10 +8,11 @@
 # no NodePort.
 
 image:
-  # There is no public image yet: build it (docker build -t <registry>/postwerk:<tag> .)
-  # and push it to a registry your cluster can pull from.
-  repository: postwerk
-  tag: dev
+  # The published image, signed with cosign (docs/kubernetes.md, "Image").
+  # Set your own registry here for a mirror or your own build.
+  repository: ghcr.io/eneuberg/postwerk
+  # Empty: the chart's appVersion.
+  tag: ""
   # Recommended: pin the image by digest (sha256:...); it wins over tag.
   digest: ""
   pullPolicy: IfNotPresent
