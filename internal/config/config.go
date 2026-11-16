@@ -195,6 +195,9 @@ type Config struct {
 	// Admin is the admin listener with the UI (U1–U4).
 	Admin Admin
 
+	// Sentry configures the Sentry-protocol sink (A4); nil when it is off.
+	Sentry *Sentry
+
 	// SecretFiles maps each variable that names a secret file to its path,
 	// so the caller can check file permissions.
 	SecretFiles map[string]string
@@ -214,6 +217,85 @@ type Admin struct {
 	Tokens *auth.Tokens
 }
 
+// Sentry configures the Sentry-protocol sink.
+type Sentry struct {
+	DSN SentryDSN
+	// MinLevel is "error" or "warn", the same words as event levels.
+	MinLevel string
+}
+
+// SentryDSN is a parsed Sentry DSN.
+type SentryDSN struct {
+	// Endpoint is the envelope URL: {scheme}://{host}{path}/api/{project}/envelope/.
+	Endpoint string
+	// Host is the host name of the endpoint, for logs and network rules.
+	Host string
+	// PublicKey goes into X-Sentry-Auth as sentry_key.
+	PublicKey string
+	// SecretKey is deprecated in the protocol and optional; it is passed on
+	// if the DSN has one.
+	SecretKey string
+}
+
+var (
+	dsnKeyRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	dsnProjectRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+// ParseSentryDSN parses {scheme}://{public key}[:{secret key}]@{host}[:port]{path}/{project id}.
+// The scheme must be https; http only with allowHTTP, for local tests.
+// Errors never quote the DSN, which holds the key.
+func ParseSentryDSN(raw string, allowHTTP bool) (SentryDSN, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return SentryDSN{}, errors.New("not a valid URL")
+	}
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && allowHTTP:
+	case u.Scheme == "http":
+		return SentryDSN{}, errors.New("scheme http sends events in cleartext; use https, or allow http explicitly for a local test")
+	default:
+		return SentryDSN{}, errors.New("scheme must be https")
+	}
+	if u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return SentryDSN{}, errors.New("no query or fragment allowed")
+	}
+	if u.User == nil || !dsnKeyRe.MatchString(u.User.Username()) {
+		return SentryDSN{}, errors.New("public key missing or invalid (expected https://<key>@<host>/<project id>)")
+	}
+	secret, hasSecret := u.User.Password()
+	if hasSecret && !dsnKeyRe.MatchString(secret) {
+		return SentryDSN{}, errors.New("secret key invalid")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return SentryDSN{}, errors.New("host missing")
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return SentryDSN{}, errors.New("invalid port")
+		}
+	}
+	prefix, project, _ := cutLast(strings.TrimSuffix(u.Path, "/"), "/")
+	if !dsnProjectRe.MatchString(project) {
+		return SentryDSN{}, errors.New("project id missing or invalid (the last path segment)")
+	}
+	return SentryDSN{
+		Endpoint:  u.Scheme + "://" + u.Host + prefix + "/api/" + project + "/envelope/",
+		Host:      host,
+		PublicKey: u.User.Username(),
+		SecretKey: secret,
+	}, nil
+}
+
+func cutLast(s, sep string) (before, after string, found bool) {
+	if i := strings.LastIndex(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return "", s, false
+}
+
 // Warnings returns problems that do not stop the start but must be logged.
 func (c *Config) Warnings() []string {
 	var w []string
@@ -225,6 +307,9 @@ func (c *Config) Warnings() []string {
 	}
 	if c.PseudonymizeAfter == 0 {
 		w = append(w, envPseudonymizeAfter+"=0: addresses stay in plain text until the records are deleted")
+	}
+	if c.Sentry != nil && strings.HasPrefix(c.Sentry.DSN.Endpoint, "http://") {
+		w = append(w, envSentryAllowHTTP+"=true: events go to Sentry in cleartext; use this for a local test only")
 	}
 	if c.Admin.NonLoopback {
 		w = append(w, envAdminListen+" is not a loopback address ("+envAdminAllowNonLoopback+"=true): "+
@@ -260,6 +345,12 @@ const (
 	envAdminHosts            = "POSTWERK_ADMIN_HOSTS"
 	envUITokensFile          = "POSTWERK_UI_TOKENS_FILE"
 
+	envSentryDSNFile   = "POSTWERK_SENTRY_DSN_FILE"
+	envSentryMinLevel  = "POSTWERK_SENTRY_MIN_LEVEL"
+	envSentryAllowHTTP = "POSTWERK_SENTRY_ALLOW_HTTP"
+	// envSentryDSN is refused: the DSN holds a key, so it comes from a file.
+	envSentryDSN = "POSTWERK_SENTRY_DSN"
+
 	envStoreKeyFile        = "POSTWERK_STORE_KEY_FILE"
 	envStoreEncryption     = "POSTWERK_STORE_ENCRYPTION"
 	envHashKeyFile         = "POSTWERK_HASH_KEY_FILE"
@@ -275,7 +366,7 @@ const (
 // laterPhase lists variables from the documentation that belong to features
 // not built yet. They are known names, so configurations written from the
 // README do not fail as typos, but a value is refused.
-var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_SENTRY_DSN", "POSTWERK_WEBHOOK_URL"}
+var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_WEBHOOK_URL"}
 
 var globalVars = []string{
 	envSMTPListen, envHTTPListen, envData, envSendersFile, envTLSCertFile, envTLSKeyFile,
@@ -285,6 +376,7 @@ var globalVars = []string{
 	envRawKeepAfterHandoff, envRawKeepAfterFailure, envRawMaxAge, envPseudonymizeAfter,
 	envRecordRetention, envEventRetention,
 	envAdminListen, envAdminAllowNonLoopback, envAdminHosts, envUITokensFile,
+	envSentryDSNFile, envSentryMinLevel, envSentryAllowHTTP, envSentryDSN,
 }
 
 var targetSuffixes = []string{
@@ -375,6 +467,7 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	l.storeAndKeys(c)
 	l.retention(c)
 	l.admin(c)
+	l.sentry(c)
 
 	for _, name := range laterPhase {
 		if l.env[name] != "" {
@@ -622,6 +715,40 @@ func (l *loader) admin(c *Config) {
 		return
 	}
 	c.Admin.Tokens = t
+}
+
+// sentry reads the Sentry-protocol sink (A4). The DSN comes from a file,
+// never from a variable, because it holds the project key.
+func (l *loader) sentry(c *Config) {
+	if l.env[envSentryDSN] != "" {
+		l.errorf("%s: not supported; put the DSN into a file and set %s", envSentryDSN, envSentryDSNFile)
+	}
+	allowHTTP := l.boolean(envSentryAllowHTTP)
+	if l.env[envSentryDSNFile] == "" {
+		for _, name := range []string{envSentryMinLevel, envSentryAllowHTTP} {
+			if l.env[name] != "" {
+				l.errorf("%s is set but the Sentry sink is off (%s is empty); remove one of them", name, envSentryDSNFile)
+			}
+		}
+		return
+	}
+	s := &Sentry{MinLevel: l.get(envSentryMinLevel, "error")}
+	if s.MinLevel != "error" && s.MinLevel != "warn" {
+		l.errorf("%s: expected error or warn", envSentryMinLevel)
+	}
+	b, ok := l.file(envSentryDSNFile)
+	if !ok {
+		return
+	}
+	line, _, _ := bytes.Cut(b, []byte("\n"))
+	d, err := ParseSentryDSN(string(line), allowHTTP)
+	if err != nil {
+		// The error never quotes the DSN.
+		l.errorf("%s: %v", envSentryDSNFile, err)
+		return
+	}
+	s.DSN = d
+	c.Sentry = s
 }
 
 // loopbackHost reports whether a listen host is loopback only: localhost,

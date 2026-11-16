@@ -116,6 +116,15 @@ func TestNoUTF8AddressLeaks(t *testing.T) {
 	if ev := eventOf(h, mailID, "later", store.KindDeliveryRetry); ev == nil || ev.Text != "4.2.0 mailbox <redacted> busy" {
 		t.Fatalf("retry event = %+v", ev)
 	}
+	// Both replies went to Sentry as well; the leak check at cleanup
+	// searches those envelopes too.
+	h.stop()
+	for _, want := range []string{`"delivery.failed at rejecting: 550 5.1.1 <redacted>: unknown user <redacted>"`,
+		`"delivery.retry at later: 451 4.2.0 mailbox <redacted> busy"`} {
+		if !strings.Contains(h.sentry.String(), want) {
+			t.Fatalf("sentry has no %s:\n%s", want, h.sentry.String())
+		}
+	}
 }
 
 func TestMessageSize(t *testing.T) {

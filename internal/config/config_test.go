@@ -234,7 +234,11 @@ func TestErrors(t *testing.T) {
 	}{
 		{"unknown variable", []string{"POSTWERK_SMTP_LISTN=:25"}, "POSTWERK_SMTP_LISTN: unknown variable"},
 		{"target var for unlisted target", []string{"POSTWERK_TARGET_OTHER_URL=smtp://x"}, "POSTWERK_TARGET_OTHER_URL: unknown variable"},
-		{"later phase", []string{"POSTWERK_SENTRY_DSN=https://x"}, "POSTWERK_SENTRY_DSN: not implemented yet"},
+		{"later phase", []string{"POSTWERK_OTEL_ENDPOINT=https://x"}, "POSTWERK_OTEL_ENDPOINT: not implemented yet"},
+		{"sentry dsn as variable", []string{"POSTWERK_SENTRY_DSN=https://k@example.test/1"}, "POSTWERK_SENTRY_DSN: not supported; put the DSN into a file"},
+		{"sentry level without dsn", []string{"POSTWERK_SENTRY_MIN_LEVEL=warn"}, "POSTWERK_SENTRY_MIN_LEVEL is set but the Sentry sink is off"},
+		{"sentry http without dsn", []string{"POSTWERK_SENTRY_ALLOW_HTTP=true"}, "POSTWERK_SENTRY_ALLOW_HTTP is set but the Sentry sink is off"},
+		{"sentry dsn file missing", []string{"POSTWERK_SENTRY_DSN_FILE=/run/secrets/nope"}, "POSTWERK_SENTRY_DSN_FILE: cannot read file"},
 		{"bad listen", []string{"POSTWERK_SMTP_LISTEN=2525"}, "POSTWERK_SMTP_LISTEN: expected host:port"},
 		{"bad listen port", []string{"POSTWERK_HTTP_LISTEN=:99999"}, "POSTWERK_HTTP_LISTEN: invalid port"},
 		{"bad hostname", []string{"POSTWERK_HOSTNAME=bad host"}, "POSTWERK_HOSTNAME"},
@@ -510,5 +514,83 @@ func TestAdminListener(t *testing.T) {
 	// Allowed but loopback anyway: no warning.
 	if c := load("POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true"); c.Admin.NonLoopback || len(c.Warnings()) != 0 {
 		t.Fatalf("loopback with allow: %+v %q", c.Admin, c.Warnings())
+	}
+}
+
+func TestParseSentryDSN(t *testing.T) {
+	good := []struct{ raw, endpoint, host, key, secret string }{
+		{"https://abc123@o1.ingest.example.test/42", "https://o1.ingest.example.test/api/42/envelope/", "o1.ingest.example.test", "abc123", ""},
+		{"https://k:s@sentry.example.test:8443/base/path/7", "https://sentry.example.test:8443/base/path/api/7/envelope/", "sentry.example.test", "k", "s"},
+		{"https://0f9e8d7c6b5a49382716051423324150@glitchtip.example.test/3/", "https://glitchtip.example.test/api/3/envelope/", "glitchtip.example.test", "0f9e8d7c6b5a49382716051423324150", ""},
+		{"  https://k@[::1]:9000/1\n", "https://[::1]:9000/api/1/envelope/", "::1", "k", ""},
+	}
+	for _, g := range good {
+		d, err := ParseSentryDSN(g.raw, false)
+		if err != nil {
+			t.Fatalf("%q: %v", g.raw, err)
+		}
+		if d.Endpoint != g.endpoint || d.Host != g.host || d.PublicKey != g.key || d.SecretKey != g.secret {
+			t.Fatalf("%q = %+v", g.raw, d)
+		}
+	}
+	bad := []string{
+		"", "not a url", "ftp://k@example.test/1", "http://k@example.test/1", "https://example.test/1",
+		"https://k@/1", "https://k@example.test", "https://k@example.test/", "https://k@example.test/1?x=y",
+		"https://k@example.test/1#f", "https://k@example.test:0/1", "https://k@example.test/a b",
+		"https://k%20x@example.test/1", "https://k:@example.test/1",
+	}
+	for _, b := range bad {
+		if _, err := ParseSentryDSN(b, false); err == nil {
+			t.Fatalf("%q accepted", b)
+		} else if strings.Contains(err.Error(), "k@") || (b != "" && strings.Contains(err.Error(), b)) {
+			t.Fatalf("error quotes the DSN: %v", err)
+		}
+	}
+	if _, err := ParseSentryDSN("http://k@localhost:8000/1", true); err != nil {
+		t.Fatalf("http with opt-in: %v", err)
+	}
+}
+
+func TestSentryConfig(t *testing.T) {
+	f := baseFiles(t)
+	f["/run/secrets/sentry"] = "https://0f9e8d7c6b5a49382716051423324150@glitchtip.example.test/3\n"
+	f["/run/secrets/sentry-http"] = "http://k@localhost:8000/1"
+	load := func(extra ...string) (*Config, error) {
+		return Load(append(minimalEnv(), extra...), f.read)
+	}
+	c, err := load()
+	if err != nil || c.Sentry != nil {
+		t.Fatalf("off by default: %+v, %v", c.Sentry, err)
+	}
+	c, err = load("POSTWERK_SENTRY_DSN_FILE=/run/secrets/sentry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Sentry{MinLevel: "error", DSN: SentryDSN{Endpoint: "https://glitchtip.example.test/api/3/envelope/",
+		Host: "glitchtip.example.test", PublicKey: "0f9e8d7c6b5a49382716051423324150"}}
+	if !reflect.DeepEqual(*c.Sentry, want) || c.SecretFiles["POSTWERK_SENTRY_DSN_FILE"] != "/run/secrets/sentry" {
+		t.Fatalf("sentry = %+v", c.Sentry)
+	}
+	if len(c.Warnings()) != 0 {
+		t.Fatalf("warnings %q", c.Warnings())
+	}
+	if c, err = load("POSTWERK_SENTRY_DSN_FILE=/run/secrets/sentry", "POSTWERK_SENTRY_MIN_LEVEL=warn"); err != nil || c.Sentry.MinLevel != "warn" {
+		t.Fatalf("warn: %+v, %v", c, err)
+	}
+	if _, err = load("POSTWERK_SENTRY_DSN_FILE=/run/secrets/sentry", "POSTWERK_SENTRY_MIN_LEVEL=info"); err == nil ||
+		!strings.Contains(err.Error(), "POSTWERK_SENTRY_MIN_LEVEL: expected error or warn") {
+		t.Fatalf("info: %v", err)
+	}
+	// http needs the explicit opt-in, and then warns at every start.
+	_, err = load("POSTWERK_SENTRY_DSN_FILE=/run/secrets/sentry-http")
+	if err == nil || !strings.Contains(err.Error(), "POSTWERK_SENTRY_DSN_FILE: scheme http") || strings.Contains(err.Error(), "k@") {
+		t.Fatalf("http: %v", err)
+	}
+	c, err = load("POSTWERK_SENTRY_DSN_FILE=/run/secrets/sentry-http", "POSTWERK_SENTRY_ALLOW_HTTP=true")
+	if err != nil || c.Sentry.DSN.Endpoint != "http://localhost:8000/api/1/envelope/" {
+		t.Fatalf("http allowed: %+v, %v", c, err)
+	}
+	if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "cleartext") {
+		t.Fatalf("warnings %q", w)
 	}
 }

@@ -42,6 +42,9 @@ import (
 	"github.com/eneuberg/postwerk/internal/ui"
 )
 
+// finalExportTimeout bounds the event export at shutdown.
+const finalExportTimeout = 10 * time.Second
+
 // version is set at build time with -ldflags "-X main.version=…".
 var version = "dev"
 
@@ -222,9 +225,16 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if err != nil {
 		return err
 	}
-	rep = report.New(report.Options{
-		Store: st, Sinks: []report.Sink{report.NewStdout(eventOut, cfg.Instance)}, Logger: logger,
-	})
+	sinks := []report.Sink{report.NewStdout(eventOut, cfg.Instance)}
+	sentryLog := "off"
+	if cfg.Sentry != nil {
+		sinks = append(sinks, report.NewSentry(report.SentryOptions{
+			DSN: cfg.Sentry.DSN, MinLevel: store.Level(cfg.Sentry.MinLevel), Instance: cfg.Instance,
+			Version: version, Logger: logger,
+		}))
+		sentryLog = cfg.Sentry.DSN.Host + " (" + cfg.Sentry.MinLevel + ")"
+	}
+	rep = report.New(report.Options{Store: st, Sinks: sinks, Logger: logger})
 
 	warnUnconfiguredTargets(ctx, st, cfg.Targets, logger)
 
@@ -344,7 +354,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		names = append(names, t.Name+"("+string(t.Scheme)+")")
 	}
 	logger.Info("postwerk started", "version", version, "smtp", smtpL.Addr().String(),
-		"http", httpL.Addr().String(), "admin", adminLog, "targets", strings.Join(names, ","),
+		"http", httpL.Addr().String(), "admin", adminLog, "targets", strings.Join(names, ","), "sentry", sentryLog,
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String())
 	if listening != nil {
@@ -385,9 +395,14 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		case <-sd.Done():
 		}
 	}
-	if err := rep.Flush(sd); err != nil {
+	// The final export is bounded on its own, so a slow remote sink cannot
+	// use up the deadline that closing the store still needs. stdout is
+	// written at once; the other sinks catch up on the next start.
+	fctx, fcancel := context.WithTimeout(sd, finalExportTimeout)
+	if err := rep.Flush(fctx); err != nil {
 		logger.Warn("final event export incomplete; it resumes on the next start", "err", err)
 	}
+	fcancel()
 	if err := httpSrv.Shutdown(sd); err != nil {
 		logger.Warn("http shutdown incomplete", "err", err)
 	}

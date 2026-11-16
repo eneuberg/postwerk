@@ -13,6 +13,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -290,6 +292,7 @@ type harness struct {
 	addr    string
 	logs    *testutil.SafeBuffer
 	events  *testutil.SafeBuffer
+	sentry  *testutil.SafeBuffer // every envelope the Sentry sink sent
 	cancel  context.CancelFunc
 	stopped bool
 	stopFns []func()
@@ -334,8 +337,21 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 	if ho.workerSealer == nil {
 		ho.workerSealer = ho.sealer
 	}
-	h := &harness{t: t, dbPath: ho.dbPath, sealer: ho.sealer, logs: &testutil.SafeBuffer{}, events: &testutil.SafeBuffer{}}
+	h := &harness{t: t, dbPath: ho.dbPath, sealer: ho.sealer, logs: &testutil.SafeBuffer{}, events: &testutil.SafeBuffer{},
+		sentry: &testutil.SafeBuffer{}}
 	logger := testutil.Logger(h.logs)
+
+	// A Sentry endpoint that records every envelope, for the leak check.
+	sentrySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		h.sentry.Write(append(b, '\n'))
+	}))
+	t.Cleanup(sentrySrv.Close)
+	dsn, err := config.ParseSentryDSN("http://key@"+strings.TrimPrefix(sentrySrv.URL, "http://")+"/1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentry := report.NewSentry(report.SentryOptions{DSN: dsn, MinLevel: store.Warn, Instance: "test", Logger: logger})
 
 	var rep *report.Reporter
 	sopts := ho.store
@@ -345,7 +361,7 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 		t.Fatal(err)
 	}
 	h.store = st
-	rep = report.New(report.Options{Store: st, Sinks: []report.Sink{report.NewStdout(h.events, "test")},
+	rep = report.New(report.Options{Store: st, Sinks: []report.Sink{report.NewStdout(h.events, "test"), sentry},
 		Interval: 20 * time.Millisecond, Logger: logger})
 
 	opts := Options{
@@ -531,6 +547,12 @@ func (h *harness) checkNoLeak() {
 	}
 	check("logs", h.logs.String())
 	check("exported events", h.events.String())
+	check("sentry envelopes", h.sentry.String())
+	for _, content := range []string{"Line one", "Subject:", "last line"} {
+		if strings.Contains(h.sentry.String(), content) {
+			t.Errorf("message content %q sent to sentry", content)
+		}
+	}
 	if h.store.Ping(context.Background()) != nil {
 		return // the store was closed on purpose
 	}

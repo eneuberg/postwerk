@@ -7,10 +7,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,8 +180,12 @@ func TestServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var sentryHits atomic.Int32
+	sentrySrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { sentryHits.Add(1) }))
+	defer sentrySrv.Close()
 	dbPath := filepath.Join(t.TempDir(), "pw.db")
 	files := map[string]string{
+		"/sentry":    "http://key@" + strings.TrimPrefix(sentrySrv.URL, "http://") + "/1\n",
 		"/senders":   "app:" + h + "\n",
 		"/store-key": keys.Generate(time.Now()) + "\n",
 		"/hash-key":  keys.Generate(time.Now()) + "\n",
@@ -199,6 +205,8 @@ func TestServe(t *testing.T) {
 		"POSTWERK_INSTANCE=test",
 		"POSTWERK_TARGETS=capture",
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://" + tl.Addr().String(),
+		"POSTWERK_SENTRY_DSN_FILE=/sentry",
+		"POSTWERK_SENTRY_ALLOW_HTTP=true",
 	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +315,16 @@ func TestServe(t *testing.T) {
 	pending, _ := st.PendingByTarget(context.Background())
 	if len(pending) != 0 {
 		t.Fatalf("pending after delivery: %v", pending)
+	}
+
+	// The Sentry sink ran: its cursor passed every event, and none was
+	// sent, because all were info.
+	stdoutCursor, _ := st.Cursor(context.Background(), "stdout")
+	if c, _ := st.Cursor(context.Background(), "sentry"); c == 0 || c != stdoutCursor || sentryHits.Load() != 0 {
+		t.Fatalf("sentry cursor %d (stdout %d), %d requests", c, stdoutCursor, sentryHits.Load())
+	}
+	if !strings.Contains(out.String(), `"sentry":"127.0.0.1 (error)"`) {
+		t.Fatalf("start log without sentry: %s", out.String())
 	}
 }
 
