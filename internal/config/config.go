@@ -52,6 +52,14 @@ const (
 	// finishes. The orchestrator's grace period must be longer still, for
 	// example terminationGracePeriodSeconds: 120 in Kubernetes.
 	DefaultShutdownTimeout = 100 * time.Second
+	// DefaultQueueStaleAfter: a target whose oldest queued mail waits
+	// longer is reported as stale (D49). Password resets and login codes
+	// commonly expire after 15 to 30 minutes.
+	DefaultQueueStaleAfter = 15 * time.Minute
+	// DefaultMinFreeBytes is the free space kept on the data volume (D50):
+	// room for the events, state changes and WAL growth of the mails
+	// already accepted, four messages of the default maximum size.
+	DefaultMinFreeBytes = 64 << 20
 )
 
 // Retention defaults (S6–S10). Each is the recommended value from
@@ -91,6 +99,7 @@ const (
 	maxSecretFile    = 1 << 20
 	maxConnections   = 10000
 	maxInflightBytes = 1 << 40
+	maxMinFreeBytes  = 1 << 50
 )
 
 // Scheme is how Postwerk talks to a target.
@@ -195,7 +204,14 @@ type Config struct {
 	RetryWindow             time.Duration
 	ShutdownTimeout         time.Duration
 	Instance                string
-	Targets                 []Target
+	// QueueStaleAfter: see DefaultQueueStaleAfter; 0 turns the check off.
+	QueueStaleAfter time.Duration
+	// QueueStaleRepeat: queue.stale again after this time while a target
+	// stays stale; 0 (default) only once per change.
+	QueueStaleRepeat time.Duration
+	// MinFreeBytes: see DefaultMinFreeBytes; 0 turns the check off.
+	MinFreeBytes int64
+	Targets      []Target
 	// ProbeInterval and ProbeMaxInterval space the probes of a target
 	// that is down (D45): the first after ProbeInterval, then doubling up
 	// to ProbeMaxInterval.
@@ -342,6 +358,16 @@ func (c *Config) Warnings() []string {
 		w = append(w, envAdminListen+" is not a loopback address ("+envAdminAllowNonLoopback+"=true): "+
 			"publish the port on the host's loopback only and never expose it (docs/ui.md)")
 	}
+	if c.QueueStaleAfter == 0 {
+		w = append(w, envQueueStaleAfter+"=0: no event when mail waits too long; watch the queues yourself")
+	}
+	switch {
+	case c.MinFreeBytes == 0:
+		w = append(w, envMinFreeBytes+"=0: no free-space check; a full data volume refuses mail without an event")
+	case c.MinFreeBytes < 2*c.MaxMessageBytes:
+		w = append(w, envMinFreeBytes+" is less than twice "+envMaxMessageBytes+
+			": the reserve may not hold the writes of the mails already accepted (docs/configuration.md)")
+	}
 	w = append(w, c.apiWarnings()...)
 	return w
 }
@@ -367,6 +393,9 @@ const (
 	envShutdownTimeout   = "POSTWERK_SHUTDOWN_TIMEOUT"
 	envInstance          = "POSTWERK_INSTANCE"
 	envTargets           = "POSTWERK_TARGETS"
+	envQueueStaleAfter   = "POSTWERK_QUEUE_STALE_AFTER"
+	envQueueStaleRepeat  = "POSTWERK_QUEUE_STALE_REPEAT"
+	envMinFreeBytes      = "POSTWERK_MIN_FREE_BYTES"
 
 	envAdminListen           = "POSTWERK_ADMIN_LISTEN"
 	envAdminAllowNonLoopback = "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK"
@@ -399,7 +428,7 @@ var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_WEBHOOK_URL"}
 var globalVars = []string{
 	envSMTPListen, envHTTPListen, envData, envSendersFile, envTLSCertFile, envTLSKeyFile,
 	envAllowInsecureAuth, envHostname, envMaxMessageBytes, envMaxRecipients, envMaxConnections, envMaxInflightBytes, envRetryWindow,
-	envShutdownTimeout, envInstance, envTargets,
+	envShutdownTimeout, envInstance, envTargets, envQueueStaleAfter, envQueueStaleRepeat, envMinFreeBytes,
 	envStoreKeyFile, envStoreEncryption, envHashKeyFile, envSecureDelete,
 	envRawKeepAfterHandoff, envRawKeepAfterFailure, envRawMaxAge, envPseudonymizeAfter,
 	envRecordRetention, envEventRetention,
@@ -474,6 +503,12 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	}
 	c.RetryWindow = l.duration(envRetryWindow, DefaultRetryWindow, false)
 	c.ShutdownTimeout = l.duration(envShutdownTimeout, DefaultShutdownTimeout, false)
+	c.QueueStaleAfter = l.duration(envQueueStaleAfter, DefaultQueueStaleAfter, true)
+	c.QueueStaleRepeat = l.duration(envQueueStaleRepeat, 0, true)
+	if c.QueueStaleRepeat > 0 && c.QueueStaleRepeat < time.Minute {
+		l.errorf("%s: use 0 (once per change) or at least 1m", envQueueStaleRepeat)
+	}
+	c.MinFreeBytes = int64(l.integer(envMinFreeBytes, DefaultMinFreeBytes, 0, maxMinFreeBytes))
 	c.AllowInsecureAuth = l.boolean(envAllowInsecureAuth)
 
 	c.Senders = l.senders()

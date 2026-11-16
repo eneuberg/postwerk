@@ -153,6 +153,12 @@ spec:
               value: {{ .Values.limits.maxConnections | int64 | quote }}
             - name: POSTWERK_MAX_INFLIGHT_BYTES
               value: {{ .Values.limits.maxInflightBytes | int64 | quote }}
+            - name: POSTWERK_MIN_FREE_BYTES
+              value: {{ .Values.limits.minFreeBytes | int64 | quote }}
+            - name: POSTWERK_QUEUE_STALE_AFTER
+              value: {{ .Values.queue.staleAfter | toString | quote }}
+            - name: POSTWERK_QUEUE_STALE_REPEAT
+              value: {{ .Values.queue.staleRepeat | toString | quote }}
             - name: POSTWERK_SHUTDOWN_TIMEOUT
               value: {{ .Values.shutdownTimeout | quote }}
             - name: POSTWERK_RETRY_WINDOW

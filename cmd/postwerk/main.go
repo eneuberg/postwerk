@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/tlsreload"
 	"github.com/eneuberg/postwerk/internal/ui"
+	"github.com/eneuberg/postwerk/internal/watch"
 )
 
 // finalExportTimeout bounds the event export at shutdown.
@@ -296,14 +298,43 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if smtpTLS != nil {
 		getCert = smtpTLS.GetCertificate
 	}
+	// Postwerk's own signals (D49, D50): free space on the data volume and
+	// mails waiting too long per target. Both start from the state the
+	// event log has, so a restart neither repeats nor loses a change.
+	disk, err := watch.NewDisk(ctx, watch.DiskOptions{
+		Store: st, Dir: filepath.Dir(cfg.DataPath), MinFree: cfg.MinFreeBytes, Logger: logger,
+	})
+	if err != nil {
+		st.Close()
+		return err
+	}
+	var watched []watch.Target
+	for _, t := range cfg.Targets {
+		watched = append(watched, watch.Target{Name: t.Name, Optional: t.Optional})
+	}
+	queue, err := watch.NewQueue(ctx, watch.QueueOptions{
+		Store: st, Targets: watched, After: cfg.QueueStaleAfter, Repeat: cfg.QueueStaleRepeat, Logger: logger,
+	})
+	if err != nil {
+		st.Close()
+		return err
+	}
 	ing := ingress.New(ingress.Options{
 		Store: st, Sealer: sealer, Senders: cfg.Senders, Targets: cfg.Targets, Hostname: cfg.Hostname,
 		GetCertificate: getCert, AllowInsecure: cfg.AllowInsecureAuth,
 		MaxMessageBytes: acceptBytes(cfg), MaxRecipients: cfg.MaxRecipients,
 		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
+		Space: disk,
 	})
+	// Ready means Postwerk can take and keep mail: the store answers and
+	// can be written, the volume is above its reserve, the workers run. A
+	// target that is down does not count: a restart cannot fix a provider,
+	// and the mails wait in the queue for it (D52).
 	httpSrv := httpapi.New(cfg.HTTPListen, func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
+			return err
+		}
+		if err := disk.Ready(); err != nil {
 			return err
 		}
 		if !mgr.Running() {
@@ -367,6 +398,10 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	go func() { rep.Run(runCtx); close(repDone) }()
 	retDone := make(chan struct{})
 	go func() { ret.Run(runCtx); close(retDone) }()
+	diskDone := make(chan struct{})
+	go func() { disk.Run(runCtx); close(diskDone) }()
+	queueDone := make(chan struct{})
+	go func() { queue.Run(runCtx); close(queueDone) }()
 	mgr.Start(runCtx)
 	if smtpTLS != nil {
 		go smtpTLS.Run(runCtx)
@@ -414,7 +449,8 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		"targets", strings.Join(names, ","), "sentry", sentryLog,
 		"max_message_bytes", cfg.MaxMessageBytes, "smtp_size", acceptBytes(cfg),
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
-		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String())
+		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String(),
+		"min_free_bytes", cfg.MinFreeBytes, "queue_stale_after", cfg.QueueStaleAfter.String())
 	if listening != nil {
 		listening(smtpL.Addr(), httpL.Addr(), adminAddr, apiAddr)
 	}
@@ -464,7 +500,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	}
 	<-ingDone
 	<-apiDone
-	for _, done := range []chan struct{}{repDone, retDone} {
+	for _, done := range []chan struct{}{repDone, retDone, diskDone, queueDone} {
 		select {
 		case <-done:
 		case <-sd.Done():

@@ -120,6 +120,16 @@ limits:
   maxRecipients: 50
   maxConnections: 100
   maxInflightBytes: 268435456     # recommended: 256 MiB memory budget for messages being received
+  # Free space kept on the data volume (recommended: 64 MiB). Below it new
+  # mail gets 452, /readyz fails and a disk.low event is written. "0": off.
+  minFreeBytes: 67108864
+
+# Operator signals (docs/design.md, "Alerting"). queue.stale when a target's
+# oldest queued mail is older than staleAfter ("0": off); staleRepeat writes
+# it again while it stays stale ("0": once per change).
+queue:
+  staleAfter: 15m                 # recommended
+  staleRepeat: "0"
 
 # Postwerk's own shutdown deadline; the grace period must be longer.
 shutdownTimeout: 100s

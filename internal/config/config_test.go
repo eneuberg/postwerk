@@ -89,7 +89,8 @@ func TestMinimalDefaults(t *testing.T) {
 		c.Hostname != "postwerk" || c.MaxMessageBytes != 15728640 || c.MaxRecipients != 50 ||
 		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.Instance != "" ||
 		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 ||
-		c.MaxInflightBytes != 256<<20 {
+		c.MaxInflightBytes != 256<<20 || c.QueueStaleAfter != 15*time.Minute || c.QueueStaleRepeat != 0 ||
+		c.MinFreeBytes != 64<<20 {
 		t.Fatalf("defaults wrong: %+v", c)
 	}
 	// The recommended retention defaults.
@@ -469,6 +470,39 @@ func TestRetentionZeroAndOff(t *testing.T) {
 	w := strings.Join(c.Warnings(), "\n")
 	if !strings.Contains(w, "POSTWERK_STORE_ENCRYPTION=off") || !strings.Contains(w, "POSTWERK_PSEUDONYMIZE_AFTER=0") {
 		t.Fatalf("warnings = %s", w)
+	}
+}
+
+func TestSignals(t *testing.T) {
+	f := baseFiles(t)
+	load := func(extra ...string) (*Config, error) { return Load(append(minimalEnv(), extra...), f.read) }
+	c, err := load("POSTWERK_QUEUE_STALE_AFTER=30m", "POSTWERK_QUEUE_STALE_REPEAT=4h", "POSTWERK_MIN_FREE_BYTES=134217728")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.QueueStaleAfter != 30*time.Minute || c.QueueStaleRepeat != 4*time.Hour || c.MinFreeBytes != 128<<20 ||
+		len(c.Warnings()) != 0 {
+		t.Fatalf("config = %+v, warnings %q", c, c.Warnings())
+	}
+	// Both checks can be turned off, with a warning.
+	c, err = load("POSTWERK_QUEUE_STALE_AFTER=0", "POSTWERK_MIN_FREE_BYTES=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := strings.Join(c.Warnings(), "\n")
+	if c.QueueStaleAfter != 0 || c.MinFreeBytes != 0 || !strings.Contains(w, "POSTWERK_QUEUE_STALE_AFTER=0") ||
+		!strings.Contains(w, "POSTWERK_MIN_FREE_BYTES=0") {
+		t.Fatalf("off: %+v, warnings %s", c, w)
+	}
+	// A reserve smaller than two messages is allowed, with a warning.
+	if c, err = load("POSTWERK_MIN_FREE_BYTES=1048576"); err != nil || !strings.Contains(strings.Join(c.Warnings(), ""), "less than twice") {
+		t.Fatalf("small reserve: %v", err)
+	}
+	for _, bad := range []string{"POSTWERK_QUEUE_STALE_AFTER=soon", "POSTWERK_QUEUE_STALE_REPEAT=10s",
+		"POSTWERK_MIN_FREE_BYTES=-1", "POSTWERK_MIN_FREE_BYTES=64MiB"} {
+		if _, err := load(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -122,6 +123,9 @@ var ErrNotSending = errors.New("store: not in sending state")
 type Store struct {
 	db   *sql.DB
 	opts Options
+	// writeErr holds the last write that failed for lack of space or
+	// storage, until a write succeeds (Writable).
+	writeErr atomic.Pointer[error]
 }
 
 // Options for Open.
@@ -264,13 +268,13 @@ func (s *Store) migrate(ctx context.Context) error {
 func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return s.noteWrite(err)
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
-		return err
+		return s.noteWrite(err)
 	}
-	return tx.Commit()
+	return s.noteWrite(tx.Commit())
 }
 
 // eventTx runs fn in a transaction and signals OnEvent after the commit.
@@ -1027,7 +1031,7 @@ func (s *Store) SetCursor(ctx context.Context, sink string, seq int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO cursors (sink, seq) VALUES (?, ?)
 		ON CONFLICT (sink) DO UPDATE SET seq = excluded.seq`, sink, seq)
-	if err != nil {
+	if err := s.noteWrite(err); err != nil {
 		return fmt.Errorf("store: set cursor %s: %w", sink, err)
 	}
 	return nil

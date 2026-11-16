@@ -647,13 +647,10 @@ func (s *Server) writeRefusal(r refusal, n int) {
 }
 
 // spaceFor reports whether the data volume has room for a mail of size
-// bytes above its reserve (D50). Without Space it always has.
+// bytes above its reserve (D50). Without Space it always has. A refusal is
+// not logged one by one: the disk.low event and its log line say it once.
 func (s *Server) spaceFor(size int64) bool {
-	if s.opts.Space == nil || s.opts.Space.Allow(size) {
-		return true
-	}
-	s.opts.Logger.Warn("mail refused, data volume below its free-space reserve")
-	return false
+	return s.opts.Space == nil || s.opts.Space.Allow(size)
 }
 
 // budget counts the bytes reserved for messages being received.
