@@ -7,7 +7,8 @@
 # "change-me-local-only" (AUTH PLAIN), then open http://localhost:8025 to see
 # it in Mailpit. Events are printed as JSON lines in the postwerk log.
 # Postwerk's own UI is at http://localhost:8081: name "ops", token
-# "example-ui-token-local-only" (from ui-tokens.example, EXAMPLE ONLY).
+# "example-ui-token-local-only" (from ui-tokens.example, EXAMPLE ONLY) for
+# the first login; then create an account with a password under Accounts.
 #
 # This setup is for a local machine only: passwords cross the network in
 # cleartext, Mailpit keeps full message content, and the key files next to

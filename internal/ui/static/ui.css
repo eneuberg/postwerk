@@ -156,7 +156,7 @@ button.link {
 .st-skipped { background: var(--off-bg); color: var(--off-fg); }
 
 .tag {
-  font-size: .75rem; font-weight: 650; padding: .05rem .5rem; border-radius: 999px;
+  font-size: .75rem; font-weight: 650; padding: .05rem .5rem; border-radius: 999px; white-space: nowrap;
   background: var(--off-bg); color: var(--off-fg);
 }
 .tag-warn { background: var(--warn-bg); color: var(--warn-fg); }

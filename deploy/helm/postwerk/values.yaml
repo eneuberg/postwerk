@@ -45,7 +45,9 @@ secrets:
   hashKey:
     name: postwerk-hash-key
     key: hash-key
-  # UI tokens file (postwerk gen-token). Required while ui.enabled.
+  # UI tokens file (postwerk gen-token NAME): start and break-glass access
+  # to the UI. Needed for the first login; once accounts with passwords
+  # exist in the UI, set name to "" to run without it.
   uiTokens:
     name: postwerk-ui-tokens
     key: tokens
@@ -133,8 +135,9 @@ extraEnv: []
 # (127.0.0.1:<port>), so nothing in the cluster can reach it: no Service
 # port, no Ingress, no NetworkPolicy rule. Open it with
 #   kubectl -n <namespace> port-forward deploy/<release>-postwerk 8081:8081
-# which needs the RBAC right "create" on pods/portforward. Sign in with a
-# name and token from secrets.uiTokens.
+# which needs the RBAC right "create" on pods/portforward. Sign in with your
+# account's name and password, or the first time with a name and token from
+# secrets.uiTokens.
 ui:
   enabled: true
   port: 8081

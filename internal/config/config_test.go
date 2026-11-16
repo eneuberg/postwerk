@@ -501,9 +501,16 @@ func TestAdminListener(t *testing.T) {
 			t.Errorf("%s: %+v", addr, c.Admin)
 		}
 	}
-	// Without a tokens file the UI uses the accounts in the database only.
+	// Without a tokens file, or with one whose lines were all removed, the
+	// UI uses the accounts in the database only.
 	if c := load("POSTWERK_UI_TOKENS_FILE="); c.Admin.Listen != "127.0.0.1:8081" || c.Admin.Tokens != nil {
 		t.Errorf("without tokens file: %+v", c.Admin)
+	}
+	f := baseFiles(t)
+	f["/run/secrets/ui-empty"] = "# ops removed, accounts are in the database\n\n"
+	c, err := Load(append(minimalEnv(), "POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-empty"), f.read)
+	if err != nil || c.Admin.Tokens != nil {
+		t.Errorf("empty tokens file: %v %+v", err, c)
 	}
 	// Off: empty or "off", and then nothing else of the UI may be set.
 	for _, v := range []string{"", "off"} {
@@ -516,7 +523,7 @@ func TestAdminListener(t *testing.T) {
 		}
 	}
 	// The explicit exception for Docker port publishing, with a warning.
-	c := load("POSTWERK_ADMIN_LISTEN=:8081", "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true",
+	c = load("POSTWERK_ADMIN_LISTEN=:8081", "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=true",
 		"POSTWERK_ADMIN_HOSTS=Relay.Example.test, 192.0.2.7")
 	if c.Admin.Listen != ":8081" || !c.Admin.NonLoopback || !reflect.DeepEqual(c.Admin.Hosts, []string{"relay.example.test", "192.0.2.7"}) {
 		t.Fatalf("admin = %+v", c.Admin)

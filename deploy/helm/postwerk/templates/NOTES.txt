@@ -17,7 +17,9 @@ Health, from your machine only:
 {{ if .Values.ui.enabled -}}
 UI, from your machine only (needs the RBAC right to port-forward to pods here):
   kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "postwerk.fullname" . }} {{ .Values.ui.port }}:{{ .Values.ui.port }}
-  open http://localhost:{{ .Values.ui.port }} and sign in with a name and token from the Secret {{ .Values.secrets.uiTokens.name }}
+  open http://localhost:{{ .Values.ui.port }} and sign in with your account's name and password
+  {{- with .Values.secrets.uiTokens.name }}, or with a name and token from the Secret {{ . }}{{ end }}
+  Create accounts with passwords under Accounts; the tokens file is for the first login and break-glass access.
   The UI listens on the pod's loopback only; never add a Service port or Ingress for it.
 
 {{ end -}}

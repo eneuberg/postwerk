@@ -86,8 +86,12 @@ spec:
             # kubectl port-forward, never through a Service.
             - name: POSTWERK_ADMIN_LISTEN
               value: {{ printf "127.0.0.1:%d" (int .Values.ui.port) | quote }}
+            {{- if .Values.secrets.uiTokens.name }}
+            # Start and break-glass access; optional once the UI has
+            # accounts in the database (docs/ui.md).
             - name: POSTWERK_UI_TOKENS_FILE
               value: /run/secrets/ui-tokens/tokens
+            {{- end }}
             {{- with .Values.ui.hosts }}
             - name: POSTWERK_ADMIN_HOSTS
               value: {{ join "," . | quote }}
@@ -232,7 +236,7 @@ spec:
               mountPath: /run/secrets/tls
               readOnly: true
             {{- end }}
-            {{- if .Values.ui.enabled }}
+            {{- if and .Values.ui.enabled .Values.secrets.uiTokens.name }}
             - name: ui-tokens
               mountPath: /run/secrets/ui-tokens
               readOnly: true
@@ -315,7 +319,7 @@ spec:
               - key: {{ .Values.secrets.hashKey.key }}
                 path: hash-key
         {{- end }}
-        {{- if .Values.ui.enabled }}
+        {{- if and .Values.ui.enabled .Values.secrets.uiTokens.name }}
         - name: ui-tokens
           secret:
             secretName: {{ .Values.secrets.uiTokens.name }}

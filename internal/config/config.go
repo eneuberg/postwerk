@@ -713,8 +713,8 @@ func (l *loader) admin(c *Config) {
 		return
 	}
 	b, ok := l.file(envUITokensFile)
-	if !ok {
-		return
+	if !ok || noLines(b) {
+		return // a file without lines: every account is in the database
 	}
 	t, err := auth.ParseTokens(bytes.NewReader(b))
 	if err != nil {
@@ -766,6 +766,16 @@ func (l *loader) sentry(c *Config) {
 	}
 	s.DSN = d
 	c.Sentry = s
+}
+
+// noLines reports whether a file has nothing but empty lines and comments.
+func noLines(b []byte) bool {
+	for _, line := range strings.Split(string(b), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			return false
+		}
+	}
+	return true
 }
 
 // loopbackHost reports whether a listen host is loopback only: localhost,
