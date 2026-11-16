@@ -30,6 +30,13 @@ type Cert struct {
 // NewCert creates a self-signed ECDSA certificate valid for an hour.
 func NewCert(t testing.TB) Cert {
 	t.Helper()
+	return NewCertUntil(t, time.Now().Add(time.Hour))
+}
+
+// NewCertUntil creates a self-signed ECDSA certificate that expires at
+// notAfter.
+func NewCertUntil(t testing.TB, notAfter time.Time) Cert {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +44,8 @@ func NewCert(t testing.TB) Cert {
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: "localhost"},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(time.Hour),
+		NotBefore:             notAfter.Add(-90 * 24 * time.Hour),
+		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

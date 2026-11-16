@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/textproto"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
+	"github.com/eneuberg/postwerk/internal/tlsreload"
 )
 
 var senders = sync.OnceValue(func() *auth.Senders {
@@ -251,6 +253,58 @@ func TestTLSRequiredForAuth(t *testing.T) {
 	}
 	if _, err := sendMsg(tc, "a@example.test", []string{"b@example.test"}, msg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A certificate renewed on disk is served to the next STARTTLS without a
+// restart (S13).
+func TestTLSCertificateReload(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
+	write := func(c testutil.Cert) {
+		t.Helper()
+		// Written next to the files and renamed, so a reader never sees
+		// half a file.
+		for name, b := range map[string][]byte{certFile: c.CertPEM, keyFile: c.KeyPEM} {
+			if err := os.WriteFile(name+".tmp", b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(name+".tmp", name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	old := testutil.NewCertUntil(t, time.Now().Add(90*24*time.Hour))
+	next := testutil.NewCertUntil(t, time.Now().Add(90*24*time.Hour))
+	write(old)
+	r, err := tlsreload.New(tlsreload.Options{Name: "smtp", CertFile: certFile, KeyFile: keyFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := start(t, func(o *Options) {
+		o.GetCertificate = r.GetCertificate
+		o.AllowInsecure = false
+	})
+	login := func(c testutil.Cert) error {
+		tc, err := smtp.DialStartTLS(e.addr, &tls.Config{RootCAs: c.Pool, ServerName: "127.0.0.1"})
+		if err != nil {
+			return err
+		}
+		defer tc.Close()
+		return tc.Auth(sasl.NewPlainClient("", "app", "secret"))
+	}
+	if err := login(old); err != nil {
+		t.Fatalf("old certificate: %v", err)
+	}
+	write(next)
+	if !r.Check(context.Background()) {
+		t.Fatal("renewed certificate not loaded")
+	}
+	if err := login(next); err != nil {
+		t.Fatalf("renewed certificate: %v", err)
+	}
+	if err := login(old); err == nil {
+		t.Fatal("old certificate still served")
 	}
 }
 

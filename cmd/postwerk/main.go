@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/retention"
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
+	"github.com/eneuberg/postwerk/internal/tlsreload"
 	"github.com/eneuberg/postwerk/internal/ui"
 )
 
@@ -239,9 +241,26 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	// The first run happens before any delivery, so nothing past its
 	// maximum age is sent after a long downtime.
 	_, _ = ret.Once(ctx)
+	// The STARTTLS certificate is re-read every minute, so a renewed one
+	// is served without a restart (S13).
+	var smtpTLS *tlsreload.Reloader
+	if cfg.TLSCertFile != "" {
+		smtpTLS, err = tlsreload.New(tlsreload.Options{
+			Name: "smtp", CertFile: cfg.TLSCertFile, KeyFile: cfg.TLSKeyFile, Logger: logger,
+			OnEvent: eventAppender(st, logger),
+		})
+		if err != nil {
+			st.Close()
+			return err
+		}
+	}
+	var getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	if smtpTLS != nil {
+		getCert = smtpTLS.GetCertificate
+	}
 	ing := ingress.New(ingress.Options{
 		Store: st, Sealer: sealer, Senders: cfg.Senders, Targets: cfg.Targets, Hostname: cfg.Hostname,
-		TLSCertificate: cfg.TLSCertificate, AllowInsecure: cfg.AllowInsecureAuth,
+		GetCertificate: getCert, AllowInsecure: cfg.AllowInsecureAuth,
 		MaxMessageBytes: cfg.MaxMessageBytes, MaxRecipients: cfg.MaxRecipients,
 		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
 	})
@@ -297,6 +316,9 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	retDone := make(chan struct{})
 	go func() { ret.Run(runCtx); close(retDone) }()
 	mgr.Start(runCtx)
+	if smtpTLS != nil {
+		go smtpTLS.Run(runCtx)
+	}
 
 	serveErr := make(chan error, 3)
 	go func() { serveErr <- ing.Serve(smtpL) }()
@@ -379,6 +401,19 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	}
 	logger.Info("postwerk stopped")
 	return runErr
+}
+
+// eventAppender writes certificate reload events to the event log, so they
+// reach every sink like other events.
+func eventAppender(st *store.Store, logger *slog.Logger) func(tlsreload.Event) {
+	return func(e tlsreload.Event) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := st.Append(ctx, store.Event{Time: time.Now(), Kind: e.Kind, Level: store.Level(e.Level), Text: e.Text})
+		if err != nil {
+			logger.Warn("writing a certificate event failed", "kind", e.Kind, "err", err)
+		}
+	}
 }
 
 // retainPolicy builds the store's retention policy from the configuration.

@@ -158,21 +158,24 @@ func (t Target) Allowed(recipients []string) bool {
 
 // Config is the validated configuration.
 type Config struct {
-	SMTPListen        string
-	HTTPListen        string
-	DataPath          string
-	Senders           *auth.Senders
-	TLSCertificate    *tls.Certificate // nil: no STARTTLS on ingress
-	AllowInsecureAuth bool
-	Hostname          string
-	MaxMessageBytes   int64
-	MaxRecipients     int
-	MaxConnections    int
-	MaxInflightBytes  int64
-	RetryWindow       time.Duration
-	ShutdownTimeout   time.Duration
-	Instance          string
-	Targets           []Target
+	SMTPListen     string
+	HTTPListen     string
+	DataPath       string
+	Senders        *auth.Senders
+	TLSCertificate *tls.Certificate // nil: no STARTTLS on ingress
+	// TLSCertFile and TLSKeyFile name the pair, so it can be reloaded
+	// (S13); empty without STARTTLS.
+	TLSCertFile, TLSKeyFile string
+	AllowInsecureAuth       bool
+	Hostname                string
+	MaxMessageBytes         int64
+	MaxRecipients           int
+	MaxConnections          int
+	MaxInflightBytes        int64
+	RetryWindow             time.Duration
+	ShutdownTimeout         time.Duration
+	Instance                string
+	Targets                 []Target
 
 	// StoreKeys encrypts raw messages at rest; nil only with
 	// POSTWERK_STORE_ENCRYPTION=off.
@@ -354,6 +357,9 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 
 	c.Senders = l.senders()
 	c.TLSCertificate = l.tlsCertificate()
+	if c.TLSCertificate != nil {
+		c.TLSCertFile, c.TLSKeyFile = l.env[envTLSCertFile], l.env[envTLSKeyFile]
+	}
 	tlsSet := l.env[envTLSCertFile] != "" || l.env[envTLSKeyFile] != ""
 	switch {
 	case !tlsSet && !c.AllowInsecureAuth:

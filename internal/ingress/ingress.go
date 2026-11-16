@@ -83,9 +83,12 @@ type Options struct {
 	Senders *auth.Senders
 	Targets []config.Target
 	// Hostname is the name in the greeting.
-	Hostname        string
-	TLSCertificate  *tls.Certificate // nil: no STARTTLS
-	AllowInsecure   bool             // AUTH without TLS
+	Hostname       string
+	TLSCertificate *tls.Certificate // nil: no STARTTLS (unless GetCertificate is set)
+	// GetCertificate, if set, supplies the certificate for each STARTTLS
+	// handshake instead of TLSCertificate (tlsreload.Reloader, S13).
+	GetCertificate  func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	AllowInsecure   bool // AUTH without TLS
 	MaxMessageBytes int64
 	MaxRecipients   int
 	// MaxConnections limits concurrent connections; 0 means
@@ -162,7 +165,10 @@ func New(opts Options) *Server {
 	// towards every target.
 	srv.EnableSMTPUTF8 = true
 	srv.ErrorLog = errorLog{opts.Logger}
-	if opts.TLSCertificate != nil {
+	switch {
+	case opts.GetCertificate != nil:
+		srv.TLSConfig = &tls.Config{GetCertificate: opts.GetCertificate, MinVersion: tls.VersionTLS12}
+	case opts.TLSCertificate != nil:
 		srv.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{*opts.TLSCertificate},
 			MinVersion:   tls.VersionTLS12,
