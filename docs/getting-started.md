@@ -80,6 +80,21 @@ In production, do not add a capture target by default. A capture tool stores eve
 password reset links and one-time codes. See the [FAQ](faq.md#can-i-use-mailpit-in-production) for a short-term
 capture copy in production.
 
+## Use the published image
+
+Releases are published as `ghcr.io/eneuberg/postwerk:<version>` (`linux/amd64`, `linux/arm64`; no `latest` tag),
+signed keyless with cosign by the release workflow. Verify a version with cosign 3 or newer before you run it:
+
+```sh
+cosign verify ghcr.io/eneuberg/postwerk:0.1.0 \
+  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Then run it by the digest the output names (`docker-manifest-digest`), for example
+`ghcr.io/eneuberg/postwerk@sha256:…`. The commands above work the same with that image instead of `postwerk:dev`.
+More, including the SBOM: [kubernetes.md](kubernetes.md#image).
+
 ## Minimal production-style configuration
 
 A provider as the only target:

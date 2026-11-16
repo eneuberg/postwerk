@@ -296,3 +296,23 @@ extra controller or a cron job, and a short outage), file system notifications, 
   under 14 days. cert-manager renews 15 days ahead, so the warning means the renewal did not arrive.
 - **One package for every listener.** `internal/tlsreload` has no Postwerk dependencies; the STARTTLS ingress uses it,
   and any later TLS listener uses the same code. At start an invalid pair still stops Postwerk (O1).
+
+## D39 Signed images on GHCR, no `latest`
+
+Operators need an image they can pull and check, without building it themselves. The release workflow runs on a tag
+`v<semver>` only; nothing is published from a branch.
+
+- **GHCR, keyless cosign.** The image lives next to the code, and the workflow's own `GITHUB_TOKEN` pushes it. cosign
+  signs with a short-lived certificate for the workflow's OIDC identity, so there is no signing key to store, rotate or
+  leak. A verifier checks issuer and identity (`release.yml@refs/tags/v…`), which ties the image to this repository
+  and that tag. The signature covers the index digest, and with it both platforms, the SBOM and the provenance.
+- **SBOM and provenance from BuildKit**, attached to the image index. No extra action is needed for them, and the
+  scanner image is pinned by digest. The workflow uses four actions (checkout, setup-go, setup-buildx, the cosign
+  installer), each pinned by commit; login, build and signing are plain commands.
+- **Two platforms, no emulation.** The build stage runs on the build machine and cross-compiles (`GOOS`, `GOARCH`);
+  the final stage is `scratch`, so `linux/arm64` costs one more `go build`.
+- **No `latest`.** A moving tag hides which version runs, and `IfNotPresent` never pulls the new one. Users pin a
+  version, better a digest. The chart takes its tag from `appVersion`, and the workflow refuses a tag that does not
+  match it, so chart and image cannot drift.
+- **Publishing stays a manual step.** A release starts only when the maintainer pushes a tag.
+

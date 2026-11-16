@@ -28,15 +28,47 @@ send in progress always finishes (configuration.md, section "Shutdown").
 
 ## 2. Before you install
 
-- **An image.** There is no public image yet. Build it and push it to a registry the cluster can pull from:
-  `docker build -t registry.example.test/postwerk:0.1.0 .` and `docker push …`. Pin it by digest in the values
-  (`image.digest`).
+- **An image.** The chart uses `ghcr.io/eneuberg/postwerk` with the chart's `appVersion` as tag. Verify its signature
+  and pin it by digest (below). For your own build, `docker build -t registry.example.test/postwerk:0.1.0 .`, push it
+  and set `image.repository`.
 - **A namespace**, for example `mail`.
 - **A storage class with local block storage** (`ReadWriteOnce`). SQLite needs real file locks and `fsync`; a network
   file system such as NFS or SMB is not supported. 1 GiB is plenty for typical transactional volumes.
 - **A CNI that enforces NetworkPolicy** (Calico, Cilium, and most managed clusters do; plain flannel does not). Without
   it the policy is silently ignored.
 - **Optional: cert-manager**, if the chart should issue the STARTTLS certificate.
+
+### Image
+
+Each release tag `v<version>` publishes `ghcr.io/eneuberg/postwerk:<version>` for `linux/amd64` and `linux/arm64`,
+with an SBOM and a build provenance attached. There is no `latest` tag. The image is signed keyless with
+[cosign](https://docs.sigstore.dev/cosign/) by the release workflow, so the signature names the workflow and the tag
+it ran for. Check it with cosign 3 or newer before you use a version:
+
+```sh
+cosign verify ghcr.io/eneuberg/postwerk:0.1.0 \
+  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The command fails unless the image was signed by `release.yml` in this repository for exactly that tag. To accept any
+release tag, use `--certificate-identity-regexp '^https://github\.com/eneuberg/postwerk/\.github/workflows/release\.yml@refs/tags/v'`
+instead. The output names the digest the signature covers (`docker-manifest-digest`); put it into `image.digest`, so
+the cluster pulls exactly the image you checked:
+
+```sh
+cosign verify … | jq -r '.[0].critical.image."docker-manifest-digest"'   # sha256:…
+```
+
+SBOM and provenance (in-toto, from BuildKit) are part of the signed image index:
+
+```sh
+docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:0.1.0 --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:0.1.0 --format '{{ json .Provenance }}'
+```
+
+To enforce signatures in the cluster, use an admission policy (for example Sigstore policy-controller or Kyverno) with
+the same issuer and identity.
 
 ## 3. Create the secrets
 
@@ -45,7 +77,7 @@ Postwerk image (it has no shell, so the commands run outside the cluster), then 
 Do not keep the files afterwards, and never commit them.
 
 ```sh
-IMG=registry.example.test/postwerk:0.1.0
+IMG=ghcr.io/eneuberg/postwerk:0.1.0     # verified as in section 2
 
 # One line per sending application: name:hash. The password goes in on stdin.
 printf '%s' "$APP_PASSWORD" | docker run --rm -i "$IMG" hash-password   # prints pbkdf2-sha256$600000$…
@@ -90,8 +122,7 @@ A values file for production with Mailjet:
 ```yaml
 # values-prod.yaml
 image:
-  repository: registry.example.test/postwerk
-  digest: sha256:…            # recommended: pin by digest
+  digest: sha256:…            # recommended: the digest cosign verified (section 2)
 instance: prod
 tls:
   certManager:
@@ -130,7 +161,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 
 | Value | Default | Meaning |
 |---|---|---|
-| `image.repository`, `image.tag`, `image.digest` | `postwerk`, `dev`, empty | The image; a digest wins over the tag (**recommended**: digest). |
+| `image.repository`, `image.tag`, `image.digest` | `ghcr.io/eneuberg/postwerk`, empty (the chart's `appVersion`), empty | The image; a digest wins over the tag (**recommended**: the digest you verified). |
 | `hostname` | empty (Postwerk's default `postwerk`) | `POSTWERK_HOSTNAME`: name in the greeting and in `EHLO` towards targets. |
 | `instance` | empty | `POSTWERK_INSTANCE`: added to every log line and event. |
 | `secrets.senders`, `secrets.storeKey`, `secrets.hashKey`, `secrets.uiTokens` | `postwerk-senders`/`senders`, `postwerk-store-key`/`store-key`, `postwerk-hash-key`/`hash-key`, `postwerk-ui-tokens`/`tokens` | Existing Secrets (name and key). |

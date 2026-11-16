@@ -11,7 +11,8 @@ tracks its delivery to each target. It runs as one binary with one SQLite file.
 ![Animated diagram: applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to monitoring. In a second round Mailjet answers with error 550, the error event raises an alert in monitoring (for example GlitchTip), and an audit lookup asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
 
 To try it on your machine with Docker Compose and Mailpit, see [Getting started](docs/getting-started.md). To run it in
-a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md).
+a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md). Release images are
+published as `ghcr.io/eneuberg/postwerk:<version>`, signed with cosign ([how to verify](docs/kubernetes.md#image)).
 
 ## Why put a relay in front of your email provider
 
