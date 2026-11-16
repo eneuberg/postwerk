@@ -279,27 +279,31 @@ attempt, recipient position and SMTP code as extra data; the environment is the 
 event, so an export repeated after a crash is dropped by the receiver as a duplicate. It respects `429`,
 `Retry-After` and `X-Sentry-Rate-Limits`, backs off while the server is down and keeps the events until then.
 
-## 10. Query API (planned)
+## 10. Query API
 
-Built today: `GET /healthz` (alive) and `GET /readyz` (store reachable, workers running) on the internal HTTP listener,
-without a token, and the read layer (`internal/query`) that the UI uses. Everything else in this section is planned.
+Built: a read-only JSON API for other applications in the cluster ([api.md](api.md), D32–D34). It has its own
+listener, `POSTWERK_API_LISTEN`, off by default; unlike the UI it may bind the pod address, because other pods call
+it. In the chart the NetworkPolicy lets in only the pods in `api.allowFrom`, and TLS is on. Its bearer tokens
+`<name>.<token>` come from a file of their own, `POSTWERK_API_TOKENS_FILE`, never from the UI tokens file, and are
+kept as SHA-256 (D41), with the roles `read` and `admin`. `GET /healthz` and `GET /readyz` stay on the internal HTTP
+listener, without a token.
 
-On the admin listener (section 11), with the tokens of the UI tokens file, roles `read` and `admin`. Token use is
-itself logged as an event.
-
-| Call | Returns | Scope |
+| Call | Returns | Role |
 |---|---|---|
-| `GET /v1/mails/{id}` | state, deliveries per target (status, attempts, last reply, provider status), events | read |
-| `GET /v1/mails?ref=…` / `?message_id=…` | the same, found by the sender's own reference or `Message-ID` | read |
-| `GET /v1/mails?to=…&since=…&state=…&target=…` | list | read |
-| `GET /v1/events?after=…` | event log from a cursor, for export and audit | read |
-| `GET /v1/stats` | per target: queued, oldest queued, results of the last 24 h | read |
-| `POST /v1/mails/{id}/resend?target=…` | new attempt for a `failed` or `unknown` delivery, while the raw message exists | admin |
-| `POST /v1/mails/{id}/close?target=…` | mark an `unknown` delivery as done without resending | admin |
+| `POST /v1/search` | the mails found by id, ref, `Message-ID` or address (the term in the body), as summaries without addresses; at most 20 for `read`, 100 for `admin` | read, admin |
+| `GET /v1/mails/{id}` | one mail: deliveries per target with attempts and last reply, recipients, events; addresses and the `Message-ID` masked for `read` | read, admin |
+| `GET /v1/mails?state=…&target=…&from=…&to=…&page=…` | the list, newest first, 50 per page; filters never hold an address | admin |
+| `GET /v1/overview` | per target: recipients of the last 24 h by status, queued now, oldest queued; the recent problems | admin |
 
-The API will never return message content. Searching by address will take a request body, as the UI's search does,
-so addresses stay out of URLs and access logs
+Every request is an event (`api.request`, or `api.view` for a returned mail), and is answered only once that event is
+written; failed tokens are counted, one `api.auth_failed` per token name and minute (D42). The API never returns
+message content, the subject or headers other than `Message-ID`. Searching by address takes a request body, as the
+UI's search does, so addresses stay out of URLs and access logs
 ([privacy-and-security.md](privacy-and-security.md#82-privacy-changes-and-their-status)).
+
+Planned, for `admin` tokens: `POST /v1/mails/{id}/resend?target=…` (a new attempt for a `failed` or `unknown`
+delivery, while the raw message exists) and `POST /v1/mails/{id}/close?target=…` (mark an `unknown` delivery as done
+without resending), D13.
 
 Senders can set `X-Postwerk-Ref: <their id>` to find a mail by their own reference later. A `ref` that contains `@` is
 not stored, because a reference must be an opaque id, not an address. Postwerk also returns its id in the SMTP reply
@@ -345,6 +349,8 @@ serves the `check` policy in section 6.
 - The HTTP listener is separate from ingress, defaults to `127.0.0.1:8080` and is meant for an internal network only.
 - The UI has its own admin listener on loopback (`127.0.0.1:8081`), reached only through a tunnel, with a password login,
   sessions, a Host allow-list, CSRF tokens and strict headers ([ui.md](ui.md)).
+- The query API, if turned on, has its own listener and bearer tokens, refuses browsers, is rate-limited and reachable
+  only from the pods the NetworkPolicy allows ([api.md](api.md)).
 - The container image is built from `scratch` (binary and CA certificates only, no shell) and runs as uid 65532 with a
   read-only root file system except for the data volume. No extra capabilities, no host network, no cluster API access.
 - No content or recipient addresses in logs, events or error reports.
@@ -383,7 +389,8 @@ Built:
 - Crash during sending, restart, and proof that the recovery and each built `ON_UNKNOWN` policy behave as described.
 - Leak test: every end-to-end test sends to a canary address and checks that it appears nowhere in logs, exported
   events, the events table or reply texts. The UI tests extend it to searches: the canary is never logged, never in an
-  event, never echoed into a page, and shown only to `admin` before pseudonymization; no page shows message content.
+  event and never echoed into a page; no page shows message content. The API tests check that a `read` token never
+  sees it unmasked.
 - `docker compose` example with Mailpit as target for local runs ([examples/compose.yaml](../examples/compose.yaml)).
 
 - The Sentry sink against a fake endpoint: envelope shape, levels, rate limits, backoff, timeouts, a sink that is

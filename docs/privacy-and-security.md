@@ -350,10 +350,10 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **Query API** (built, [api.md](api.md)). Off by default; on its own listener, for other pods. Bearer tokens
   `<name>.<token>` from `POSTWERK_API_TOKENS_FILE` (`postwerk gen-api-token`): 32 random bytes, kept as SHA-256 and
   checked in constant time, the same for unknown names (D41). Failed authentications are counted, one event per token
-  name and minute (D42). `read` tokens can only look up one mail or one search at a time (at most
-  20 mails), with addresses and the `Message-ID` masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
-  JSON only, 4 KiB bodies, no CORS and browser requests refused, strict headers, optional `Host` allow-list,
-  optional TLS (on by default in the chart). A request that cannot be written to the event log gets no answer.
+  name and minute (D42). `read` tokens can only look up one mail or one search at a time (at most 20 mails), with
+  addresses and the `Message-ID` masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
+  JSON only, 4 KiB bodies, no CORS and browser requests refused, strict headers, optional `Host` allow-list, optional
+  TLS (on by default in the chart). A request that cannot be written to the event log gets no answer.
 - **Image.** Release images on `ghcr.io/eneuberg/postwerk` are signed keyless with cosign by the release workflow
   and carry an SBOM and build provenance; check the signature and pin the digest before you run one
   ([kubernetes.md](kubernetes.md#image), D39).

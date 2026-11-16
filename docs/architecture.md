@@ -286,8 +286,9 @@ Lookups by address (`store.MailIDsByAddress`) take the normalized query and its 
 `MailIDsByRef`, `MailIDsByMessageID`, `MailIDsByAddress`, `MailEvents`, `Mail`, `Deliveries`). `ListMails` filters by
 the derived state in SQL: it counts each mail's recipients per status and applies the same rule as `store.Summarize`
 (a test checks both agree for every combination), so pages stay correct with a state filter. The query layer decides
-what a reader may see: `query.Full` (role `admin`) returns addresses, `query.Masked` (role `read`, the zero value)
-returns `j•••@e•••.com`, and a pseudonymized mail returns no address at all. No function returns the stored message.
+what a reader may see: `query.Full` (the UI, and API tokens with role `admin`) returns addresses, `query.Masked` (API
+tokens with role `read`, the zero value) returns `j•••@e•••.com` and masks the `Message-ID` (`query.MaskMessageID`),
+and a pseudonymized mail returns no address at all. No function returns the stored message.
 
 `internal/ui` is one `http.Handler` on the admin listener (`ui.NewServer` sets the timeouts). An outer layer sets the
 security headers on every response, refuses unknown `Host` headers and bounds the body; Go's
@@ -322,14 +323,13 @@ after its event is written, so nothing happens in the UI that the audit log miss
   message body is never there in plaintext, and after pseudonymization neither are the recipient or the envelope
   sender; only hashes remain, and the mail is still found by address.
 - UI tests drive the handler with `httptest`: Host check, security headers on every response, CSRF, login (one token
-  check per attempt, whatever was typed), concurrency limit, session expiry, logout, masking by role, pagination, a
-  crawl of every reachable page that must never show the seeded message body, and the canary leak test for searches
-  (the canary is never in logs, events or the exported stream, never echoed into a page, and visible only to `admin`
-  before pseudonymization). `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo` serves made-up data for
+  check per attempt, whatever was typed), concurrency limit, session expiry, logout, full addresses for every
+  account, pagination, a crawl of every reachable page that must never show the seeded message body, and the canary
+  leak test for searches (the canary is never in logs, events or the exported stream, and never echoed into a page). `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo` serves made-up data for
   design work and screenshots.
 - API tests drive the handler with `httptest`: role separation (a `read` token cannot list and sees masked
-  addresses, `admin` sees them in full), the search bound for `read`, auth failures and their events, the token cache,
-  both rate limits, method, content type, body size and browser checks, the Host allow-list, security headers, and a
+  addresses and a masked `Message-ID`, `admin` sees them in full), the search bound for `read`, auth failures and
+  their folded events, both rate limits, method, content type, body size and browser checks, the Host allow-list, security headers, and a
   leak test (no content, subject or other header in any response; the query never in an event, log or the exported
   stream). `cmd/postwerk` runs the whole program with the API over TLS.
 - The end-to-end harness also runs the Sentry sink against a fake endpoint, and the leak check searches every
