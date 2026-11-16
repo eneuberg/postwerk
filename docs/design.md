@@ -119,8 +119,8 @@ position in the envelope, never by its address.
 
 The status of a delivery, and of a mail, is a **summary computed when reading**, never stored: `queued` while any
 recipient is queued, `unknown` while any is unknown, `handed_off` when all were handed off, `failed` when none was,
-and `partial` when some were handed off and the others failed. `partial` exists only as such a summary, for logs and
-the later API.
+and `partial` when some were handed off and the others failed. `partial` exists only as such a summary, for logs, the
+UI and the query API.
 
 - `accepted`: stored, `250` sent to the sender. The raw message is kept, encrypted, until it is no longer needed for
   delivery (section 7).
@@ -134,8 +134,7 @@ the later API.
 ### What `250` means
 
 A `250` reply from Postwerk (`250 2.0.0 queued as pw_…`) means Postwerk has stored the mail and is now responsible for
-it. It does not mean the mail was delivered. The events and the UI (later also the status API) say what happened
-afterwards.
+it. It does not mean the mail was delivered. The events, the UI and the query API say what happened afterwards.
 
 Every `250` along the way has the same meaning: "I have it now." The target's `250` means the provider has it; only the
 provider status says whether the recipient's server accepted it. Whether a person read it, or found it in the spam

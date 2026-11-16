@@ -84,14 +84,18 @@ In production, do not add a capture target by default. A capture tool stores eve
 password reset links and one-time codes. See the [FAQ](faq.md#can-i-use-mailpit-in-production) for a short-term
 capture copy in production.
 
-## Use the published image
+## Use a released image
 
-Releases are published as `ghcr.io/eneuberg/postwerk:<version>` (`linux/amd64`, `linux/arm64`; no `latest` tag),
-signed keyless with cosign by the release workflow. Verify a version with cosign 3 or newer before you run it:
+Released versions are published as `ghcr.io/eneuberg/postwerk:<version>` (`linux/amd64`, `linux/arm64`; no `latest`
+tag), signed keyless with cosign by the release workflow. No version is released yet: until the first release, build
+the image yourself as above. The versions and what changed are in [CHANGELOG.md](../CHANGELOG.md).
+
+Verify a version with cosign 3 or newer before you run it:
 
 ```sh
-cosign verify ghcr.io/eneuberg/postwerk:0.1.0 \
-  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v0.1.0 \
+VERSION=1.0.0   # a released version from CHANGELOG.md
+cosign verify ghcr.io/eneuberg/postwerk:$VERSION \
+  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v$VERSION \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

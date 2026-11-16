@@ -42,14 +42,14 @@ by accident. See [Getting started](getting-started.md#mailpit-as-a-target-in-dev
 
 Not by default. A capture tool stores every mail in plain text, including password reset links and one-time codes.
 Anyone who can open it can take over accounts. That is a privacy and a security problem. In production, Postwerk's own
-records are meant to be enough to audit and trace mails without keeping their content: the event log (built), and the
-status lookup and error reporting to other tools (planned).
+records are meant to be enough to audit and trace mails without keeping their content: the event log, the UI and the
+query API, and error reports to Sentry or GlitchTip.
 
 If you need a capture copy in production for a short time, for example to debug one integration:
 
 - mark the target `OPTIONAL`, so its failures are warnings, not errors;
 - keep mails with credentials out of it with the header `X-Postwerk-Skip: <target name>` (a dedicated sensitive-mail
-  flag that fails safe is planned, see [scope.md gap 6](scope.md#7-gaps-between-the-ideal-and-the-current-design));
+  flag that fails safe is an open suggestion, see [scope.md gap 6](scope.md#7-gaps-between-the-ideal-and-the-current-design));
 - protect Mailpit's UI with `--ui-auth-file` and limit its retention with `--max-age` (for example `1d`);
 - remove the target again when you are done.
 

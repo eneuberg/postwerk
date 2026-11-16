@@ -29,8 +29,8 @@ send in progress always finishes (configuration.md, section "Shutdown").
 ## 2. Before you install
 
 - **An image.** The chart uses `ghcr.io/eneuberg/postwerk` with the chart's `appVersion` as tag. Verify its signature
-  and pin it by digest (below). For your own build, `docker build -t registry.example.test/postwerk:0.1.0 .`, push it
-  and set `image.repository`.
+  and pin it by digest (below). No version is released yet: until the first release, build your own,
+  `docker build -t registry.example.test/postwerk:dev .`, push it and set `image.repository` and `image.tag`.
 - **A namespace**, for example `mail`.
 - **A storage class with local block storage** (`ReadWriteOnce`). SQLite needs real file locks and `fsync`; a network
   file system such as NFS or SMB is not supported. 1 GiB is plenty for typical transactional volumes.
@@ -40,16 +40,18 @@ send in progress always finishes (configuration.md, section "Shutdown").
 
 ### Image
 
-Each release tag `v<version>` publishes `ghcr.io/eneuberg/postwerk:<version>` for `linux/amd64` and `linux/arm64`,
-with an SBOM and a build provenance attached. There is no `latest` tag. Only a tag on a commit of `main` is released,
-and every build input (actions, the Dockerfile frontend, the Go and BuildKit images) is pinned by digest. The image is
-signed keyless with
-[cosign](https://docs.sigstore.dev/cosign/) by the release workflow, so the signature names the workflow and the tag
-it ran for. Check it with cosign 3 or newer before you use a version:
+Released versions are published as `ghcr.io/eneuberg/postwerk:<version>`, one for each release tag `v<version>`, for
+`linux/amd64` and `linux/arm64`, with an SBOM and a build provenance attached. No version is released yet; the
+versions and their changes are listed in [CHANGELOG.md](../CHANGELOG.md). There is no `latest` tag. Only a tag on a
+commit of `main` is released, and every build input (actions, the Dockerfile frontend, the Go and BuildKit images) is
+pinned by digest. The image is signed keyless with [cosign](https://docs.sigstore.dev/cosign/) by the release
+workflow, so the signature names the workflow and the tag it ran for. Check it with cosign 3 or newer before you use a
+version:
 
 ```sh
-cosign verify ghcr.io/eneuberg/postwerk:0.1.0 \
-  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v0.1.0 \
+VERSION=1.0.0   # a released version from CHANGELOG.md
+cosign verify ghcr.io/eneuberg/postwerk:$VERSION \
+  --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v$VERSION \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -65,8 +67,8 @@ cosign verify … | jq -r '.[0].critical.image."docker-manifest-digest"'   # sha
 SBOM and provenance (in-toto, from BuildKit) are part of the signed image index:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:0.1.0 --format '{{ json .SBOM }}'
-docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:0.1.0 --format '{{ json .Provenance }}'
+docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:$VERSION --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/eneuberg/postwerk:$VERSION --format '{{ json .Provenance }}'
 ```
 
 To enforce signatures in the cluster, use an admission policy (for example Sigstore policy-controller or Kyverno) with
@@ -79,7 +81,7 @@ Postwerk image (it has no shell, so the commands run outside the cluster), then 
 Do not keep the files afterwards, and never commit them.
 
 ```sh
-IMG=ghcr.io/eneuberg/postwerk:0.1.0     # verified as in section 2
+IMG=ghcr.io/eneuberg/postwerk:$VERSION   # verified as in section 2, or your own build
 
 # One line per sending application: name:hash. The password goes in on stdin.
 printf '%s' "$APP_PASSWORD" | docker run --rm -i "$IMG" hash-password   # prints pbkdf2-sha256$600000$…
@@ -513,5 +515,6 @@ The volume holds the queue, delivery records and events; the raw messages in it 
   refuses a database with a newer schema. Take a snapshot before an upgrade, and roll back by restoring it together
   with the older image.
 - Keep `terminationGracePeriodSeconds` (120) longer than `shutdownTimeout` (100 s).
-- Read the release notes for new settings; an unknown `POSTWERK_*` variable stops the start, so a typo shows up at
-  once in `kubectl logs`.
+- Read [CHANGELOG.md](../CHANGELOG.md) for new and changed settings; an unknown `POSTWERK_*` variable stops the start,
+  so a typo shows up at once in `kubectl logs`. What a version number promises, and the upgrade steps in general:
+  [versioning.md](versioning.md).

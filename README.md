@@ -11,8 +11,9 @@ tracks its delivery to each target. It runs as one binary with one SQLite file.
 ![Animated diagram: applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to monitoring. In a second round Mailjet answers with error 550, the error event raises an alert in monitoring (for example GlitchTip), and an audit lookup asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
 
 To try it on your machine with Docker Compose and Mailpit, see [Getting started](docs/getting-started.md). To run it in
-a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md). Release images are
-published as `ghcr.io/eneuberg/postwerk:<version>`, signed with cosign ([how to verify](docs/kubernetes.md#image)).
+a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md). Released versions
+are published as `ghcr.io/eneuberg/postwerk:<version>`, signed with cosign ([how to verify](docs/kubernetes.md#image)).
+No version is released yet; until then, build the image yourself with `docker build`.
 
 ## Why put a relay in front of your email provider
 
@@ -27,8 +28,11 @@ one, and tests can read them through Mailpit's API.
 
 **Production:** leave Mailpit out. It keeps every mail in full, including password reset links, which is a privacy
 problem. Rely on Postwerk's audit log instead: it records what happened to each mail without keeping its content.
-Errors, such as a rejected provider login, are reported as events (JSON on stdout today; OpenTelemetry, Sentry protocol
-and webhooks are planned).
+Errors, such as a rejected provider login, are reported as events: JSON on stdout, and to Sentry or GlitchTip if you
+turn that on.
+
+**What stays with you:** alert routing, delivery status and bounce suppression at the provider, backups, DNS and
+DKIM, and the contracts with your provider. See [what Postwerk does not do](docs/scope.md#what-stays-with-you).
 
 ## How the SMTP relay works
 
@@ -71,6 +75,8 @@ options: [docs/scope.md](docs/scope.md).
 - [Privacy and security](docs/privacy-and-security.md): what is stored, for how long, who can read it
 - [Requirements](docs/requirements.md): numbered requirements, built and later
 - [Decisions](docs/decisions.md): design decisions and their reasons
+- [Versioning and upgrades](docs/versioning.md): what a version number promises, database upgrades, deprecation
+- [Changelog](CHANGELOG.md) and [security policy](SECURITY.md)
 
 ## License
 
