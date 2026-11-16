@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emersion/go-sasl"
+	"github.com/emersion/go-smtp"
+
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/config"
 	"github.com/eneuberg/postwerk/internal/keys"
@@ -88,12 +91,12 @@ func TestServeAPI(t *testing.T) {
 	}
 	var out testutil.SafeBuffer
 	ctx, cancel := context.WithCancel(context.Background())
-	addrs := make(chan [2]net.Addr, 1)
+	addrs := make(chan [3]net.Addr, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, cfg, testutil.Logger(&out), &out, func(_, h, _, a net.Addr) { addrs <- [2]net.Addr{h, a} })
+		done <- serve(ctx, cfg, testutil.Logger(&out), &out, func(sm, h, _, a net.Addr) { addrs <- [3]net.Addr{h, a, sm} })
 	}()
-	var a [2]net.Addr
+	var a [3]net.Addr
 	select {
 	case a = <-addrs:
 	case err := <-done:
@@ -146,6 +149,24 @@ func TestServeAPI(t *testing.T) {
 	if !strings.Contains(out.String(), `"api_tls":true`) {
 		t.Fatalf("start log lacks api_tls: %s", out.String())
 	}
+	// A failed SMTP login is counted too and written at shutdown (D51).
+	sc, err := smtp.Dial(a[2].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sc.Auth(sasl.NewPlainClient("", "app", "wrong")); err == nil {
+		t.Fatal("wrong SMTP password accepted")
+	}
+	sc.Close()
+	// A connection that never sends a request, like an HTTP client's spare
+	// keep-alive connection: net/http counts it as busy for five seconds,
+	// the whole shutdown deadline here. It must not keep the folded event
+	// from the final export.
+	idle, err := net.Dial("tcp", a[1].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idle.Close()
 	cancel()
 	select {
 	case err := <-done:
@@ -159,5 +180,8 @@ func TestServeAPI(t *testing.T) {
 	// exported at shutdown.
 	if !strings.Contains(out.String(), `"kind":"api.auth_failed","actor":"support","text":"failures=1"`) {
 		t.Fatalf("no folded auth_failed event at shutdown: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"kind":"ingress.auth_failed","sender":"app","text":"failures=1"`) {
+		t.Fatalf("no folded ingress.auth_failed event at shutdown: %s", out.String())
 	}
 }

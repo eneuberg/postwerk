@@ -433,6 +433,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	// takes at most delivery.DefaultAttemptTimeout; meanwhile open SMTP
 	// sessions get at most half of the deadline. Mails accepted in that
 	// time stay queued for the next start.
+	// The API listener stops at the same time, within the same half; what
+	// is left then is closed, so it can never use up the time the final
+	// export needs. Ingress writes its folded refusal events when it has
+	// stopped (D51), the API its folded failed authentications (H7), both
+	// before the final export.
 	cancelRun()
 	ingDone := make(chan struct{})
 	go func() {
@@ -443,23 +448,27 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			logger.Warn("smtp sessions still open at shutdown were closed", "err", err)
 		}
 	}()
+	apiDone := make(chan struct{})
+	go func() {
+		defer close(apiDone)
+		if apiSrv == nil {
+			return
+		}
+		if err := stopHTTP(sd, apiSrv, cfg.ShutdownTimeout/2); err != nil {
+			logger.Warn("api connections still open at shutdown were closed", "err", err)
+		}
+		apiHandler.Close()
+	}()
 	if err := mgr.Stop(sd); err != nil {
 		logger.Error("delivery workers did not stop in time; interrupted sends are recovered on the next start", "err", err)
 	}
 	<-ingDone
+	<-apiDone
 	for _, done := range []chan struct{}{repDone, retDone} {
 		select {
 		case <-done:
 		case <-sd.Done():
 		}
-	}
-	// The API stops before the final export, so the failed authentications
-	// it still counts are written and exported with the rest (H7).
-	if apiSrv != nil {
-		if err := apiSrv.Shutdown(sd); err != nil {
-			logger.Warn("api listener shutdown incomplete", "err", err)
-		}
-		apiHandler.Close()
 	}
 	// The final export is bounded on its own, so a slow remote sink cannot
 	// use up the deadline that closing the store still needs. stdout is
@@ -482,6 +491,21 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	}
 	logger.Info("postwerk stopped")
 	return runErr
+}
+
+// stopHTTP shuts srv down within limit (and ctx), then closes the
+// connections that are left. net/http counts a connection that a client
+// opened but has not sent a request on yet as busy for five seconds; an
+// HTTP client's spare keep-alive connection is one. Without the limit such a
+// connection could hold up the shutdown that long.
+func stopHTTP(ctx context.Context, srv *http.Server, limit time.Duration) error {
+	c, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	err := srv.Shutdown(c)
+	if err != nil {
+		_ = srv.Close()
+	}
+	return err
 }
 
 // apiListener opens the JSON query API's listener (H2), with TLS from a
