@@ -107,8 +107,12 @@ its default is listed in [configuration.md](configuration.md).
 | A1 | Every state change is an event with `seq`, time, mail id, target, kind, level; a result event also names the recipient's position, never its address. | F |
 | A2 | Reporter reads events by cursor per sink; a sink that fails retries later and catches up. | F |
 | A3 | stdout sink: one JSON line per event, always on. | F |
-| A4 | Sinks for OpenTelemetry, Sentry protocol, signed webhook. | L |
+| A4 | Sinks for OpenTelemetry, Sentry protocol, signed webhook. The Sentry part is built (A6–A9); OpenTelemetry and webhook are later. | L (Sentry: F) |
 | A5 | Provider status adapter (Mailjet), and the `check` policy for unclear outcomes. | L |
+| A6 | Sentry-protocol sink, on when `POSTWERK_SENTRY_DSN_FILE` is set: one envelope per event to `/api/<project>/envelope/` with `X-Sentry-Auth`, standard library only. The DSN is checked at start and must be `https` unless `POSTWERK_SENTRY_ALLOW_HTTP=true`; a DSN in a variable is refused. `POSTWERK_SENTRY_MIN_LEVEL` `error` (default) or `warn`; lower events only move the cursor. | F |
+| A7 | Each Sentry event is built from the event record only: message `<kind> at <target>: <code> <text>`, fingerprint kind and target, tags `kind`, `target`, `sender`, `instance`, `level`, `mail_id` (`actor` for UI events), extra `seq`, `attempt`, `recipient` (position), `smtp_code`, `smtp_text`, `ui_path`; environment is the instance. The reply text is redacted again. No addresses, content, user, request, breadcrumbs or host name. | F |
+| A8 | The Sentry event id is derived from instance, seq, time, mail id and kind, so a repeated export is the same event for the receiver. | F |
+| A9 | Every sink runs on its own; a slow sink holds up no other and never delivery. Sentry: 10 s timeout, `429` with `Retry-After` and `X-Sentry-Rate-Limits` respected, backoff 5 s to 5 min on network errors, `5xx` and a refused DSN, events refused with `400`/`413`/`422` skipped and logged, no redirects, body at most 16 KiB, final export at shutdown at most 10 s. | F |
 
 ## HTTP
 

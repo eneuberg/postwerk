@@ -182,7 +182,7 @@ Pseudonymized data is still personal data for whoever holds the hash key
 not older than a retention cutoff. The cutoff is a single row that can only move forward; the retention job raises it
 to `now − POSTWERK_EVENT_RETENTION` before deleting.
 
-**Copies outside the store.** Sinks (stdout, later others), backups and capture targets keep their own copies with
+**Copies outside the store.** Sinks (stdout, Sentry, later others), backups and capture targets keep their own copies with
 their own retention. Backups should not live longer than `POSTWERK_RECORD_RETENTION`.
 
 ## Targets
@@ -245,6 +245,30 @@ warning at start, and a send cut by it becomes an unclear outcome on the next st
 must be longer than the deadline**: Kubernetes `terminationGracePeriodSeconds: 120`, Docker Compose
 `stop_grace_period: 120s`, `docker stop --time 120`.
 
+## Error reports to Sentry or GlitchTip
+
+The Sentry-protocol sink sends warn and error events to Sentry or a Sentry-compatible tool such as GlitchTip, so you
+get an alert with the mail id, target, sender login and SMTP code, and can look the mail up in the UI. It is off until
+a DSN file is set. Details of what is sent: [privacy-and-security.md](privacy-and-security.md#24-what-goes-to-sentry).
+
+| Variable | Default | Allowed | What it does |
+|---|---|---|---|
+| `POSTWERK_SENTRY_DSN_FILE` | none (sink off) | path | File whose first line is the project's DSN, `https://<key>@<host>[:port][/path]/<project id>`. Checked at start. Secret file. |
+| `POSTWERK_SENTRY_MIN_LEVEL` | `error` (**recommended**) | `error`, `warn` | Lowest level that is sent. `warn` adds retries, unreachable targets, skipped recipients and failed UI logins. Lower events only move the sink's cursor. |
+| `POSTWERK_SENTRY_ALLOW_HTTP` | `false` | `true`, `false` | Accept an `http://` DSN. For a local test, or a GlitchTip in the same cluster on a network that encrypts traffic between nodes. A warning is logged at every start. |
+
+`POSTWERK_SENTRY_DSN` (the DSN as a value) is refused: the DSN holds the project key, and like every secret it comes
+from a file. `POSTWERK_SENTRY_MIN_LEVEL` or `POSTWERK_SENTRY_ALLOW_HTTP` without a DSN file is a configuration error.
+The environment of each event is `POSTWERK_INSTANCE` (none if it is empty).
+
+Fixed, not configurable: one request per event, at most 16 KiB, 10 s timeout, no redirects followed. A `429` pauses
+the sink for its `Retry-After` (60 s without one), and `X-Sentry-Rate-Limits` on any response pauses it as long as it
+says (at most an hour). A network error, a `5xx` or a refused DSN (`401`, `403`, `404`) pauses it for 5 s, doubling up
+to 5 minutes, and logs one line until it works again. An event the server refuses for good (`400`, `413`, `422`) is
+skipped with a warning. Events wait in the event log meanwhile, so nothing is lost while Sentry is down (until
+`POSTWERK_EVENT_RETENTION`). A slow or failing Sentry never holds up delivery or stdout. At shutdown the final export
+waits at most 10 s; what is left goes out after the next start.
+
 ## Other
 
 | Variable | Default | Allowed | What it does |
@@ -259,7 +283,6 @@ non-empty value stops the start.
 | Variable | Planned use |
 |---|---|
 | `POSTWERK_OTEL_ENDPOINT` | OpenTelemetry sink for events (A4). |
-| `POSTWERK_SENTRY_DSN` | Sentry-protocol sink for error events (A4). |
 | `POSTWERK_WEBHOOK_URL` | Signed webhook sink (A4). |
 
 ## Commands
@@ -296,4 +319,6 @@ non-empty value stops the start.
       `NodePort`, a CNI that enforces NetworkPolicy ([kubernetes.md](kubernetes.md)).
 - [ ] **Retention** at the recommended values, or changes written down with their reason; backups no longer than
       `POSTWERK_RECORD_RETENTION`.
+- [ ] **Sentry or GlitchTip** (if used): DSN in a secret file, `https://`, `POSTWERK_INSTANCE` set so alerts name the
+      instance; the error tracker's own retention and access fit the data it receives.
 - [ ] Start log checked: no warnings about file permissions, encryption or pseudonymization.

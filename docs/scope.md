@@ -114,7 +114,7 @@ What it costs:
 | Several destinations per mail | list of targets, each with its own status | extra recipients via `always_bcc` or `recipient_bcc_maps`; not tracked as separate deliveries for audit | several `deliver_to` targets possible per the docs |
 | Per-mail status lookup | internal UI and a JSON query API by id, sender reference, `Message-ID` or address, plus the event log | log files and `postqueue` | logs |
 | Provider status after hand-off | planned, polled (Mailjet first) | no | no |
-| Error reports to monitoring | events as JSON on stdout today; OpenTelemetry, Sentry protocol, webhook planned | via log shipping | via log shipping |
+| Error reports to monitoring | events as JSON on stdout, error events to Sentry or GlitchTip; OpenTelemetry, webhook planned | via log shipping | via log shipping |
 | Maturity | early development, foundation built, not production-ready | decades of production use | younger project |
 
 The point is not that Postfix or maddy are worse. They are complete mail servers. They solve transport, including the
@@ -312,5 +312,5 @@ not change the design until they are accepted there.
     first release with ingress, store, delivery, retry policy, stdout events and the lookup API; add the rest after it
     runs.
     *Status:* in part: the foundation (ingress, store, delivery, retry policy, stdout events, health checks) was built
-    first with three direct dependencies. The lookup API and the choice between SDKs and the standard library for the
-    sinks are open.
+    first with three direct dependencies. The Sentry-protocol sink uses the standard library, no SDK (decision D30).
+    The lookup API and the same choice for the OpenTelemetry sink are open.

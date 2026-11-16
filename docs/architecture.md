@@ -20,7 +20,7 @@ internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I
 internal/tlsreload    TLS certificate from files, re-read every minute, validated before it is served (I16)
 internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
-internal/report       event cursor loop and sinks (A2, A3)
+internal/report       event cursor loop per sink, the stdout and Sentry-protocol sinks (A2, A3, A6–A9)
 internal/httpapi      health endpoints on the health listener (H1)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
 internal/ui           the internal web UI on the admin listener: login, sessions, CSRF, Host check, pages (H3, U1–U16)
@@ -31,7 +31,7 @@ internal/testutil     helpers for tests only (self-signed certificates, polling,
 Dependency rule: `store` depends on nothing internal except `redact`, so every free text is redacted where it is
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
-packages (`config` for the `Target` type, `auth`, `id`, `message`, `redact`, `seal`), never on each other. `seal` and
+packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`), never on each other. `seal` and
 `addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `ui` depends on `query`,
 `auth` and the store's event type, never on `ingress` or `delivery`; so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
 makes the data flow visible: everything meets in the store.
@@ -48,7 +48,8 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
                                                      pseudonymize, delete rows/events,  │
                                                      retention.purged; WAL checkpoint   │
                                                                                         │
-     stdout ◀── report (cursor per sink) ◀── events after cursor ───────────────────────┤
+     stdout ◀── report (cursor and loop per sink) ◀── events after cursor ──────────────┤
+     Sentry ◀──HTTPS──┘                                                                 │
                                                                                         │
   person ──tunnel──▶ admin listener (127.0.0.1:8081) ── ui ── query ── reads ──────────▶│
                                                          └── tx: ui.login / ui.search events ▶┘
@@ -324,5 +325,9 @@ after its event is written, so nothing happens in the UI that the audit log miss
   both rate limits, method, content type, body size and browser checks, the Host allow-list, security headers, and a
   leak test (no content, subject or other header in any response; the query never in an event, log or the exported
   stream). `cmd/postwerk` runs the whole program with the API over TLS.
+- The end-to-end harness also runs the Sentry sink against a fake endpoint, and the leak check searches every
+  envelope it received for the canary addresses and the message content. `internal/report` tests the Sentry sink on
+  its own: envelope and event fields, level filter, rate limits, backoff, timeout, redirects, and catching up after
+  an outage.
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.

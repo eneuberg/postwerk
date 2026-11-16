@@ -11,7 +11,7 @@ Kubernetes.
 | Deployment | **One replica, strategy `Recreate`.** Postwerk keeps its queue in one SQLite file with one writer; two pods on the same file would corrupt it. `Recreate` stops the old pod before the new one starts. |
 | Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`, port 8082 (query API) only with `api.enabled=true`. The UI port is never on the Service (section 7.1). |
 | PersistentVolumeClaim | The SQLite file at `/data`. Kept on `helm uninstall` (`helm.sh/resource-policy: keep`), so the queue and the records survive. |
-| NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, the query API only from the pods in `api.allowFrom`, egress only DNS and the target ports 587 and 465 (section 7). |
+| NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, the query API only from the pods in `api.allowFrom`, egress only DNS and the target ports 587 and 465, plus 443 to Sentry while the Sentry sink is on (section 7). |
 | ServiceAccount | Without a token: Postwerk never talks to the Kubernetes API. |
 | Certificate (optional) | A cert-manager certificate for STARTTLS from an internal CA (section 6). |
 
@@ -114,6 +114,8 @@ store key makes every queued mail unreadable (it fails with `store.decrypt_faile
 The STARTTLS certificate is a Secret of type `kubernetes.io/tls` named `postwerk-tls` (`tls.secretName`), either
 created by cert-manager (section 6) or by you: `kubectl -n mail create secret tls postwerk-tls --cert=… --key=…`.
 
+For error reports to Sentry or GlitchTip, the DSN is one more Secret (section 7.2).
+
 To add a sender or a UI token later, add a line to its file, update the Secret and restart Postwerk
 (`kubectl -n mail rollout restart deploy/<release>-postwerk`): secret files are read once at start. Without the UI,
 set `ui.enabled=false`; then the tokens Secret is not needed.
@@ -167,7 +169,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `image.repository`, `image.tag`, `image.digest` | `ghcr.io/eneuberg/postwerk`, empty (the chart's `appVersion`), empty | The image; a digest wins over the tag (**recommended**: the digest you verified). |
 | `hostname` | empty (Postwerk's default `postwerk`) | `POSTWERK_HOSTNAME`: name in the greeting and in `EHLO` towards targets. |
 | `instance` | empty | `POSTWERK_INSTANCE`: added to every log line and event. |
-| `secrets.senders`, `secrets.storeKey`, `secrets.hashKey`, `secrets.uiTokens` | `postwerk-senders`/`senders`, `postwerk-store-key`/`store-key`, `postwerk-hash-key`/`hash-key`, `postwerk-ui-tokens`/`tokens` | Existing Secrets (name and key). |
+| `secrets.senders`, `secrets.storeKey`, `secrets.hashKey`, `secrets.uiTokens`, `secrets.sentryDsn` | `postwerk-senders`/`senders`, `postwerk-store-key`/`store-key`, `postwerk-hash-key`/`hash-key`, `postwerk-ui-tokens`/`tokens`, `postwerk-sentry`/`dsn` | Existing Secrets (name and key). |
 | `tls.enabled` | `true` (**recommended**) | STARTTLS on ingress with the certificate in `tls.secretName`. |
 | `tls.secretName` | `postwerk-tls` | Secret of type `kubernetes.io/tls`. |
 | `tls.certManager.enabled` | `false` | Create a cert-manager `Certificate` that fills `tls.secretName`. |
@@ -195,6 +197,9 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `api.allowFrom` | `[]` | NetworkPolicy peers that may call the API. Empty: nobody. |
 | `api.hosts` | `[]` | Host names besides the Service names, which are always in `POSTWERK_API_HOSTS`. |
 | `api.tls.enabled`, `api.tls.secretName` | `true` (**recommended**), empty | TLS on the API; an empty secret name uses `tls.secretName`, whose names are the Service names. |
+| `sentry.enabled` | `false` | Send error events to Sentry or GlitchTip, with the DSN from `secrets.sentryDsn` (`POSTWERK_SENTRY_DSN_FILE`); section 7.2. |
+| `sentry.minLevel` | `error` (**recommended**) | `POSTWERK_SENTRY_MIN_LEVEL`: `error` or `warn`. |
+| `sentry.allowHTTP` | `false` | `POSTWERK_SENTRY_ALLOW_HTTP`: accept an `http://` DSN, for a GlitchTip inside the cluster on an encrypted network. |
 | `extraEnv` | `[]` | More `POSTWERK_*` variables as `{name, value}`. |
 | `service.exposeHTTP` | `false` | Add port 8080 to the Service, for monitoring. |
 | `persistence.size`, `storageClassName`, `existingClaim` | `1Gi`, default class, empty | The data volume. |
@@ -204,6 +209,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `networkPolicy.httpFrom` | `[]` | Peers that may reach port 8080; probes need no entry. |
 | `networkPolicy.egress.dns` | kube-dns in `kube-system` | DNS for the target host names. |
 | `networkPolicy.egress.targetPorts`, `targetCIDRs` | `[587, 465]`, `[0.0.0.0/0]` | Where Postwerk may connect. Provider addresses change, so any address is allowed on these ports by default. |
+| `networkPolicy.egress.sentry.port`, `cidrs` | `443`, `[0.0.0.0/0]` | Egress to the Sentry host, only while `sentry.enabled`. |
 | `networkPolicy.egress.extra` | `[]` | More egress rules, for example to a capture tool in the cluster. |
 
 ## 5. Wiring an application
@@ -361,7 +367,8 @@ Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down wh
 - **Query API (8082)**, when on, only from the pods in `api.allowFrom`; an empty list lets nobody in.
 - **Egress** only DNS and the target ports 587 and 465. Provider addresses change without notice, so the default
   allows those ports to any address; narrow `targetCIDRs` if your provider publishes fixed ranges. A target inside the
-  cluster (a capture tool) needs an `egress.extra` rule.
+  cluster (a capture tool) needs an `egress.extra` rule. With `sentry.enabled`, port 443 is open as well, to
+  `networkPolicy.egress.sentry.cidrs` (any address by default).
 - **Access for people** only through a tunnel: the UI with `kubectl port-forward` (section 7.1), the health port
   with `kubectl -n mail port-forward deploy/postwerk 8080:8080` (then `curl http://127.0.0.1:8080/readyz`). Never a
   public address.
@@ -411,6 +418,64 @@ subjects:
 The tunnel travels inside the API server's TLS connection. Do not add a Service port, an Ingress, a
 NetworkPolicy rule or a sidecar proxy for the UI: each would make it reachable from the cluster network. Every login
 and search is an event in the pod log (`ui.login`, `ui.login_failed`, `ui.search`, with the token name as `actor`).
+
+### 7.2 Errors to Sentry or GlitchTip
+
+Postwerk can send its error events to Sentry or to a Sentry-compatible tool such as GlitchTip
+([configuration.md](configuration.md#error-reports-to-sentry-or-glitchtip)). Each alert names the mail id, target,
+sender login and SMTP code; the mail id is a tag, so you can search for it and then open the mail in the UI
+(`ui_path` in the event's extra data). Issues are grouped by kind and target: "`delivery.failed` at `mailjet`" is one
+issue, however many mails fail. Addresses and content are never sent
+([privacy-and-security.md](privacy-and-security.md#24-what-goes-to-sentry)).
+
+1. In Sentry or GlitchTip, create a project (platform "Other" will do) and copy its DSN, for example
+   `https://<key>@glitchtip.example.test/3`.
+2. Store it as a Secret, without leaving it in a file or your shell history:
+
+   ```sh
+   read -rs DSN    # paste the DSN, then Enter
+   printf '%s\n' "$DSN" | kubectl -n mail create secret generic postwerk-sentry --from-file=dsn=/dev/stdin
+   unset DSN
+   ```
+
+3. Turn the sink on and name the instance, so alerts say where they come from (it becomes the environment):
+
+   ```yaml
+   instance: prod
+   sentry:
+     enabled: true
+     minLevel: error           # or warn, for retries and unreachable targets too
+   networkPolicy:
+     egress:
+       sentry:
+         cidrs: [0.0.0.0/0]    # narrow to your Sentry host's addresses if they are fixed
+   ```
+
+4. Check the start log: `"sentry":"glitchtip.example.test (error)"`. A failing export logs one line, such as
+   "sentry export failing", and "sentry export works again" once it recovers; events wait in the store meanwhile.
+
+**GlitchTip inside the cluster.** If GlitchTip runs in the same cluster without TLS, its DSN starts with `http://`.
+That needs `sentry.allowHTTP: true` (only on a network that encrypts traffic between nodes) and an egress rule to the
+GlitchTip pods:
+
+```yaml
+sentry:
+  enabled: true
+  allowHTTP: true
+networkPolicy:
+  egress:
+    extra:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: glitchtip
+        ports:
+          - port: 8000
+            protocol: TCP
+```
+
+GlitchTip's own NetworkPolicy, if it has one, must let Postwerk in. Set GlitchTip's retention
+(`GLITCHTIP_RETENTION_DAYS`) no longer than Postwerk's event retention without a reason.
 
 ## 8. Backups
 

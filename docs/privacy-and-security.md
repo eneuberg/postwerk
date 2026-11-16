@@ -4,8 +4,9 @@ What Postwerk stores, for how long, who can read it, and how an operator meets d
 describes what is built, marks what is planned, and ends with the list of privacy changes and their status.
 
 Status: the foundation is built, including address redaction, retention, encryption at rest and the internal UI with
-its access control and address masking, and the read-only query API ([api.md](api.md)). The external sinks, the
-provider status adapter, and resend and close are planned; what this page says about them is intent. The exact
+its access control and address masking, the read-only query API ([api.md](api.md)) and the Sentry-protocol sink.
+The OpenTelemetry and webhook sinks, the provider status adapter, and resend and close are planned; what this page
+says about them is intent. The exact
 schema is in [architecture.md](architecture.md#store), every setting in [configuration.md](configuration.md).
 
 This page is not legal advice. It points to the relevant rules so that operators know what to check with their own data
@@ -80,7 +81,7 @@ the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, 
 |---|---|---|---|---|
 | stdout (container logs) | one JSON line per event, plus operational log lines | no addresses (redacted); ids and sender names | no | everyone with access to the log collector |
 | OpenTelemetry *(planned)* | events as logs, metrics | as stdout; metric labels must never contain addresses or recipient domains | no | monitoring readers |
-| Sentry-protocol tool *(planned)* | error events | as stdout, plus anything an SDK adds by default: breadcrumbs, request data (change 12 avoids this) | no | error-tracker users |
+| Sentry-protocol tool (Sentry, GlitchTip), when a DSN is set | error events, warnings too with `POSTWERK_SENTRY_MIN_LEVEL=warn` (section 2.4) | no addresses (redacted twice); mail ids, sender logins, token names of failed UI logins | no | the error tracker's users and its operator (for sentry.io: Sentry as a processor) |
 | Webhook *(planned)* | signed events | as stdout; with [scope.md gap 11](scope.md#7-gaps-between-the-ideal-and-the-current-design) also `ref` | no | whoever runs the receiving endpoint |
 | Query API | `read` tokens: the summary of the mails one search finds (at most 20) and one mail's detail, addresses masked; `admin` tokens: also lists and the overview, addresses in full until pseudonymization; never content. Search terms only in `POST` bodies, so they stay out of access logs | yes | no | holders of an API token whose pod may connect (`api.allowFrom`) |
 | Access logs of a proxy or the calling application | Postwerk's API puts no address into a URL (change 8); what the calling application logs about its own users is up to it | only if the caller logs it | no | whoever reads those logs |
@@ -98,6 +99,26 @@ the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, 
 - Message bodies in events, logs or sink payloads.
 - Sender passwords in plaintext. The senders file holds PBKDF2-SHA256 hashes (section 6.3).
 - Key material in the store. Keys live in key files (section 6.2).
+
+### 2.4 What goes to Sentry
+
+With `POSTWERK_SENTRY_DSN_FILE` set, each event at or above the configured level (`error` by default) leaves the
+system as one HTTPS request to the DSN's host. The receiver is whoever runs that host: your own GlitchTip or Sentry,
+or Sentry's cloud service, which is then a processor for this data (section 7).
+
+| Sent | Example | Personal |
+|---|---|---|
+| message: kind, target, SMTP code and redacted reply text | `delivery.failed at mailjet: 550 5.1.1 <redacted>: unknown user` | no, after redaction |
+| tags: `kind`, `target`, `sender`, `instance`, `level`, `mail_id`; `actor` for UI events | `sender=auth-service`, `mail_id=pw_01JC…` | no, unless a sender login or token name is named after a person; the mail id points to a person for whoever can open the UI |
+| extra: `seq`, `attempt`, `recipient` (position), `smtp_code`, `smtp_text`, `ui_path` | `recipient=1`, `ui_path=/mails/pw_01JC…` | no |
+| event time, environment (the instance), the fixed SDK name `postwerk` and its version | | no |
+
+Never sent: recipient addresses, the envelope sender, `ref`, `Message-ID`, subject, headers, content, the host name,
+request or user data, breadcrumbs. The event is built from the event record alone, without an SDK (decision D30).
+The reply text was redacted when it was stored and is redacted again before it is sent; the end-to-end tests check
+that a canary address in a target's reply never reaches the request body. The receiver records the connecting
+address of the Postwerk pod (or of the cluster's egress gateway). Its retention is set in the error tracker
+(GlitchTip: `GLITCHTIP_RETENTION_DAYS`); keep it no longer than `POSTWERK_EVENT_RETENTION` without a reason.
 
 ## 3. Lifecycle and retention
 
@@ -248,7 +269,7 @@ establishment, exercise or defence of legal claims. Whether a delivery record mu
 | Network observer inside the cluster | **yes** if ingress uses cleartext or a target uses `smtp+plain://`; sender passwords too with cleartext `AUTH` | yes | yes | STARTTLS on ingress (required for `AUTH` unless explicitly allowed), TLS required towards targets by default |
 | Provider | **yes** | yes | yes | processor contract (section 7), the provider's retention settings |
 | Anyone who can open the capture tool | **yes**, including reset links and one-time codes | yes | yes | not in production by default; if needed: mails with credentials skipped, UI authentication, short retention ([README](../README.md#mailpit-recommended-for-development-and-testing-not-for-production)) |
-| Log and monitoring readers | no | no (redacted) | ids, sender names, codes, times | redaction and leak test (built); no SDK defaults for the planned Sentry sink (change 12) |
+| Log and monitoring readers, error-tracker users | no | no (redacted) | ids, sender names, codes, times | redaction and leak test (built); the Sentry sink sends only fields of the event record, no SDK defaults (change 12, built) |
 | Compromised sender credential | only mails it sends itself | no | its own replies only | per-sender limits, allowed envelope senders ([gap 13](scope.md#7-gaps-between-the-ideal-and-the-current-design)), recipient allow-list; it can send spam or phishing through the provider, not read stored mail |
 
 ### 6.2 Encryption of the raw message at rest
@@ -368,7 +389,7 @@ is usually not one, but an operator relaying mail for third parties should check
 | Query API | off by default; token required; addresses masked for `read`, no lists for `read`; search terms in request bodies, every request logged and rate-limited; NetworkPolicy and TLS in the chart | built |
 | Deleted data | SQLite `secure_delete` on; checkpoint after purges | built |
 | Secrets | sender passwords, UI and API tokens as hashes; hash key and encryption key in separate key files | built |
-| Sinks | no addresses; no SDK breadcrumbs or request data | stdout built; others planned |
+| Sinks | no addresses; no SDK breadcrumbs or request data | stdout and Sentry built; others planned |
 | Capture targets | none in production; if used: no sensitive mails, UI authentication, retention of a day or less | recommendation ([README](../README.md#mailpit-recommended-for-development-and-testing-not-for-production)) |
 
 ### 8.2 Privacy changes and their status
@@ -389,7 +410,7 @@ Proposed in an earlier review of the design. Related gaps in
 | 9 | Mask addresses for `read` tokens (`u***@example.com`), full address for `admin` | built in the query layer (`j•••@e•••.com`), shared by the UI and the API |
 | 10 | Token required for the UI, tokens stored as hashes, CSRF protection for admin actions | built: token login, PBKDF2 hashes, CSRF tokens on every form, Host check, strict headers, loopback listener |
 | 11 | Hash sender passwords; refuse `AUTH` without TLS unless explicitly allowed | built, as PBKDF2-SHA256 and `AUTH PLAIN` only (decisions D15, D16) |
-| 12 | Sentry sink without SDK defaults: each error event built from the event record only, no breadcrumbs, no request data | open, with the Sentry sink |
+| 12 | Sentry sink without SDK defaults: each error event built from the event record only, no breadcrumbs, no request data | built (section 2.4, decision D30): no SDK, fixed fields, reply text redacted again, leak test on the request body |
 | 13 | `ref` must be opaque; a `ref` with `@` is rejected | built (such a `ref` is not stored) |
 | 14 | Leak test: a canary address must not appear in logs, exported events, the events table or reply texts | built; one test also searches the database file and the WAL byte by byte after a retention run |
 | 15 | Admin calls for data subject requests (section 5.2) with `subject.erased` events | open |

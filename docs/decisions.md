@@ -366,3 +366,45 @@ The purpose is "what happened to the mail for this address, id or ref", not a co
   before the token check, so a flood of wrong tokens is bounded too.
 - **Limits are fixed for now**: 60 requests per minute per token and 600 in all. They can become settings once real
   use shows the need.
+
+## D30 The Sentry protocol by hand, without an SDK
+
+Sentry-compatible tools (Sentry itself, GlitchTip) are where many teams already get their alerts, so error events go
+there directly (D8). An SDK would bring many indirect dependencies (O4, [scope.md gap 15](scope.md#7-gaps-between-the-ideal-and-the-current-design))
+and defaults that collect more than Postwerk wants to send: breadcrumbs, request data, the host name, local
+variables. What Postwerk needs is small: one `POST` of one envelope per event, with a key in a header.
+
+- **Standard library only.** `report.Sentry` builds the envelope and the event itself from the event record, so there
+  is no field that could carry an address or content (privacy-and-security.md, change 12). The payload was checked
+  against the Sentry developer documentation (envelopes, authentication, event payloads, rate limiting) and against
+  GlitchTip's ingest code, and sent to GlitchTip 7.0.0 in a local test.
+- **One Sentry event per Postwerk event, grouped by kind and target.** The fingerprint is
+  `["postwerk", kind, target]`, so "`delivery.failed` at `mailjet`" is one issue however many mails fail, and a new
+  kind of trouble is a new issue that alerts. Reply texts differ per mail and would split issues if they were part of
+  the grouping.
+- **`mail_id` as a tag.** Tags are searchable in Sentry and GlitchTip, so an alert leads to the mail, and the mail to
+  the UI (`ui_path` in the extra data). `sender` and `target` are tags for the same reason.
+- **The DSN from a file.** Sentry calls the key public, but whoever has it can post events to the project and flood
+  the alerts. It is handled like every other secret (D20): from a file, never from a variable, never logged.
+- **`https` only, unless allowed.** `POSTWERK_SENTRY_ALLOW_HTTP=true` exists for local tests and a GlitchTip inside
+  a cluster whose network is encrypted, as cleartext SMTP needs its own explicit setting (D18).
+
+## D31 At least once to Sentry, never in the way of delivery
+
+The Sentry SDKs drop events when the server is down or rate limits them. Postwerk already has every event in its log
+and a cursor per sink (D7), so the Sentry sink keeps them instead and sends them later.
+
+- **Deterministic event ids.** The id is a UUID made from instance, seq, time, mail id and kind. An event exported
+  twice (a crash between export and cursor update) has the same id, and Sentry and GlitchTip keep one. Time and mail
+  id are part of it so that a new database, which starts at seq 1 again under the same instance name, does not
+  collide with events already sent.
+- **Wait as asked.** `429` with `Retry-After`, and `X-Sentry-Rate-Limits` on any response, pause the sink as long as
+  the server says (60 s for a bare `429`, at most an hour). Network errors, `5xx` and a refused DSN back off from 5 s
+  to 5 minutes. A refused DSN is kept and retried like a rejected SMTP login (D5): it is our configuration error.
+- **Skip what can never succeed.** An event refused with `400`, `413` or `422` is logged and skipped; sending it
+  again would stop the sink for good.
+- **Every sink on its own.** The reporter runs each sink in its own loop, so a slow Sentry holds up neither stdout nor
+  other sinks, and delivery only ever sends a non-blocking wake signal. One request takes at most 10 s; while the sink
+  waits, it makes no requests at all. The final export at shutdown is capped at 10 s, so closing the store always
+  has time left.
+- **Events below the level** move the cursor at once, so the sink never re-reads them.

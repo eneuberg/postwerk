@@ -1,7 +1,7 @@
 # Postwerk design
 
 Status: foundation built. SMTP ingress, the store, per-target delivery with the retry policy, the event log with the
-stdout output, retention, encryption at rest, a read-only internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
+stdout output and the Sentry-protocol sink, retention, encryption at rest, a read-only internal UI and a read-only query API exist and are tested. Parts marked *(planned)* are not built yet; their
 details may change. The code layout is in [architecture.md](architecture.md), every setting in
 [configuration.md](configuration.md), and whether Postwerk fits a given setup in [scope.md](scope.md).
 
@@ -31,7 +31,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Store | SQLite in WAL mode, one connection, migrations embedded | built | `modernc.org/sqlite` (pure Go) |
 | Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start | built | `github.com/emersion/go-smtp` (client) |
 | Retention | removes raw messages, pseudonymizes addresses, expires records and events | built | standard library |
-| Reporter | event log → sinks, each with its own cursor | built for stdout; other sinks planned | standard library |
+| Reporter | event log → sinks, each with its own cursor and loop | built for stdout and Sentry protocol; other sinks planned | standard library |
 | Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
 | UI | read-only HTML pages on the loopback admin listener: overview, mails, search, one mail | built | standard library, `html/template` |
@@ -39,7 +39,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 
 One process, one container, one data volume. For Kubernetes there is a Helm chart with safe defaults
 ([kubernetes.md](kubernetes.md)). [architecture.svg](architecture.svg) shows the full design, including the
-planned parts (provider status, query API, sinks other than stdout).
+planned parts (provider status, the OpenTelemetry and webhook sinks).
 
 ## 3. Targets
 
@@ -259,17 +259,25 @@ Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.
 ## 9. Sinks
 
 A sink is one interface: take an event, export it, return an error or nothing. Each sink keeps its own cursor (`seq`) in
-the store, so a sink that is down catches up later and nothing is lost.
+the store, so a sink that is down catches up later and nothing is lost. Each sink runs in its own loop, so a slow or
+failing sink holds up no other sink and never delivery.
 
 | Sink | Format | Status |
 |---|---|---|
 | stdout | one JSON line per event | built, always on |
 | OpenTelemetry | OTLP logs, plus a few metrics (queue size per target, oldest queued, attempts by result) | planned; on when an endpoint is set |
-| Sentry protocol | error events grouped by `kind` and `target`; works with Sentry-compatible tools such as GlitchTip | planned; on when a DSN is set |
+| Sentry protocol | error events (warnings too, if chosen) grouped by `kind` and `target`, with `mail_id` as a searchable tag; works with Sentry-compatible tools such as GlitchTip | built; on when a DSN file is set ([configuration.md](configuration.md#error-reports-to-sentry-or-glitchtip), decisions D30, D31) |
 | Webhook | JSON `POST`, signed per the Standard Webhooks spec (HMAC-SHA256) | planned; on when a URL is set |
 
-Each sink will have a filter (`level`, `kind`, `target`). The variables for the planned sinks are reserved: setting one
-today stops the start with "not implemented yet".
+The Sentry sink filters by level (`error`, or `warn` and above). Planned: a filter for every sink (`level`, `kind`,
+`target`). The variables for the planned sinks are reserved: setting one today stops the start with "not
+implemented yet".
+
+The Sentry sink sends one envelope per event with plain HTTP, no SDK. The event holds the message
+`<kind> at <target>: <code> <reply>`, the tags `kind`, `target`, `sender`, `instance`, `level` and `mail_id`, and the
+attempt, recipient position and SMTP code as extra data; the environment is the instance. Its id is derived from the
+event, so an export repeated after a crash is dropped by the receiver as a duplicate. It respects `429`,
+`Retry-After` and `X-Sentry-Rate-Limits`, backs off while the server is down and keeps the events until then.
 
 ## 10. Query API (planned)
 
@@ -376,8 +384,11 @@ Built:
   event, never echoed into a page, and shown only to `admin` before pseudonymization; no page shows message content.
 - `docker compose` example with Mailpit as target for local runs ([examples/compose.yaml](../examples/compose.yaml)).
 
-Planned: a sink that is down catches up after it comes back (for the external sinks), tests against Mailpit's chaos
-mode, and the `check` policy against a fake provider API.
+- The Sentry sink against a fake endpoint: envelope shape, levels, rate limits, backoff, timeouts, a sink that is
+  down catching up, and the leak test on every request body of the end-to-end tests. `SENTRY_LIVE_DSN=… go test
+  ./internal/report -run TestSentryLive` sends real events to a running Sentry or GlitchTip.
+
+Planned: tests against Mailpit's chaos mode, and the `check` policy against a fake provider API.
 
 ## 16. Open points
 
