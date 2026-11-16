@@ -326,6 +326,8 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   credentials must stay usable, so they stay in plain files; protect those by permissions.
 - **TLS on ingress.** `AUTH` needs STARTTLS with a configured certificate. Cleartext `AUTH` must be allowed explicitly
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), only on a local machine or a network that encrypts traffic between nodes.
+  A renewed certificate is picked up from its files within a minute, without a restart; a broken one is not used,
+  and `tls.reload_failed` and `tls.expiring` events report it before clients fail (D38).
 - **TLS on egress.** `smtps://` or `smtp://` with STARTTLS required; cleartext only with `smtp+plain://`, which refuses
   credentials.
 - **Tokens** (built for the UI). Stored as PBKDF2 hashes in `POSTWERK_UI_TOKENS_FILE`, one named token per person or
@@ -343,6 +345,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   20 mails), with addresses masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
   JSON only, 4 KiB bodies, no CORS and browser requests refused, strict headers, optional `Host` allow-list,
   optional TLS (on by default in the chart). A request that cannot be written to the event log gets no answer.
+- **Image.** Release images on `ghcr.io/eneuberg/postwerk` are signed keyless with cosign by the release workflow
+  and carry an SBOM and build provenance; check the signature and pin the digest before you run one
+  ([kubernetes.md](kubernetes.md#image), D39).
 - **Headers to recipients.** Postwerk removes every `X-Postwerk-*` header set by the sender, including `X-Postwerk-Ref`,
   and adds only `X-Postwerk-Id` (and `X-MJ-CustomID` for Mailjet). The id reaches the recipient; it carries no personal
   data. A `Message-ID` with an internal hostname also reaches the recipient; that is the sender's choice.
