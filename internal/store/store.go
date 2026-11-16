@@ -308,8 +308,9 @@ type Event struct {
 // Position returns a pointer to p, for Event.Recipient.
 func Position(p int) *int { return &p }
 
-// insertEvent appends e. The sender is taken from the mail row; the text is
-// redacted.
+// insertEvent appends e. The sender is taken from the mail row, or from
+// e.Sender for an event without a mail (a refused login names the sender
+// it tried); the text is redacted.
 func insertEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	var rcpt any
 	if e.Recipient != nil {
@@ -317,9 +318,9 @@ func insertEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO events (time, mail_id, target, recipient, kind, level, attempt, code, text, sender, actor)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT sender FROM mails WHERE id = ?), ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sender FROM mails WHERE id = ?), ?), ?)`,
 		ms(e.Time), nullStr(e.MailID), nullStr(e.Target), rcpt, e.Kind, string(e.Level),
-		nullInt(e.Attempt), nullInt(e.Code), nullStr(redact.Text(e.Text)), e.MailID, nullStr(e.Actor))
+		nullInt(e.Attempt), nullInt(e.Code), nullStr(redact.Text(e.Text)), e.MailID, nullStr(e.Sender), nullStr(e.Actor))
 	if err != nil {
 		return fmt.Errorf("insert event %s: %w", e.Kind, err)
 	}

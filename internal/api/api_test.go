@@ -446,10 +446,7 @@ func TestAuthFailuresFold(t *testing.T) {
 	for i := range 100 {
 		h.search(fmt.Sprintf("Bearer stranger%d.x", i), "id", "pw_01")
 	}
-	h.api.failures.mu.Lock()
-	n := len(h.api.failures.open)
-	h.api.failures.mu.Unlock()
-	if n != 1 {
+	if n := h.api.failures.Open(); n != 1 {
 		t.Fatalf("open windows = %d, want 1", n)
 	}
 }

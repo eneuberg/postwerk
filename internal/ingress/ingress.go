@@ -17,6 +17,7 @@ import (
 	"net"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/config"
+	"github.com/eneuberg/postwerk/internal/fold"
 	"github.com/eneuberg/postwerk/internal/id"
 	"github.com/eneuberg/postwerk/internal/message"
 	"github.com/eneuberg/postwerk/internal/seal"
@@ -53,6 +55,31 @@ const (
 // DefaultMaxConnections is the default limit of concurrent connections.
 const DefaultMaxConnections = 100
 
+// Events of refused logins and commands (D51). They are folded: at most one
+// event per kind, sender and reason in each RefusalWindow, with the count as
+// text. They never carry a password, an address or message content.
+const (
+	// KindAuthFailed: failed AUTH attempts; Sender is the login name only
+	// if it is in the senders file. Text "failures=<n>".
+	KindAuthFailed = "ingress.auth_failed"
+	// KindRejected: commands of a logged-in sender refused for a reason
+	// in its text ("reason=too_large rejected=<n>").
+	KindRejected = "ingress.rejected"
+)
+
+// RefusalWindow is how long refusals of one kind, sender and reason are
+// counted before their event is written.
+const RefusalWindow = time.Minute
+
+// Reasons of an ingress.rejected event.
+const (
+	ReasonTooLarge          = "too_large"           // 552 5.3.4
+	ReasonBadAddress        = "bad_address"         // 553 5.1.3
+	ReasonNeedsSMTPUTF8     = "needs_smtputf8"      // 553 5.6.7
+	ReasonTooManyRecipients = "too_many_recipients" // 452 4.5.3
+	ReasonLineTooLong       = "line_too_long"       // 500 5.5.2
+)
+
 // replyTooManyConns is written to a connection over the limit, then it is
 // closed. It is sent before the greeting, as RFC 5321 section 3.1 allows.
 const replyTooManyConns = "421 4.7.0 Too many connections, try again later\r\n"
@@ -73,7 +100,17 @@ var (
 	errNoMemory     = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "Insufficient system resources, try again later"}
 	errReadFailed   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 2}, Message: "Error while reading the message"}
 	errLineTooLong  = &smtp.SMTPError{Code: 500, EnhancedCode: smtp.EnhancedCode{5, 5, 2}, Message: "Line too long"}
+	errNoStorage    = &smtp.SMTPError{Code: 452, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "Insufficient system storage, try again later"}
 )
+
+// reasons maps the fixed replies counted as ingress.rejected to their reason.
+var reasons = map[*smtp.SMTPError]string{
+	errTooBig:      ReasonTooLarge,
+	errBadAddress:  ReasonBadAddress,
+	errNeedsUTF8:   ReasonNeedsSMTPUTF8,
+	errTooManyRcpt: ReasonTooManyRecipients,
+	errLineTooLong: ReasonLineTooLong,
+}
 
 // Options configure a Server.
 type Options struct {
@@ -105,13 +142,18 @@ type Options struct {
 	// before it reads. 0 means no budget beyond MaxConnections.
 	MaxInflightBytes int64
 	// Wake is called after each accepted mail; it must not block.
-	Wake   func()
+	Wake func()
+	// Space, if set, is asked before a mail is taken (MAIL) and before it
+	// is stored (with its size): false means the data volume is below its
+	// reserve, and the client gets 452 4.3.1 (D50).
+	Space  interface{ Allow(size int64) bool }
 	Logger *slog.Logger
 	Now    func() time.Time
 
 	// Only tests set these; zero means the fixed values above.
-	authTimeout time.Duration
-	authWait    time.Duration
+	authTimeout   time.Duration
+	authWait      time.Duration
+	refusalWindow time.Duration
 }
 
 // Server is the SMTP ingress.
@@ -121,6 +163,8 @@ type Server struct {
 	// authSlots holds one token per password check in progress.
 	authSlots chan struct{}
 	budget    budget
+	// refused folds refusals into events (D51).
+	refused *fold.Counter[refusal]
 
 	mu    sync.Mutex
 	conns map[*trackedConn]struct{}
@@ -152,12 +196,17 @@ func New(opts Options) *Server {
 	if opts.authWait <= 0 {
 		opts.authWait = authWait
 	}
+	if opts.refusalWindow <= 0 {
+		opts.refusalWindow = RefusalWindow
+	}
 	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), authSlots: make(chan struct{}, opts.MaxAuthChecks),
 		budget: budget{max: opts.MaxInflightBytes}}
+	s.refused = fold.New(opts.refusalWindow, s.writeRefusal)
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Domain = opts.Hostname
 	srv.MaxMessageBytes = opts.MaxMessageBytes
-	srv.MaxRecipients = opts.MaxRecipients
+	// The recipient limit is checked in Rcpt, with the same reply the
+	// library would send, so that the refusal is counted (D51).
 	srv.MaxLineLength = maxLineLength
 	srv.ReadTimeout = readTimeout
 	srv.WriteTimeout = writeTimeout
@@ -194,7 +243,8 @@ func (s *Server) Serve(l net.Listener) error {
 // When ctx ends first, the remaining connections are closed. A session that
 // is storing a mail finishes its commit first (the store waits for it), so a
 // sender never misses a 250 for a stored mail except when the connection
-// closes in the moment between commit and reply.
+// closes in the moment between commit and reply. The refusals counted so
+// far are written last.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.srv.Shutdown(ctx)
 	if err != nil && ctx.Err() != nil {
@@ -204,6 +254,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.mu.Unlock()
 	}
+	s.refused.Close()
 	if errors.Is(err, smtp.ErrServerClosed) {
 		return nil
 	}
@@ -377,7 +428,7 @@ func (s *session) checkPlain(identity, username, password string) error {
 		}
 	}
 	if !ok {
-		return s.authFailure()
+		return s.authFailure(username)
 	}
 	s.mu.Lock()
 	s.sender = username
@@ -407,7 +458,14 @@ func (s *Server) verify(name, password string) (bool, error) {
 	return s.opts.Senders.Verify(name, password), nil
 }
 
-func (s *session) authFailure() error {
+// authFailure counts a failed login. The name goes into the event only if
+// it is in the senders file: a password typed into the name field must not
+// reach the event log, and the keys stay bounded by the file.
+func (s *session) authFailure(name string) error {
+	if name != "" && !s.srv.opts.Senders.Known(name) {
+		name = ""
+	}
+	s.srv.refused.Add(refusal{kind: KindAuthFailed, sender: name})
 	s.srv.opts.Logger.Warn("smtp auth failed", "remote", s.remote)
 	if s.conn != nil && s.conn.authFailed() {
 		return errAuthTooMany
@@ -428,7 +486,7 @@ func (p *plainServer) Next(response []byte) ([]byte, bool, error) {
 		if errors.As(err, &se) {
 			return nil, false, se
 		}
-		return nil, false, p.session.authFailure() // malformed response
+		return nil, false, p.session.authFailure("") // malformed response
 	}
 	return challenge, done, nil
 }
@@ -440,12 +498,15 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 		return errAuthRequired
 	}
 	if !validAddress(from) {
-		return errBadAddress
+		return s.reject(errBadAddress)
+	}
+	if !s.srv.spaceFor(0) {
+		return errNoStorage
 	}
 	var p store.Params
 	if opts != nil {
 		if opts.Size > s.srv.opts.MaxMessageBytes {
-			return errTooBig
+			return s.reject(errTooBig)
 		}
 		p = store.Params{Body: string(opts.Body), SMTPUTF8: opts.UTF8, DeclaredSize: opts.Size}
 		// The library refuses other BODY values; this keeps the store's
@@ -455,7 +516,7 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 		}
 	}
 	if !p.SMTPUTF8 && !isASCII(from) {
-		return errNeedsUTF8
+		return s.reject(errNeedsUTF8)
 	}
 	s.from, s.hasFrom, s.params, s.to = from, true, p, nil
 	return nil
@@ -471,13 +532,16 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 		return errBadSequence
 	}
 	if to == "" || !validAddress(to) {
-		return errBadAddress
+		return s.reject(errBadAddress)
 	}
 	if !s.params.SMTPUTF8 && !isASCII(to) {
-		return errNeedsUTF8
+		return s.reject(errNeedsUTF8)
 	}
 	if len(s.to) >= s.srv.opts.MaxRecipients {
-		return errTooManyRcpt
+		return s.reject(errTooManyRcpt)
+	}
+	if !s.srv.spaceFor(0) {
+		return errNoStorage
 	}
 	s.to = append(s.to, to)
 	return nil
@@ -525,10 +589,10 @@ func (s *session) Data(r io.Reader) error {
 	}
 	if err != nil {
 		if errors.Is(err, smtp.ErrDataTooLarge) {
-			return errTooBig
+			return s.rejectAs(sender, errTooBig)
 		}
 		if errors.Is(err, smtp.ErrTooLongLine) {
-			return errLineTooLong
+			return s.rejectAs(sender, errLineTooLong)
 		}
 		s.srv.opts.Logger.Warn("reading message failed", "remote", s.remote, "sender", sender)
 		return errReadFailed
@@ -536,7 +600,12 @@ func (s *session) Data(r io.Reader) error {
 	// Counted as a target receives it: an LF without CR becomes CRLF on
 	// the way out (I17).
 	if int64(message.WireSize(raw)) > limit {
-		return errTooBig
+		return s.rejectAs(sender, errTooBig)
+	}
+	// The volume may have filled while the message was read; the stored
+	// row is about as large as the message.
+	if !s.srv.spaceFor(int64(len(raw))) {
+		return errNoStorage
 	}
 
 	mailID, err := s.srv.accept(sender, from, to, params, raw)
@@ -545,6 +614,46 @@ func (s *session) Data(r io.Reader) error {
 		return errStorage
 	}
 	return &smtp.SMTPError{Code: 250, EnhancedCode: smtp.EnhancedCode{2, 0, 0}, Message: "queued as " + mailID}
+}
+
+// refusal is the key under which refusals are folded into one event.
+type refusal struct{ kind, sender, reason string }
+
+// reject counts a refused command of the logged-in sender and returns its
+// fixed reply. s.mu must be held.
+func (s *session) reject(e *smtp.SMTPError) error { return s.rejectAs(s.sender, e) }
+
+// rejectAs counts a refused command of sender and returns its fixed reply.
+func (s *session) rejectAs(sender string, e *smtp.SMTPError) error {
+	s.srv.refused.Add(refusal{kind: KindRejected, sender: sender, reason: reasons[e]})
+	return e
+}
+
+// writeRefusal writes one folded refusal event. It runs on a timer or at
+// shutdown, outside any session, so it has its own deadline.
+func (s *Server) writeRefusal(r refusal, n int) {
+	text := "failures=" + strconv.Itoa(n)
+	if r.kind == KindRejected {
+		text = "reason=" + r.reason + " rejected=" + strconv.Itoa(n)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := s.opts.Store.Append(ctx, store.Event{
+		Time: s.opts.Now(), Kind: r.kind, Level: store.Warn, Sender: r.sender, Text: text,
+	})
+	if err != nil {
+		s.opts.Logger.Error("writing a refusal event failed", "kind", r.kind, "count", n, "err", err)
+	}
+}
+
+// spaceFor reports whether the data volume has room for a mail of size
+// bytes above its reserve (D50). Without Space it always has.
+func (s *Server) spaceFor(size int64) bool {
+	if s.opts.Space == nil || s.opts.Space.Allow(size) {
+		return true
+	}
+	s.opts.Logger.Warn("mail refused, data volume below its free-space reserve")
+	return false
 }
 
 // budget counts the bytes reserved for messages being received.

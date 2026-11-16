@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"maps"
 	"mime"
 	"net"
 	"net/http"
@@ -34,6 +33,7 @@ import (
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/auth"
+	"github.com/eneuberg/postwerk/internal/fold"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/store"
 )
@@ -115,7 +115,7 @@ type API struct {
 	opts     Options
 	perToken *rateLimit
 	global   *rateLimit
-	failures *authFailures
+	failures *fold.Counter[string]
 	handler  http.Handler
 }
 
@@ -144,7 +144,10 @@ func New(opts Options) (*API, error) {
 		perToken: newRateLimit(opts.Now, opts.PerToken, time.Minute),
 		global:   newRateLimit(opts.Now, opts.Global, time.Minute),
 	}
-	a.failures = newAuthFailures(opts.AuthFailWindow, a.writeAuthFailed)
+	// One api.auth_failed event per actor and window (H7, D42). Actors
+	// are token names from the file or the empty actor, so at most one
+	// window more than the file has lines is open.
+	a.failures = fold.New(opts.AuthFailWindow, a.writeAuthFailed)
 	mux := http.NewServeMux()
 	a.routes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -160,7 +163,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) { a.handler.Serv
 // Close writes the failed authentications counted so far, without waiting
 // for their windows to end. Call it once the listener is shut down; a
 // failure after Close is written at once.
-func (a *API) Close() { a.failures.close() }
+func (a *API) Close() { a.failures.Close() }
 
 // NewServer returns an HTTP server for the API listener with tight timeouts
 // (H9). Its own error log goes to logger; it never holds request content.
@@ -379,7 +382,7 @@ func (a *API) authFailed(w http.ResponseWriter, name string) {
 	if name != "" && a.opts.Tokens.Known(name) {
 		actor = name
 	}
-	a.failures.add(actor)
+	a.failures.Add(actor)
 	w.Header().Set("WWW-Authenticate", `Bearer realm="postwerk"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized", "A valid bearer token is required.")
 }
@@ -476,72 +479,4 @@ func (l *rateLimit) allow(key string) (bool, time.Duration) {
 	}
 	c.n++
 	return true, 0
-}
-
-// authFailures folds failed authentications into one event per actor and
-// window (H7, D42): the first failure of an actor opens a window, later
-// ones only count, and the window's end writes one event with the count.
-// Actors are token names from the file or the empty actor, so the map holds
-// at most one entry more than the file has lines.
-type authFailures struct {
-	window time.Duration
-	write  func(actor string, n int)
-
-	mu     sync.Mutex
-	open   map[string]*failWindow
-	closed bool
-}
-
-type failWindow struct {
-	n     int
-	timer *time.Timer
-}
-
-func newAuthFailures(window time.Duration, write func(actor string, n int)) *authFailures {
-	return &authFailures{window: window, write: write, open: make(map[string]*failWindow)}
-}
-
-func (f *authFailures) add(actor string) {
-	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		f.write(actor, 1)
-		return
-	}
-	if w := f.open[actor]; w != nil {
-		w.n++
-		f.mu.Unlock()
-		return
-	}
-	w := &failWindow{n: 1}
-	w.timer = time.AfterFunc(f.window, func() { f.flush(actor, w) })
-	f.open[actor] = w
-	f.mu.Unlock()
-}
-
-// flush ends the window w of actor, unless close took it already.
-func (f *authFailures) flush(actor string, w *failWindow) {
-	f.mu.Lock()
-	if f.open[actor] != w {
-		f.mu.Unlock()
-		return
-	}
-	delete(f.open, actor)
-	n := w.n
-	f.mu.Unlock()
-	f.write(actor, n)
-}
-
-// close ends every open window at once, in the order of the actors.
-func (f *authFailures) close() {
-	f.mu.Lock()
-	f.closed = true
-	open := f.open
-	f.open = make(map[string]*failWindow)
-	f.mu.Unlock()
-	for _, actor := range slices.Sorted(maps.Keys(open)) {
-		w := open[actor]
-		w.timer.Stop()
-		f.write(actor, w.n)
-	}
 }

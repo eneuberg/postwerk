@@ -192,6 +192,14 @@ func parseHash(v string) (hash, error) {
 // Len returns the number of known senders.
 func (s *Senders) Len() int { return len(s.users) }
 
+// Known reports whether name is in the senders file. It is for deciding
+// whether a failed login may be named in an event (the name, never the
+// password); it is not a password check.
+func (s *Senders) Known(name string) bool {
+	_, ok := s.users[name]
+	return ok
+}
+
 // Verify reports whether password is correct for the sender name. Unless
 // the login is cached, it always costs PBKDF2 with the strongest iteration
 // count in the file, for known and unknown names alike.
