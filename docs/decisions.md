@@ -652,6 +652,86 @@ public provider.
   keep the system roots. Anyone who wants both builds a bundle that holds both.
 - The chart mounts it from a ConfigMap (`targets[].caConfigMap`).
 
+## D49 Mail that waits too long is a signal of its own, measured by age
+
+A provider outage, rotated credentials, a rate limit or a `4xx` that keeps coming back all end the same way for the
+person waiting for a password reset: the mail does not arrive. `target.down` (D45) covers a target Postwerk cannot
+log in to or reach; a rate limit or a `4xx` that keeps coming back left only `delivery.retry` (`warn`), which the
+default Sentry filter does not see.
+
+- **Age, not reachability.** Every minute, per target, the age of the oldest mail with a recipient `queued` or
+  `sending`. Over `POSTWERK_QUEUE_STALE_AFTER`: `queue.stale` (error, warn for an optional target) with the count
+  and the age; back under: `queue.recovered` (info). It does not care why a mail waits, so it also catches causes
+  nobody wrote a check for. Whether a target is reachable is reported on the delivery side (D45–D48); the two stay
+  independent, so either can change without the other.
+- **15 minutes by default.** Longer than the first retries (30 s, 1, 2, 5 and 10 minutes), so a short hiccup passes
+  without a page; about as long as a password reset link or a login code is useful, so it fires while the mail still
+  matters.
+- **One event per change.** No repeats by default: the issue stays open in the tool until someone resolves it.
+  `POSTWERK_QUEUE_STALE_REPEAT` writes it again at an interval for tools that only notify on new events; repeating
+  and escalating are the tool's job (D57).
+- **Restarts keep the state.** The check starts from the newest `queue.*` event of each target, so a restart neither
+  repeats `queue.stale` nor loses `queue.recovered`. The lookup at start has no index on the kind and reads the
+  events from the newest back; an index would need a migration for a query that runs once per start.
+
+## D50 A free-space reserve: refuse new mail before the volume is full
+
+On a full data volume Postwerk answered `250` until a write failed, then `451 4.3.0`; `/readyz` stayed `200`, and the
+only trace was an error log line, because no event could be written any more.
+
+- **A reserve, checked with `statfs`.** Below `POSTWERK_MIN_FREE_BYTES` (64 MiB) ingress answers `452 4.3.1` at
+  `MAIL` and `RCPT`, and after `DATA` when the message would take the volume below it, before anything is stored.
+  Senders treat `452` as temporary and retry. `/readyz` fails, so Kubernetes stops sending new connections. Ingress
+  asks on every command (one system call), so a burst cannot outrun the 10 s interval.
+- **Written while it still fits.** `disk.low` (error) goes out while the reserve has room for it and for the export
+  cursor. The reserve also covers the mails already accepted: delivering them writes state and events, and removing
+  a delivered message overwrites its pages through the WAL (`secure_delete`), up to its size until the next
+  checkpoint. Four messages of the default 15 MiB fit in 64 MiB; a reserve under twice the message size logs a
+  warning. Bytes, not a percentage: what has to fit depends on the message size, not on the volume.
+- **Hysteresis.** `disk.ok` (info) only at the reserve plus a quarter, so a volume at the line does not flap.
+- **The store's own word counts too.** A write that fails with `SQLITE_FULL`, `IOERR`, `READONLY` or `CANTOPEN`
+  (quotas, a file system remounted read-only) makes `/readyz` fail until a write succeeds; the check probes with a
+  one-page write. That case has no event, because none can be written: the log line and the failing probe say it.
+- **Other systems.** `statfs` is read on Linux, macOS and FreeBSD. Elsewhere the check logs that it is off, and the
+  store's own write errors still make `/readyz` fail.
+
+## D51 Refused SMTP logins and commands are counted, one event per sender, reason and minute
+
+A wrong SMTP password (`535`), a message too large (`552`) or an address Postwerk cannot pass on (`553`) left only a
+log line. These are the sending application's problems, but Postwerk is the only place that sees them, and an
+application that swallows the error loses mail silently.
+
+- **The pattern of D42.** The folding of `api.auth_failed` moved into `internal/fold` and serves both: the first
+  refusal opens a one-minute window, the following ones count, the window's end writes one event with the count.
+  At shutdown the open windows are written before the final export.
+- **Two kinds.** `ingress.auth_failed` (`failures=<n>`) for failed `AUTH`, and `ingress.rejected`
+  (`reason=<r> rejected=<n>`) for refused commands of a logged-in sender, with the reason as a fixed word:
+  `too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients`, `line_too_long`. Both `warn`: the application
+  got the error itself, and a wrong password from an attacker is no reason to wake anyone. With
+  `POSTWERK_SENTRY_MIN_LEVEL=warn` they reach the application's team.
+- **No password, no address.** The sender is named only if the login name is in the senders file, otherwise it is
+  empty, so a password typed into the name field never reaches an event, and the open windows stay bounded by the
+  file. Recipients and envelope senders are never in the event.
+- **What is not counted.** A `SIZE=` above the limit at `MAIL` is answered by the SMTP library before Postwerk sees
+  the command; a too large message sent without `SIZE=` is counted. The recipient limit moved from the library to
+  Postwerk (same reply, `452 4.5.3`) so that it is counted.
+
+## D52 `/readyz` means "can take and keep mail"; what needs a person reaches the default filter
+
+- **Not ready** while the store cannot be written, the volume is below its reserve (D50) or the delivery workers are
+  not running. A pod that would refuse every mail should not get new connections.
+- **A target that is down does not count.** Neither probe fails for it: a restart cannot fix a provider, it would
+  interrupt sends to the other targets, and Kubernetes restarting a pod in a loop while the queue fills helps nobody.
+  The mails wait, and `queue.stale` (D49) says so.
+- **Certificate expiry as an error a week ahead.** `tls.expiring` was a warning until expiry, so with the default
+  `POSTWERK_SENTRY_MIN_LEVEL=error` nobody saw it in time. It stays a warning from 14 days (cert-manager renews 15
+  days ahead, so the warning means the renewal did not arrive) and becomes an error below 7 days, at once when it
+  crosses, then daily. The time left is rounded down ("9 days 23 hours", hours below two days), so it never promises
+  more than there is.
+- **`smtp` only for SMTP replies.** An event carries `"smtp": {code, text}` only when it has a reply code; every other
+  text (a certificate, retention counts, a network error, a count of refusals) is `"text"`. Fixed before 1.0, because
+  the event fields are covered by semantic versioning from then on (D56).
+
 ## D56 Semantic versioning from 1.0 covers the operator's contract
 
 Operators upgrade a relay that holds their queue and audit trail. They need to know which upgrades are safe without

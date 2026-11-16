@@ -32,7 +32,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start, target down and probes after a rejected login or an unreachable target | built | `github.com/emersion/go-smtp` (client) |
 | Retention | removes raw messages, pseudonymizes addresses, expires records and events | built | standard library |
 | Reporter | event log → sinks, each with its own cursor and loop | built for stdout and Sentry protocol; other sinks planned | standard library |
-| Health | `/healthz`, `/readyz` on the internal HTTP listener | built | standard library |
+| Health | `/healthz`, `/readyz` on the internal HTTP listener; free space of the data volume and the age of each target's queue as events (section 9.1) | built | standard library |
 | Provider status | after hand-off, ask the provider for the final status | planned | provider adapter (Mailjet first) |
 | UI | HTML pages on the loopback admin listener: overview, mails, search, one mail, accounts | built | standard library, `html/template` |
 | Query API | read-only JSON API on its own listener for other applications ([api.md](api.md)); admin-only resend and close later | built (read-only) | standard library |
@@ -274,6 +274,10 @@ unknown, skip) is one event per recipient and carries `"recipient"`, the positio
 }
 ```
 
+An event that comes with an SMTP reply (it has a reply code) carries it as `"smtp": {"code", "text"}`. Every other
+event carries its free text as `"text"`: a network error, a certificate, retention counts, a count of refusals, the
+detail of a UI or API action. The Sentry sink follows the same rule (`smtp_code` and `smtp_text`, or `text`).
+
 Kinds written today:
 
 | Kind | Level | When |
@@ -293,11 +297,17 @@ Kinds written today:
 | `target.recovered` | info | a probe succeeded and sending resumes; text `<reason>, down for <duration>` |
 | `tls.reloaded` | info | a renewed STARTTLS certificate is served |
 | `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
-| `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; once a day |
+| `tls.expiring` | warn; error below 7 days and once expired | the served certificate has less than 14 days left; once a day, and at once when it turns into an error. The text says the time left rounded down ("9 days 23 hours", hours below 2 days) |
+| `ingress.auth_failed` | warn | failed `AUTH` attempts, counted: at most one event per sender and minute with `failures=<n>`; `sender` only if the name is in the senders file. Never the password |
+| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients` or `line_too_long`, with `rejected=<n>`; at most one event per sender, reason and minute. Never an address |
+| `queue.stale` | error (warn if optional) | the oldest mail queued for a target has waited longer than `POSTWERK_QUEUE_STALE_AFTER` (15 min); once per change (section 9.1) |
+| `queue.recovered` | info | no mail for that target waits longer than that any more |
+| `disk.low` | error | the data volume has less free space than `POSTWERK_MIN_FREE_BYTES` (64 MiB); new mail gets `452` and `/readyz` fails |
+| `disk.ok` | info | the volume has a quarter more than the reserve free again |
 | `ui.login`, `ui.login_failed`, `ui.login_throttled`, `ui.search`, `ui.view`, `ui.account_created`, `ui.password_set`, `ui.account_deleted` | info (failures and throttling: warn) | someone used the UI; the event carries `"actor"` (the account) and `"text"` (where the account is kept, what was searched by, or the changed account's name), and `ui.view` the mail id; never a query, an address or a password ([ui.md](ui.md#4-audit-of-the-ui-itself)) |
 
 Planned kinds: `mail.rejected`, `delivery.resent`, `delivery.closed`, `provider.delivered`, `provider.bounced`,
-`provider.blocked`, `provider.complained`, `provider.stuck`, `queue.stale`. The retention job's own events are listed in
+`provider.blocked`, `provider.complained`, `provider.stuck`. The retention job's own events are listed in
 [architecture.md](architecture.md).
 
 ## 9. Sinks
@@ -326,6 +336,40 @@ The Sentry sink sends one envelope per event with plain HTTP, no SDK. The event 
 attempt, recipient position and SMTP code as extra data; the environment is the instance. Its id is derived from the
 event, so an export repeated after a crash is dropped by the receiver as a duplicate. It respects `429`,
 `Retry-After` and `X-Sentry-Rate-Limits`, backs off while the server is down and keeps the events until then.
+
+### 9.1 Alerting
+
+Postwerk reports facts with a level; it does not decide who is woken up (D57). It writes one event when a state
+changes, not one per check, and leaves grouping, repeating, escalation and paging to the Sentry-compatible tool
+(GlitchTip or Sentry). Its own checks:
+
+- **Mail waits too long** (D49). Every minute, per target: `queue.stale` when the oldest queued mail is older than
+  `POSTWERK_QUEUE_STALE_AFTER`, `queue.recovered` when none is. It measures age, not reachability (that is
+  `target.down`, D45), so it catches a provider outage, rotated credentials, a rate limit and a `4xx` that keeps
+  coming back alike. Optional:
+  `POSTWERK_QUEUE_STALE_REPEAT` writes `queue.stale` again while it lasts, for tools that only notify on new events.
+- **Data volume full** (D50). Below the reserve `POSTWERK_MIN_FREE_BYTES`, ingress answers `452 4.3.1` before it
+  stores anything, `/readyz` fails and `disk.low` is written; the reserve keeps room for that event, the export
+  cursor and the writes of mails already accepted.
+- **Refused senders** (D51): `ingress.auth_failed` and `ingress.rejected`, folded per minute.
+- **Certificates**: `tls.expiring` turns into an error a week before expiry, so the default filter sees it.
+
+`/readyz` fails while the store cannot be written or the volume is below its reserve, and while the workers are not
+running. It does not fail because a target is down (D52): a restart cannot fix a provider, and the mails wait in the
+queue for it; `queue.stale` reports that.
+
+What to route where, with the default `POSTWERK_SENTRY_MIN_LEVEL=error`:
+
+| Route | Kinds | Why |
+|---|---|---|
+| page (any time) | `queue.stale`, `disk.low`, `target.down` | mail is not going out, or new mail is refused |
+| ticket (working hours) | `delivery.unknown`, `delivery.failed`, `delivery.unsupported`, `delivery.too_large`, `retention.raw_expired`, `store.decrypt_failed`, `tls.expiring`, `tls.reload_failed` | single mails or a problem with days of lead time; `delivery.unknown` waits for a person's decision |
+| sender's team (needs `warn`) | `ingress.auth_failed`, `ingress.rejected`, `delivery.rejected` | the sending application has a wrong password, sends what Postwerk refuses, or a user mistyped an address; that application got the error too, or can fix it |
+| nobody | `info` events (`target.recovered` too), `delivery.retry`, `warn` events of optional targets | retries are normal; a lasting problem becomes `queue.stale` |
+
+Recovery events (`queue.recovered`, `disk.ok`, `target.recovered`) are `info`: they reach the log and the event stream, not Sentry, and
+the issue is resolved in the tool. Postwerk cannot report its own absence: watch the pod (its readiness, restarts)
+with the platform's monitoring. Rule examples for GlitchTip: [kubernetes.md](kubernetes.md#73-alert-rules).
 
 ## 10. Query API
 
@@ -387,6 +431,8 @@ serves the `check` policy in section 6.
   A connection is closed after 3 failed attempts, and after 30 s without a login. Every failed check costs the same
   (the strongest hash in the file), and at most one check per CPU runs at once (`454` when all are busy for 5 s).
   There is no blocking per IP address: in a cluster, pod addresses change and many senders share a node's address.
+  Failed logins and refused commands are counted as `ingress.auth_failed` and `ingress.rejected` events, one per
+  sender, reason and minute, never with a password or an address.
 - `AUTH` is only offered over TLS (STARTTLS with a configured certificate). Cleartext `AUTH` needs an explicit setting
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), meant for a local machine or a network that encrypts traffic between
   nodes. Without a certificate and without that setting, Postwerk does not start.
@@ -444,6 +490,11 @@ Built:
 - The Sentry sink against a fake endpoint: envelope shape, levels, rate limits, backoff, timeouts, a sink that is
   down catching up, and the leak test on every request body of the end-to-end tests. `SENTRY_LIVE_DSN=… go test
   ./internal/report -run TestSentryLive` sends real events to a running Sentry or GlitchTip.
+
+- The signals: the free-space check against a fake `statfs` (reserve, hysteresis, a mail's size, a failed event
+  write, restart), a store made unwritable with `max_page_count` (SQLite answers `SQLITE_FULL` as for a full disk),
+  the queue check with a moving clock, and the folded ingress events with the leak test. A run on a 2 MB `tmpfs`
+  showed `250` up to the reserve, then `452 4.3.1`, `/readyz` 503 and `disk.low` on stdout.
 
 Planned: tests against Mailpit's chaos mode, and the `check` policy against a fake provider API.
 

@@ -22,6 +22,8 @@ internal/delivery     one worker per target: claim, open the seal, send, classif
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop per sink, the stdout and Sentry-protocol sinks (A2, A3, A6–A9)
 internal/httpapi      health endpoints on the health listener (H1)
+internal/watch        Postwerk's own signals: free space of the data volume, age of each target's queue (H10, A10, A11)
+internal/fold         counts repeated occurrences, one record per key and window (the API's and ingress's refusal events)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
 internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts (H3, U1–U24)
 internal/api          the read-only JSON query API on its own listener: bearer tokens, limits, events, JSON (H2, H4–H9)
@@ -31,7 +33,7 @@ internal/testutil     helpers for tests only (self-signed certificates, polling,
 Dependency rule: `store` depends on nothing internal except `redact`, so every free text is redacted where it is
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
-packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`), never on each other. `seal` and
+packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
 `addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `ui` depends on `query`,
 `auth` and the store's event type, never on `ingress` or `delivery`; so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
 makes the data flow visible: everything meets in the store.
@@ -55,6 +57,8 @@ sender ──SMTP──▶ ingress ──seal(raw)── tx: mail + recipients +
                                                          └── tx: ui.* events, ui_accounts ────▶┘
   other pod ──▶ API listener (POSTWERK_API_LISTEN) ── api ── query ── reads ───────────▶│
                                                        └── tx: api.request / api.view events ▶┘
+  watch (disk every 10 s and at MAIL/RCPT/DATA, queues every minute) ── statfs, queue ages ─▶│
+                                                       └── tx: disk.* / queue.* events ────────▶┘
 ```
 
 Ingress wakes the workers through a non-blocking signal after each commit; workers also poll on a timer, so a missed
@@ -140,7 +144,7 @@ mail id either.
 | `store.decrypt_failed` | error | the stored message could not be decrypted (unknown key id, failed authentication); the delivery is `failed`, nothing was sent |
 | `tls.reloaded` | info | a changed certificate and key pair loaded and is served from the next handshake; text names the listener, subject and expiry |
 | `tls.reload_failed` | error | a changed pair did not load (unreadable, no match, expired), also after a second read 2 s later; the old one stays. Once per content |
-| `tls.expiring` | warn (error once expired) | the served certificate has less than 14 days left; at most once a day |
+| `tls.expiring` | warn; error below 7 days and once expired | the served certificate has less than 14 days left; at most once a day, and at once when it turns into an error; the time left is rounded down |
 | `ui.login` | info | someone logged in to the UI; `actor` is the account, text `file` or `database` |
 | `ui.login_failed` | warn | a failed password check; `actor` only if the name is an account; text empty for a login, `confirm` for the password asked for a change |
 | `ui.login_throttled` | warn | failed checks started a wait; `actor` as above, text `account` or `source` |
@@ -151,8 +155,17 @@ mail id either.
 | `api.forbidden` | warn | an API token asked for an endpoint its role may not use; text the endpoint |
 | `api.view` | info | a mail's detail was returned through the API; `actor` is the token name, `mail_id` the mail; no text |
 | `api.auth_failed` | warn | missing, malformed or wrong API tokens, counted: at most one per actor and minute, text `failures=<n>`; `actor` only if the name is in the tokens file |
+| `ingress.auth_failed` | warn | failed SMTP `AUTH` attempts (wrong password, unknown name, malformed `PLAIN`), counted: at most one per sender and minute, text `failures=<n>`; `sender` only if the name is in the senders file, otherwise empty |
+| `ingress.rejected` | warn | refused commands of a logged-in sender, counted per sender, reason and minute: text `reason=<r> rejected=<n>`, `r` one of `too_large` (`552`), `bad_address` (`553 5.1.3`), `needs_smtputf8` (`553 5.6.7`), `too_many_recipients` (`452 4.5.3`), `line_too_long` (`500`). A `SIZE=` above the limit at `MAIL` is answered by the SMTP library itself and not counted |
+| `queue.stale` | error (warn: optional) | the oldest mail with a recipient `queued` or `sending` at this target is older than `POSTWERK_QUEUE_STALE_AFTER`; `target` set, text `queued=<mails> oldest=<age> after=<limit>`. Once per change, again after `POSTWERK_QUEUE_STALE_REPEAT` if set |
+| `queue.recovered` | info | no mail at this target is older than that any more; same text |
+| `disk.low` | error | free space of the data volume below `POSTWERK_MIN_FREE_BYTES`; text `free=… total=… reserve=…` |
+| `disk.ok` | info | free space at least the reserve plus a quarter again |
 
 The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.
+
+On stdout and in the Sentry sink, an event with a reply code carries `"smtp": {"code", "text"}`
+(`report.FromSMTPReply`); every other event carries its text as `"text"`.
 
 Times are stored as Unix milliseconds (UTC).
 
@@ -229,7 +242,10 @@ without cancellation and is bounded by the SMTP timeouts: dial 15 s, each comman
 Shutdown in `cmd/postwerk`, all under one deadline (`POSTWERK_SHUTDOWN_TIMEOUT`, default 100 s): the workers stop
 claiming at once and finish their current send (at most 90 s); at the same time the SMTP listener closes and open
 sessions get at most half of the deadline, then they are closed (mails accepted meanwhile stay queued for the next
-start). Then the remaining events are exported, HTTP stops and the store closes. Because the deadline is longer than
+start); the API listener gets the same half, then its remaining connections are closed. net/http counts a connection
+that has not sent a request yet as busy for five seconds, and an HTTP client's spare keep-alive connection is one, so
+without that bound it could use up the deadline. Ingress and the API then write their folded refusal events. Then the
+remaining events are exported, HTTP stops and the store closes. Because the deadline is longer than
 the attempt cap, a send in progress always ends normally; a shorter configured deadline logs a warning. The
 orchestrator's grace period must be longer than the deadline (120 s).
 
@@ -320,6 +336,31 @@ security headers on every response, refuses unknown `Host` headers and bounds th
 CSRF token. Sessions are a map in memory. Templates (`html/template`) and the stylesheet are embedded; the UI has no
 JavaScript. Login checks run through `auth.Tokens`, at most `GOMAXPROCS` at once. A login or search is allowed only
 after its event is written, so nothing happens in the UI that the audit log misses. Details: [ui.md](ui.md).
+
+## Signals
+
+`internal/watch` holds the checks that are about Postwerk itself, not about one mail (design.md section 9.1). Each
+starts from the newest of its events in the event log (`store.LastOf`), so a restart neither repeats a `disk.low` or
+`queue.stale` nor loses the recovery.
+
+- **Disk.** `statfs` on the directory of the database file (Linux, macOS, FreeBSD; elsewhere the check logs that it
+  is off). Ingress calls `Allow(size)` at `MAIL`, at `RCPT` and after `DATA` with the message's size, so a burst
+  cannot outrun the 10 s interval; one `statfs` costs a system call. Low below `POSTWERK_MIN_FREE_BYTES`, ok again at
+  the reserve plus a quarter. The event is written by the check's own loop, never in a session; a failed write is
+  tried again on the next round.
+- **Why a reserve, and why 64 MiB.** SQLite needs room to write after the volume is "full" for Postwerk: the
+  `disk.low` event, the export cursors, and the deliveries of mails already accepted. With `secure_delete` the
+  removal of a delivered message overwrites its pages, which goes through the WAL first, so one hand-off can grow the
+  WAL by about the message's size until the next checkpoint (the WAL file is reused, and retention truncates it every
+  10 minutes). The reserve therefore covers a few of the largest messages: 64 MiB is four of 15 MiB plus the small
+  writes. Ingress refuses new mail first, because it is the only writer that can be told to come back later.
+- **Store writability.** `store.tx` and `SetCursor` remember a write that failed with `SQLITE_FULL`, `SQLITE_IOERR`,
+  `SQLITE_READONLY` or `SQLITE_CANTOPEN` (a file system remounted read-only after errors gives the last ones) until
+  a write succeeds (`Store.Writable`). Meanwhile `/readyz` fails, and the disk check writes one page (`Store.Probe`,
+  `user_version` set to itself) every round until it goes through. This needs no event: when the store cannot be
+  written, no event can be.
+- **Queue.** Every minute, `store.Queues` (mails with a recipient `queued` or `sending`, per target, and the oldest
+  received time; it uses the index on `delivery_recipients.status`).
 
 ## Errors and logging
 

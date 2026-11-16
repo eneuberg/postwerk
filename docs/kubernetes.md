@@ -22,7 +22,10 @@ token and no service links. Service links would add variables such as `POSTWERK_
 mode `0440` (owner root, group 65532), so only Postwerk can read them and it logs no permission warning.
 
 Probes: a startup probe and a liveness probe on `/healthz`, a readiness probe on `/readyz`, all on port 8080
-(`POSTWERK_HTTP_LISTEN=:8080`). The internal UI runs on its own listener on the pod's loopback,
+(`POSTWERK_HTTP_LISTEN=:8080`). `/readyz` fails while the store cannot be written, the volume is below its free-space
+reserve or the delivery workers are not running, so the Service stops sending new mail to a pod that would refuse
+it. A target that is down does not make it fail: neither probe restarts Postwerk for a provider outage, which a
+restart cannot fix, and the mails wait in the queue (`queue.stale` reports them). The internal UI runs on its own listener on the pod's loopback,
 `127.0.0.1:8081` ([ui.md](ui.md)); probes never touch it, and nothing in the cluster can reach it. The grace period is 120 s, longer than Postwerk's own shutdown deadline of 100 s, so a
 send in progress always finishes (configuration.md, section "Shutdown").
 
@@ -187,6 +190,8 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `limits.maxMessageBytes` | `15728640` (**recommended** for Mailjet) | `POSTWERK_MAX_MESSAGE_BYTES`: the smallest limit of your targets, Postwerk's header lines included; ingress accepts that minus those lines (configuration.md, "Message size"). |
 | `limits.maxRecipients`, `limits.maxConnections` | `50`, `100` | `POSTWERK_MAX_RECIPIENTS`, `POSTWERK_MAX_CONNECTIONS`. |
 | `limits.maxInflightBytes` | `268435456` (**recommended**) | `POSTWERK_MAX_INFLIGHT_BYTES`, the memory budget for messages being received. |
+| `limits.minFreeBytes` | `67108864` (**recommended**) | `POSTWERK_MIN_FREE_BYTES`: free space kept on the data volume; below it new mail gets `452` and `disk.low` is written. Keep `persistence.size` well above it. |
+| `queue.staleAfter`, `queue.staleRepeat` | `15m` (**recommended**), `"0"` | `POSTWERK_QUEUE_STALE_AFTER`, `POSTWERK_QUEUE_STALE_REPEAT`: `queue.stale` when a target's oldest queued mail is older; repeated while it lasts only if set. |
 | `shutdownTimeout`, `terminationGracePeriodSeconds` | `100s`, `120` | The grace period must stay longer than the shutdown deadline. |
 | `storeEncryption` | `on` (**recommended**) | `POSTWERK_STORE_ENCRYPTION`; `off` also drops the store key mount. |
 | `retention.rawKeepAfterHandoff` | `0` (**recommended**) | `POSTWERK_RAW_KEEP_AFTER_HANDOFF`. |
@@ -492,6 +497,37 @@ networkPolicy:
 
 GlitchTip's own NetworkPolicy, if it has one, must let Postwerk in. Set GlitchTip's retention
 (`GLITCHTIP_RETENTION_DAYS`) no longer than Postwerk's event retention without a reason.
+
+### 7.3 Alert rules
+
+Postwerk sends facts with a level; the rules in GlitchTip or Sentry decide who is notified
+([design.md](design.md#91-alerting)). Issues are grouped by kind and target, so "`queue.stale` at `mailjet`" is one
+issue for the whole outage.
+
+**GlitchTip.** Its project alerts count events per issue (so many events within so many minutes) and have no filter
+by tag, and Postwerk sends to one project:
+
+1. Keep `sentry.minLevel: error`. Every error kind needs a person, sooner or later.
+2. In the project's settings, under *Alerts*, add a rule: **1 event in 1 minute**, recipients the channel that should
+   learn about it (a webhook to the chat tool, or e-mail through a path that does not depend on this Postwerk). It
+   fires for every issue that receives an event, and Postwerk's issues are a kind at a target: `target.down`,
+   `queue.stale` and `disk.low`, but also `delivery.failed` at `mailjet`. Check how often your GlitchTip version repeats a rule for an
+   issue that keeps receiving events; `delivery.failed` can come once per mail.
+3. If only the page kinds may wake someone at night, point that rule at a working-hours channel and page from where
+   you can filter: the platform's monitoring on the pod (readiness, restarts), and, if your log tool can alert, a rule
+   on `"kind":"target.down"`, `"kind":"queue.stale"` or `"kind":"disk.low"` in Postwerk's stdout stream.
+4. Resolve the issue by hand once `queue.recovered` or `disk.ok` shows in the log; a later `queue.stale` reopens it and
+   the rule fires again. For a rule that should fire again while it lasts, set `queue.staleRepeat: 4h`.
+
+**Sentry.** Issue alerts can filter by tag, so one project is enough:
+
+| Rule | Conditions | Action |
+|---|---|---|
+| Postwerk: page | a new issue is created, or an issue changes from resolved to unresolved; tag `kind` is one of `queue.stale`, `disk.low`, `target.down` | page on-call |
+| Postwerk: ticket | the same, tag `kind` is not one of those | channel or ticket queue |
+| Postwerk: senders (with `minLevel: warn`) | tag `kind` starts with `ingress.`, or is `delivery.rejected` | the team of the application named in tag `sender` |
+
+The `mail_id` tag and the `ui_path` extra lead from an alert to the mail in the UI.
 
 ## 8. Backups
 

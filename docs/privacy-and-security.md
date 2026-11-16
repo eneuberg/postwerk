@@ -112,7 +112,7 @@ or Sentry's cloud service, which is then a processor for this data (section 7).
 |---|---|---|
 | message: kind, target, SMTP code and redacted reply text | `delivery.failed at mailjet: 554 5.7.1 relay access denied`; with `warn`, `delivery.rejected at mailjet: 550 5.1.1 <redacted>: unknown user` | no, after redaction |
 | tags: `kind`, `target`, `sender`, `instance`, `level`, `mail_id`; `actor` for UI events | `sender=auth-service`, `mail_id=pw_01JC…` | no, unless a sender login or token name is named after a person; the mail id points to a person for whoever can open the UI |
-| extra: `seq`, `attempt`, `recipient` (position), `smtp_code`, `smtp_text`, `ui_path` | `recipient=1`, `ui_path=/mails/pw_01JC…` | no |
+| extra: `seq`, `attempt`, `recipient` (position), `smtp_code` and `smtp_text` (events with a reply code) or `text` (other events, such as `ingress.rejected`'s `reason=too_large rejected=3`), `ui_path` | `recipient=1`, `ui_path=/mails/pw_01JC…` | no |
 | event time, environment (the instance), the fixed SDK name `postwerk` and its version | | no |
 
 Never sent: recipient addresses, the envelope sender, `ref`, `Message-ID`, subject, headers, content, the host name,
@@ -321,7 +321,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **Login hardening.** Every password check that is not a repeat of a successful login costs the strongest iteration
   count in the senders file, so the time of a failed login reveals neither which names exist nor which hashes are
   weaker. At most one check per CPU runs at once, so a burst of logins cannot starve delivery; a connection that has
-  not logged in within 30 s is closed. There is no per-IP blocking (decision D26).
+  not logged in within 30 s is closed. There is no per-IP blocking (decision D26). Failed logins are counted as
+  `ingress.auth_failed`, one event per sender and minute; the login name is kept only if it is in the senders file,
+  so a password typed into the name field never reaches an event (D51).
 - **Sender passwords.** The senders file holds PBKDF2-SHA256 hashes (`postwerk hash-password`, 600,000 iterations;
   fewer than 100,000 are refused). Only `AUTH PLAIN` is offered; it works with hashes. Mechanisms that need the
   plaintext on the server (such as `CRAM-MD5`) are not offered. A connection is closed after 3 failed attempts. Target
@@ -329,7 +331,7 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **TLS on ingress.** `AUTH` needs STARTTLS with a configured certificate. Cleartext `AUTH` must be allowed explicitly
   (`POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true`), only on a local machine or a network that encrypts traffic between nodes.
   A renewed certificate is picked up from its files within a minute, without a restart; a broken one is not used,
-  and `tls.reload_failed` and `tls.expiring` events report it before clients fail (D38).
+  and `tls.reload_failed` and `tls.expiring` events report it before clients fail (D38; an error a week ahead, D52).
 - **TLS on egress.** `smtps://` or `smtp://` with STARTTLS required; cleartext only with `smtp+plain://`, which refuses
   credentials.
 - **UI accounts** (built, D35–D37). One kind of account, admin. Everyday accounts are kept in the database with a

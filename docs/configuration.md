@@ -233,6 +233,7 @@ every target and for the Sentry sink, so prefer `CA_FILE`.
 | `POSTWERK_MAX_RECIPIENTS` | `50` | 1 to 1000 | More recipients per message get `452`. |
 | `POSTWERK_MAX_INFLIGHT_BYTES` | `268435456` (256 MiB, **recommended**) | `POSTWERK_MAX_MESSAGE_BYTES` to 1099511627776 | Memory budget for messages being received at once. Each `DATA` reserves `POSTWERK_MAX_MESSAGE_BYTES`, or the `SIZE=` the sender declared if smaller, before reading; when the budget is used up the reply is `451 4.3.1 Insufficient system resources, try again later` and the message is discarded unread into memory. A message larger than its declared `SIZE` grows its reservation to the maximum or gets the same `451`. Senders retry a `451` like any temporary error. Processing and encryption copy a message a few times, so plan the container's memory limit at about three times this value plus some 50 MiB. |
 | `POSTWERK_MAX_CONNECTIONS` | `100` | 1 to 10000 | Concurrent SMTP connections. A connection over the limit gets `421 4.7.0 Too many connections, try again later` and is closed. |
+| `POSTWERK_MIN_FREE_BYTES` | `67108864` (64 MiB, **recommended**) | `0` (off) to 2^50 | Free space kept on the data volume. Below it, `MAIL` and `RCPT` get `452 4.3.1 Insufficient system storage, try again later`, and so does a message that would take the volume below it; nothing is stored. `/readyz` fails and one `disk.low` event (error) is written; `disk.ok` once a quarter more than the reserve is free again. Keep at least twice `POSTWERK_MAX_MESSAGE_BYTES` (a warning says so otherwise): the mails already accepted still need room to be delivered ([architecture.md](architecture.md#signals)). Read with `statfs` on Linux, macOS and FreeBSD; on other systems the check is off and the start log says so. `0` turns it off, with a warning. |
 
 Fixed, not configurable: line length 2000 bytes, address length 320 bytes, connection closed after 3 failed `AUTH`,
 connection closed when it has not logged in within 30 s (`421`), at most as many password checks at once as the
@@ -318,7 +319,7 @@ application and its user can fix that, the operator cannot. Failures at optional
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
 | `POSTWERK_SENTRY_DSN_FILE` | none (sink off) | path | File whose first line is the project's DSN, `https://<key>@<host>[:port][/path]/<project id>`. Checked at start. Secret file. |
-| `POSTWERK_SENTRY_MIN_LEVEL` | `error` (**recommended**) | `error`, `warn` | Lowest level that is sent. `warn` adds retries, rejected recipient addresses (`delivery.rejected`), failures at optional targets, skipped recipients and failed UI logins. Lower events only move the sink's cursor. |
+| `POSTWERK_SENTRY_MIN_LEVEL` | `error` (**recommended**) | `error`, `warn` | Lowest level that is sent. `warn` adds retries, rejected recipient addresses (`delivery.rejected`), failures at optional targets, skipped recipients, failed UI and API logins, and refused SMTP logins and commands (`ingress.*`). Lower events only move the sink's cursor. |
 | `POSTWERK_SENTRY_ALLOW_HTTP` | `false` | `true`, `false` | Accept an `http://` DSN. For a local test, or a GlitchTip in the same cluster on a network that encrypts traffic between nodes. A warning is logged at every start. |
 
 `POSTWERK_SENTRY_DSN` (the DSN as a value) is refused: the DSN holds the project key, and like every secret it comes
@@ -332,6 +333,16 @@ to 5 minutes, and logs one line until it works again. An event the server refuse
 skipped with a warning. Events wait in the event log meanwhile, so nothing is lost while Sentry is down (until
 `POSTWERK_EVENT_RETENTION`). A slow or failing Sentry never holds up delivery or stdout. At shutdown the final export
 waits at most 10 s; what is left goes out after the next start.
+
+## Signals
+
+Postwerk's own checks ([design.md](design.md#91-alerting)). They write one event when a state changes; who is
+notified is set in the Sentry-compatible tool. The free-space check is under [Limits](#limits).
+
+| Variable | Default | Allowed | What it does |
+|---|---|---|---|
+| `POSTWERK_QUEUE_STALE_AFTER` | `15m` (**recommended**) | `0` (off) or a duration | When the oldest mail queued for a target is older than this, `queue.stale` is written (error, warn for an optional target), with the number of queued mails and the oldest age; `queue.recovered` (info) when it no longer is. Checked every minute. 15 minutes is longer than the first five retries (about 18 minutes of backoff start within it, so a short blip passes) and about as long as a password reset or login code stays useful. `0` turns it off, with a warning. |
+| `POSTWERK_QUEUE_STALE_REPEAT` | `0` (once per change) | `0` or at least `1m` | Write `queue.stale` again at this interval while the target stays stale. For alert rules that fire on new events only; GlitchTip and Sentry group the repeats into the same issue. |
 
 ## Other
 
@@ -384,5 +395,8 @@ non-empty value stops the start.
 - [ ] **Retention** at the recommended values, or changes written down with their reason; backups no longer than
       `POSTWERK_RECORD_RETENTION`.
 - [ ] **Sentry or GlitchTip** (if used): DSN in a secret file, `https://`, `POSTWERK_INSTANCE` set so alerts name the
-      instance; the error tracker's own retention and access fit the data it receives.
+      instance; the error tracker's own retention and access fit the data it receives. Alert rules set for the kinds
+      that need a person ([design.md](design.md#91-alerting)), and the pod's readiness watched by the platform.
+- [ ] **Data volume** larger than the reserve (`POSTWERK_MIN_FREE_BYTES`, 64 MiB) plus the queue you expect during
+      the longest provider outage you plan for.
 - [ ] Start log checked: no warnings about file permissions, encryption or pseudonymization.

@@ -303,7 +303,7 @@ func TestExpiryWarning(t *testing.T) {
 
 // TestExpiryEscalates: below 7 days the report is an error at once, even
 // if a warning went out less than a day ago, so an error-only filter sees
-// it a week ahead (D51).
+// it a week ahead (D52).
 func TestExpiryEscalates(t *testing.T) {
 	start := time.Now()
 	c := testutil.NewCertUntil(t, start.Add(7*24*time.Hour+time.Hour))

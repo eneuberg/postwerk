@@ -36,13 +36,20 @@ No version has been released yet. This section lists what exists today.
 - Memory budget for messages being received (`POSTWERK_MAX_INFLIGHT_BYTES`).
 - Graceful shutdown that finishes a send in progress.
 - Append-only event log, exported as JSON lines on stdout and, optionally, to Sentry or GlitchTip (Sentry protocol,
-  no SDK). Each sink runs on its own and catches up after an outage.
+  no SDK). Each sink runs on its own and catches up after an outage. An event carries `smtp` only when it has an SMTP
+  reply code; any other text is in `text`.
+- Operator signals: `queue.stale` when a target's oldest queued mail waits longer than 15 minutes
+  (`POSTWERK_QUEUE_STALE_AFTER`), `disk.low` with `452` and a failing `/readyz` below a free-space reserve on the data
+  volume (`POSTWERK_MIN_FREE_BYTES`, 64 MiB), and counted `ingress.auth_failed` and `ingress.rejected` events for
+  refused SMTP logins and commands. `/readyz` also fails while the store cannot be written; never because a target is
+  down. A suggested alert routing is in design.md, "Alerting".
 - Retention: stored messages removed after hand-off, addresses pseudonymized after 30 days, records and events
   deleted after 90 days; all configurable.
 - Internal web UI on a loopback admin listener: overview per target, mail list with search, one mail with its
   timeline, and accounts with passwords under Settings. A tokens file gives first and break-glass access.
 - Read-only JSON query API under `/v1/` on its own listener, with `read` and `admin` bearer tokens.
-- STARTTLS and API certificates reloaded from their files without a restart, with `tls.*` events before they expire.
+- STARTTLS and API certificates reloaded from their files without a restart, with `tls.*` events before they expire:
+  a warning from 14 days, an error from 7 days.
 - Commands `hash-password`, `gen-key`, `gen-token`, `gen-api-token` and `version`.
 - Container image from `scratch`, a Helm chart and a Docker Compose example with Mailpit.
 - Release workflow for a signed multi-platform image on GHCR with SBOM and provenance.

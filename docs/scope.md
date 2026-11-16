@@ -302,7 +302,8 @@ not change the design until they are accepted there.
 9. **Full disk is not handled.** A long target outage keeps raw messages on disk.
    *Suggestion:* reply `452` (temporary) at ingress when free space or queue size crosses a limit, fail `readyz`, and
    raise an event. Senders then retry instead of losing mail.
-   *Status:* open.
+   *Status:* built for free space (`POSTWERK_MIN_FREE_BYTES`, `disk.low`, D50); a mail that waits too long raises
+   `queue.stale` (D49). A limit on the queue size is open.
 
 10. **No backup or restore story.**
     *Suggestion:* a `postwerk backup <file>` command that uses SQLite's online backup, and a short restore guide. Note

@@ -46,7 +46,7 @@ const (
 	DefaultInterval      = time.Minute
 	DefaultExpiryWarning = 14 * 24 * time.Hour
 	// DefaultExpiryError: from here on the expiry report is an error, so
-	// it reaches alerting that only takes errors (D51).
+	// it reaches alerting that only takes errors (D52).
 	DefaultExpiryError = 7 * 24 * time.Hour
 	// DefaultSettle is how long a check waits before it reads a changed
 	// pair that failed once a second time. It covers a read between the
