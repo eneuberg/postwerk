@@ -2,7 +2,7 @@
 # UI tokens file (POSTWERK_UI_TOKENS_FILE): start and break-glass access,
 # one name:admin:hash line each. The line below is for the name "ops" and the
 # token "example-ui-token-local-only". Log in with it once and create accounts
-# with passwords under Accounts; they are kept in the database.
+# with passwords under Settings; they are kept in the database.
 # Make a real token and its line with:
 #   docker run --rm postwerk:dev gen-token <name>
 ops:admin:pbkdf2-sha256$600000$79Hu+we4igWZf+I+L8ZAQA$lA8BiNd9QR4hw642Qp4TKzYsaXqP47RJ0mS1H6LfvCM

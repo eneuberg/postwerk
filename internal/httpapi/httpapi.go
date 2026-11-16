@@ -1,5 +1,6 @@
-// Package httpapi serves Postwerk's HTTP endpoints (H1). In the foundation
-// phase these are only the health checks; the query API and UI come later.
+// Package httpapi serves Postwerk's health listener (H1): /healthz and
+// /readyz, nothing else. The UI (internal/ui) and the query API
+// (internal/api) run on listeners of their own.
 package httpapi
 
 import (

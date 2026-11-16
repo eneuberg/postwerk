@@ -1,5 +1,5 @@
-// Package query is the read logic behind the UI and the later JSON API
-// (U10–U12, U15): overview, mail lists, search and the detail of one mail.
+// Package query is the read logic behind the UI and the JSON query API
+// (U10–U12, U15, H2): overview, mail lists, search and the detail of one mail.
 // It sits on top of the store, which keeps all SQL, and decides what a
 // reader may see: addresses are masked here, by access level, so no caller
 // can forget it. Nothing here returns message content; the store never hands
