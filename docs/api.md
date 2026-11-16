@@ -40,7 +40,7 @@ Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
 | | `read` | `admin` |
 |---|---|---|
 | `POST /v1/search` | yes, at most 20 mails | yes, at most 100 mails |
-| `GET /v1/mails/{id}` | yes, addresses masked (`j•••@e•••.com`) | yes, addresses in full |
+| `GET /v1/mails/{id}` | yes, addresses and the `Message-ID` masked (`j•••@e•••.com`, `<4711@s•••.com>`) | yes, in full |
 | `GET /v1/mails` (list with filters) | no (`403`) | yes |
 | `GET /v1/overview` (per target) | no (`403`) | yes |
 
@@ -101,7 +101,7 @@ The id is not personal data, so it may be in the URL. Example for a `read` token
   "sender": "shop",
   "size": 2345,
   "ref": "order-4711",
-  "message_id": "<4711@shop.example.com>",
+  "message_id": "<4711@s•••.com>",
   "envelope_from": {"state": "masked", "address": "n•••@e•••.com"},
   "params": {"smtputf8": false},
   "stored": false,
@@ -135,6 +135,10 @@ The id is not personal data, so it may be in the URL. Example for a `read` token
 ```
 
 An address `state` is `full` (admin), `masked` (read), `pseudonymized` (no address) or `null_sender` (`MAIL FROM:<>`).
+For a `read` token the `message_id` is masked too, because many libraries put a host name, and some an address, into
+it: the part after the last `@` like an address's domain, and the part before it as well if it holds an `@` or an
+encoded address (`jane=example.com`); angle brackets stay. A search by `message_id` still takes the exact value
+(D44).
 Recipients are numbered by their position in the envelope, from 0, as in the events. SMTP texts are stored redacted.
 At most 500 events are returned. An unknown id gets `404`. Every detail returned is an `api.view` event with the
 token name and the mail id (section 5).

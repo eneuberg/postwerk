@@ -85,7 +85,7 @@ the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, 
 | OpenTelemetry *(planned)* | events as logs, metrics | as stdout; metric labels must never contain addresses or recipient domains | no | monitoring readers |
 | Sentry-protocol tool (Sentry, GlitchTip), when a DSN is set | error events, warnings too with `POSTWERK_SENTRY_MIN_LEVEL=warn` (section 2.4) | no addresses (redacted twice); mail ids, sender logins, token names of failed UI logins | no | the error tracker's users and its operator (for sentry.io: Sentry as a processor) |
 | Webhook *(planned)* | signed events | as stdout; with [scope.md gap 11](scope.md#7-gaps-between-the-ideal-and-the-current-design) also `ref` | no | whoever runs the receiving endpoint |
-| Query API | `read` tokens: the summary of the mails one search finds (at most 20) and one mail's detail, addresses masked; `admin` tokens: also lists and the overview, addresses in full until pseudonymization; never content. Search terms only in `POST` bodies, so they stay out of access logs | yes | no | holders of an API token whose pod may connect (`api.allowFrom`) |
+| Query API | `read` tokens: the summary of the mails one search finds (at most 20) and one mail's detail, addresses and the `Message-ID` masked; `admin` tokens: also lists and the overview, addresses in full until pseudonymization; never content. Search terms only in `POST` bodies, so they stay out of access logs | yes | no | holders of an API token whose pod may connect (`api.allowFrom`) |
 | Access logs of a proxy or the calling application | Postwerk's API puts no address into a URL (change 8); what the calling application logs about its own users is up to it | only if the caller logs it | no | whoever reads those logs |
 | UI | metadata of every mail; addresses in full, none after pseudonymization; never content. Searches are `POST`s, never echoed back, so addresses stay out of URLs, browser history and logs; every opened mail is a `ui.view` event | yes | no | UI accounts (all admin) who can open a tunnel to the admin listener ([ui.md](ui.md)) |
 | SQLite free pages and WAL file | deleted rows until overwritten; `secure_delete` overwrites them, a checkpoint clears the WAL | yes, briefly | encrypted only | anyone with the volume |
@@ -351,7 +351,7 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   `<name>.<token>` from `POSTWERK_API_TOKENS_FILE` (`postwerk gen-api-token`): 32 random bytes, kept as SHA-256 and
   checked in constant time, the same for unknown names (D41). Failed authentications are counted, one event per token
   name and minute (D42). `read` tokens can only look up one mail or one search at a time (at most
-  20 mails), with addresses masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
+  20 mails), with addresses and the `Message-ID` masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
   JSON only, 4 KiB bodies, no CORS and browser requests refused, strict headers, optional `Host` allow-list,
   optional TLS (on by default in the chart). A request that cannot be written to the event log gets no answer.
 - **Image.** Release images on `ghcr.io/eneuberg/postwerk` are signed keyless with cosign by the release workflow

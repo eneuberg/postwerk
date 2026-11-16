@@ -90,6 +90,26 @@ func TestMask(t *testing.T) {
 	}
 }
 
+func TestMaskMessageID(t *testing.T) {
+	for in, want := range map[string]string{
+		"<4711@shop.example.com>":                  "<4711@s•••.com>",
+		"4711.abc@shop.example.com":                "4711.abc@s•••.com",
+		"<CAB+x_Y-z==@mail.example.org>":           "<CAB+x_Y-z==@m•••.org>",
+		"<jane@example.com@mx.example.org>":        "<j•••@m•••.org>",
+		"<bounce+jane=example.com@mx.example.org>": "<b•••@m•••.org>",
+		"<jane%example.com@relay.example>":         "<j•••@r•••.example>",
+		"<abc@localhost>":                          "<abc@l•••>",
+		"<no-at-sign>":                             "<n•••>",
+		"no-at-sign":                               "n•••",
+		"<>":                                       "<•••>",
+		"<x@>":                                     "<x@•••>",
+	} {
+		if got := MaskMessageID(in); got != want {
+			t.Errorf("MaskMessageID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMailDetailAccess(t *testing.T) {
 	st := openStore(t)
 	h := hasher(t)
@@ -126,8 +146,11 @@ func TestMailDetailAccess(t *testing.T) {
 		masked.Deliveries[1].Recipients[0].Address.Text != "j•••@e•••.com" {
 		t.Fatalf("masked: %+v", masked)
 	}
-	if strings.Contains(fmt.Sprintf("%+v", masked), "jane@") {
-		t.Fatal("full address in a masked detail")
+	if masked.MessageID != "<pw_1@e•••.test>" {
+		t.Fatalf("masked Message-ID = %q", masked.MessageID)
+	}
+	if s := fmt.Sprintf("%+v", masked); strings.Contains(s, "jane@") || strings.Contains(s, "example.test") {
+		t.Fatalf("full address or host in a masked detail: %s", s)
 	}
 	// The zero Access is the masked one.
 	if zero, _ := q.Mail(ctx, "pw_1", Access(0)); zero.Recipients[0].State != MaskedAddr {

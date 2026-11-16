@@ -261,6 +261,16 @@ func TestRoles(t *testing.T) {
 		d.EnvelopeFrom.Address != "n•••@e•••.test" || strings.Contains(r.body, "canary-leak") || strings.Contains(r.body, "other@") {
 		t.Fatalf("read detail: %d %s", r.StatusCode, r.body)
 	}
+	if d.MessageID != "<pw_01@s•••.test>" || strings.Contains(r.body, "shop.example.test") {
+		t.Fatalf("read sees the Message-ID unmasked: %s", r.body)
+	}
+	// The exact Message-ID still finds the mail for read.
+	var found searchResponse
+	if r := h.search(readBearer, "message_id", "<pw_01@shop.example.test>"); r.StatusCode != 200 {
+		t.Fatalf("search by Message-ID: %d %s", r.StatusCode, r.body)
+	} else if r.json(t, &found); !slices.Equal(ids(found.Mails), []string{"pw_01"}) {
+		t.Fatalf("search by Message-ID: %s", r.body)
+	}
 	if d.Status != store.Partial || len(d.Deliveries) != 1 || d.Deliveries[0].Recipients[1].LastCode != 550 ||
 		!strings.Contains(d.Deliveries[0].Recipients[1].LastText, "<redacted>") || len(d.Events) == 0 {
 		t.Fatalf("read detail content: %s", r.body)
@@ -269,7 +279,7 @@ func TestRoles(t *testing.T) {
 	d = mailDetail{}
 	r.json(t, &d)
 	if r.StatusCode != 200 || d.Recipients[0].State != "full" || d.Recipients[0].Address != canary ||
-		d.EnvelopeFrom.Address != "noreply@example.test" {
+		d.EnvelopeFrom.Address != "noreply@example.test" || d.MessageID != "<pw_01@shop.example.test>" {
 		t.Fatalf("admin detail: %d %s", r.StatusCode, r.body)
 	}
 
@@ -313,6 +323,7 @@ func TestRoles(t *testing.T) {
 		"api.request support search by=address status=200 results=1",
 		"api.request support.admin search by=address status=200 results=1",
 		"api.view support pw_01",
+		"api.request support search by=message_id status=200 results=1",
 		"api.view support.admin pw_01",
 		"api.forbidden support mails",
 		"api.forbidden support mails",

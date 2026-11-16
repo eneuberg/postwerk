@@ -529,3 +529,19 @@ so each also went to Sentry.
   headers and missing tokens share one count. So the counts held in memory are bounded by the lines in the file
   plus one, whatever an attacker sends, and a token pasted into the name part still never reaches the log.
 - **Not a sampling.** Every failure is counted; nothing is dropped. The `401` itself does not wait for the event.
+
+## D44 The Message-ID is masked for `read` API tokens
+
+A `read` token saw addresses masked but the `Message-ID` in full (D34). Many mail libraries build it from the
+sending host's name (`<…@app-7f9c.internal.example>`), and some put the recipient's address or a user id into it, so
+in full it can tell a support tool more than masked addresses do.
+
+- **Masked like an address.** The part after the last `@` keeps its first character and its top-level domain
+  (`<4711@s•••.com>`). The part before it stays, because it is mostly a random id that support staff compare with
+  the copy a recipient forwards, unless it looks like an address: it holds an `@`, or an address folded in the way
+  bounce and tracking ids do (`jane=example.com`, `jane%example.com`). Then it is masked to its first character.
+  Angle brackets stay, so the value still reads as a `Message-ID`.
+- **Search unchanged.** A search by `message_id` matches the exact stored value; a caller who has the value from a
+  recipient finds the mail, and the response does not hand it back in full.
+- **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
+  gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.

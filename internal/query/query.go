@@ -366,14 +366,59 @@ func showAddress(addr string, pseudonymized bool, access Access) Address {
 // first character of the domain and its top-level domain stay
 // (jane@example.com → j•••@e•••.com).
 func Mask(addr string) string {
-	const dots = "•••"
 	local, domain, ok := cutLast(addr, "@")
 	if !ok {
 		return first(addr) + dots
 	}
-	m := first(local) + dots + "@" + first(domain) + dots
+	return first(local) + dots + "@" + maskDomain(domain)
+}
+
+const dots = "•••"
+
+// maskDomain keeps the first character and the top-level domain
+// (example.com → e•••.com).
+func maskDomain(domain string) string {
+	m := first(domain) + dots
 	if i := strings.LastIndex(domain, "."); i > 0 && i < len(domain)-1 {
 		m += domain[i:]
+	}
+	return m
+}
+
+// encodedAddress matches an address folded into a Message-ID's left part,
+// as bounce and tracking ids do (jane=example.com, jane%example.com).
+var encodedAddress = regexp.MustCompile(`[=%][A-Za-z0-9-]+\.[A-Za-z]{2,}`)
+
+// MaskMessageID hides what a Message-ID may say about hosts and people: the
+// part after the last "@" is masked like an address's domain, and the part
+// before it too if it looks like an address (it holds an "@" or an encoded
+// address). Angle brackets stay. <4711.abc@shop.example.com> →
+// <4711.abc@s•••.com>; <jane@example.com@mx.example.org> → <j•••@m•••.org>.
+// A value without "@" is masked as a whole.
+func MaskMessageID(id string) string {
+	inner := id
+	open, closed := strings.HasPrefix(inner, "<"), strings.HasSuffix(inner, ">")
+	if open {
+		inner = inner[1:]
+	}
+	if closed && inner != "" {
+		inner = inner[:len(inner)-1]
+	}
+	left, right, ok := cutLast(inner, "@")
+	var m string
+	switch {
+	case !ok:
+		m = first(inner) + dots
+	case strings.Contains(left, "@") || encodedAddress.MatchString(left):
+		m = first(left) + dots + "@" + maskDomain(right)
+	default:
+		m = left + "@" + maskDomain(right)
+	}
+	if open {
+		m = "<" + m
+	}
+	if closed {
+		m += ">"
 	}
 	return m
 }
@@ -422,7 +467,7 @@ type MailDetail struct {
 	Sender          string
 	Size            int
 	Ref             string
-	MessageID       string
+	MessageID       string // masked unless Full (MaskMessageID)
 	EnvelopeFrom    Address
 	Params          store.Params
 	Stored          bool      // the encrypted message is still in the store
@@ -450,6 +495,9 @@ func (s *Service) Mail(ctx context.Context, id string, access Access) (MailDetai
 		ID: m.ID, ReceivedAt: m.ReceivedAt, Sender: m.Sender, Size: m.Size, Ref: m.Ref, MessageID: m.MessageID,
 		EnvelopeFrom: showAddress(m.EnvelopeFrom, pseudo, access), Params: m.Params, Stored: m.HasRaw,
 		RawPurgedAt: m.RawPurgedAt, PseudonymizedAt: m.PseudonymizedAt,
+	}
+	if access != Full && d.MessageID != "" {
+		d.MessageID = MaskMessageID(d.MessageID)
 	}
 	for _, r := range m.Recipients {
 		d.Recipients = append(d.Recipients, showAddress(r, pseudo, access))
