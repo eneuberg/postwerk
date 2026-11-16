@@ -308,7 +308,8 @@ Operators need an image they can pull and check, without building it themselves.
   and that tag. The signature covers the index digest, and with it both platforms, the SBOM and the provenance.
 - **SBOM and provenance from BuildKit**, attached to the image index. No extra action is needed for them, and the
   scanner image is pinned by digest. The workflow uses four actions (checkout, setup-go, setup-buildx, the cosign
-  installer), each pinned by commit; login, build and signing are plain commands.
+  installer), each pinned by commit; login, build and signing are plain commands. The tests run in a job of their
+  own with read access only; the job that pushes and signs starts after it and runs no project code but the build.
 - **Two platforms, no emulation.** The build stage runs on the build machine and cross-compiles (`GOOS`, `GOARCH`);
   the final stage is `scratch`, so `linux/arm64` costs one more `go build`.
 - **No `latest`.** A moving tag hides which version runs, and `IfNotPresent` never pulls the new one. Users pin a

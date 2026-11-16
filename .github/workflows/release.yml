@@ -16,7 +16,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The tests run without the rights to push or sign: code under test never
+  # sees a token that could publish an image.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache: false # a release never builds from a cache
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
   image:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,14 +60,6 @@ jobs:
             echo "deploy/helm/postwerk/Chart.yaml: appVersion must be \"$version\""; exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.27.x"
-          cache: false # a release never builds from a cache
-      - name: Vet and test
-        run: |
-          go vet ./...
-          go test -race -count=1 ./...
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to ghcr.io
         env:
