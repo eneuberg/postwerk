@@ -133,7 +133,13 @@ func genToken(args []string, stdout, stderr io.Writer, forAPI bool) int {
 		return 2
 	}
 	token := auth.GenerateToken()
-	line, err := auth.TokenLine(args[0], auth.Role(args[1]), token, auth.DefaultIterations)
+	var line string
+	var err error
+	if forAPI {
+		line, err = auth.APITokenLine(args[0], auth.Role(args[1]), token)
+	} else {
+		line, err = auth.TokenLine(args[0], auth.Role(args[1]), token, auth.DefaultIterations)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "postwerk:", err)
 		return 2
@@ -347,7 +353,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		}
 		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
 	}
-	apiSrv, apiL, apiTLS, err := apiListener(cfg, st, logger)
+	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, logger)
 	if err != nil {
 		if adminL != nil {
 			adminL.Close()
@@ -450,6 +456,14 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		case <-sd.Done():
 		}
 	}
+	// The API stops before the final export, so the failed authentications
+	// it still counts are written and exported with the rest (H7).
+	if apiSrv != nil {
+		if err := apiSrv.Shutdown(sd); err != nil {
+			logger.Warn("api listener shutdown incomplete", "err", err)
+		}
+		apiHandler.Close()
+	}
 	// The final export is bounded on its own, so a slow remote sink cannot
 	// use up the deadline that closing the store still needs. stdout is
 	// written at once; the other sinks catch up on the next start.
@@ -466,11 +480,6 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			logger.Warn("admin listener shutdown incomplete", "err", err)
 		}
 	}
-	if apiSrv != nil {
-		if err := apiSrv.Shutdown(sd); err != nil {
-			logger.Warn("api listener shutdown incomplete", "err", err)
-		}
-	}
 	if err := st.Close(); err != nil {
 		logger.Warn("closing the store failed", "err", err)
 	}
@@ -480,9 +489,9 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 
 // apiListener opens the JSON query API's listener (H2), with TLS from a
 // reloaded certificate if configured. It returns nils when the API is off.
-func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*http.Server, net.Listener, *tlsreload.Reloader, error) {
+func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
 	if cfg.API.Listen == "" {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	var names []string
 	for _, t := range cfg.Targets {
@@ -491,7 +500,7 @@ func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*htt
 	q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
 	a, err := api.New(api.Options{Query: q, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts, Logger: logger})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var reloader *tlsreload.Reloader
 	if cfg.API.TLSCertFile != "" {
@@ -500,19 +509,19 @@ func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*htt
 			OnEvent: eventAppender(st, logger),
 		})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
 	l, err := net.Listen("tcp", cfg.API.Listen)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	srv := api.NewServer(cfg.API.Listen, a, logger)
 	if reloader != nil {
 		srv.TLSConfig = &tls.Config{GetCertificate: reloader.GetCertificate, MinVersion: tls.VersionTLS12}
 		l = tls.NewListener(l, srv.TLSConfig)
 	}
-	return srv, l, reloader, nil
+	return a, srv, l, reloader, nil
 }
 
 // acceptBytes is the largest message ingress accepts (its SIZE):

@@ -26,10 +26,10 @@ func TestGenAPIToken(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	if len(lines) != 2 || !regexp.MustCompile(`^support\.[A-Za-z0-9_-]{43}$`).MatchString(lines[0]) ||
-		!strings.HasPrefix(lines[1], "support:read:pbkdf2-sha256$600000$") {
+		!regexp.MustCompile(`^support:read:sha256\$[A-Za-z0-9+/]{43}$`).MatchString(lines[1]) {
 		t.Fatalf("output = %q", out.String())
 	}
-	ts, err := auth.ParseTokens(strings.NewReader(lines[1]))
+	ts, err := auth.ParseAPITokens(strings.NewReader(lines[1]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestServeAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokenLine, err := auth.TokenLine("support", auth.RoleRead, "api-token", auth.MinIterations)
+	tokenLine, err := auth.APITokenLine("support", auth.RoleRead, "api-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +141,7 @@ func TestServeAPI(t *testing.T) {
 	}
 	testutil.Eventually(t, 5*time.Second, "api events on stdout", func() bool {
 		s := out.String()
-		return strings.Contains(s, `"kind":"api.request","actor":"support","text":"search by=id status=200 results=0"`) &&
-			strings.Contains(s, `"kind":"api.auth_failed","actor":"support"`)
+		return strings.Contains(s, `"kind":"api.request","actor":"support","text":"search by=id status=200 results=0"`)
 	})
 	if !strings.Contains(out.String(), `"api_tls":true`) {
 		t.Fatalf("start log lacks api_tls: %s", out.String())
@@ -155,5 +154,10 @@ func TestServeAPI(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not stop")
+	}
+	// The failed authentication is counted in its window and written and
+	// exported at shutdown.
+	if !strings.Contains(out.String(), `"kind":"api.auth_failed","actor":"support","text":"failures=1"`) {
+		t.Fatalf("no folded auth_failed event at shutdown: %s", out.String())
 	}
 }

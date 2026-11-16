@@ -42,11 +42,11 @@ var (
 )
 
 var tokenFile = sync.OnceValue(func() string {
-	a, err := auth.TokenLine("support.admin", auth.RoleAdmin, adminSecret, auth.MinIterations)
+	a, err := auth.APITokenLine("support.admin", auth.RoleAdmin, adminSecret)
 	if err != nil {
 		panic(err)
 	}
-	r, err := auth.TokenLine("support", auth.RoleRead, readSecret, auth.MinIterations)
+	r, err := auth.APITokenLine("support", auth.RoleRead, readSecret)
 	if err != nil {
 		panic(err)
 	}
@@ -70,7 +70,7 @@ func (c *clock) Add(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// countingVerifier counts full token checks.
+// countingVerifier counts token checks.
 type countingVerifier struct {
 	Verifier
 	calls atomic.Int32
@@ -102,7 +102,7 @@ func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	tokens, err := auth.ParseTokens(strings.NewReader(tokenFile()))
+	tokens, err := auth.ParseAPITokens(strings.NewReader(tokenFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,7 @@ func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(h.api.Close)
 	return h
 }
 
@@ -353,7 +354,7 @@ func TestReadSearchIsBounded(t *testing.T) {
 }
 
 func TestAuthFailures(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, func(o *Options) { o.AuthFailWindow = time.Hour })
 	for _, c := range []struct{ name, header string }{
 		{"missing", ""},
 		{"basic", "Basic c3VwcG9ydDp4"},
@@ -371,9 +372,14 @@ func TestAuthFailures(t *testing.T) {
 			t.Errorf("%s: %d %s", c.name, r.StatusCode, r.body)
 		}
 	}
-	// Every failure is an event; the name only when it is in the file.
-	want := slices.Repeat([]string{"api.auth_failed"}, 6)
-	want = append(want, "api.auth_failed support", "api.auth_failed support", "api.auth_failed")
+	// Nothing is written while the window is open.
+	if got := h.apiEvents(); len(got) != 0 {
+		t.Fatalf("events while the window is open: %q", got)
+	}
+	// Close writes one event per actor with the count; the name only when
+	// it is in the file.
+	h.api.Close()
+	want := []string{"api.auth_failed failures=7", "api.auth_failed support failures=2"}
 	if got := h.apiEvents(); !slices.Equal(got, want) {
 		t.Fatalf("events = %q, want %q", got, want)
 	}
@@ -381,25 +387,59 @@ func TestAuthFailures(t *testing.T) {
 		if s := fmt.Sprintf("%+v", e); strings.Contains(s, "secret-for-tests") || strings.Contains(s, "wrong") {
 			t.Errorf("event holds the token: %s", s)
 		}
+		if e.Kind == KindAuthFailed && e.Level != store.Warn {
+			t.Errorf("level = %s", e.Level)
+		}
 	}
 	if s := h.logs.String(); strings.Contains(s, "secret-for-tests") {
 		t.Errorf("log holds the token: %s", s)
 	}
-	// A token that was right before costs no second full check.
+	// After Close a failure is written at once.
+	h.search("Bearer support.wrong", "id", "pw_01")
+	if got := h.apiEvents(); len(got) != 3 || got[2] != "api.auth_failed support failures=1" {
+		t.Fatalf("after close: %q", got)
+	}
+	// Every request pays one check, a good token too: there is no cache.
 	n := h.tokens.calls.Load()
 	for range 3 {
 		if r := h.search(readBearer, "id", "pw_01"); r.StatusCode != 200 {
 			t.Fatalf("good token: %d %s", r.StatusCode, r.body)
 		}
 	}
-	if got := h.tokens.calls.Load() - n; got != 1 {
-		t.Fatalf("full checks for three good requests = %d, want 1", got)
+	if got := h.tokens.calls.Load() - n; got != 3 {
+		t.Fatalf("checks for three good requests = %d, want 3", got)
 	}
-	// A wrong token for a known name still pays the full check.
-	n = h.tokens.calls.Load()
+}
+
+// A window ends on its own: one event per actor and window, however many
+// failures it counted, and the next failure opens a new window.
+func TestAuthFailuresFold(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.AuthFailWindow = 200 * time.Millisecond; o.PerToken = 1000; o.Global = 1000 })
+	for range 50 {
+		h.search("Bearer nobody.x", "id", "pw_01")
+		h.search("Bearer support.wrong", "id", "pw_01")
+	}
+	testutil.Eventually(t, 5*time.Second, "first window written", func() bool { return len(h.apiEvents()) == 2 })
+	want := []string{"api.auth_failed failures=50", "api.auth_failed support failures=50"}
+	got := h.apiEvents()
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
 	h.search("Bearer support.wrong", "id", "pw_01")
-	if h.tokens.calls.Load() != n+1 {
-		t.Fatal("wrong token skipped the full check")
+	testutil.Eventually(t, 5*time.Second, "second window written", func() bool { return len(h.apiEvents()) == 3 })
+	if got := h.apiEvents(); got[2] != "api.auth_failed support failures=1" {
+		t.Fatalf("second window: %q", got)
+	}
+	// The open windows are bounded by the names in the file plus one.
+	for i := range 100 {
+		h.search(fmt.Sprintf("Bearer stranger%d.x", i), "id", "pw_01")
+	}
+	h.api.failures.mu.Lock()
+	n := len(h.api.failures.open)
+	h.api.failures.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("open windows = %d, want 1", n)
 	}
 }
 

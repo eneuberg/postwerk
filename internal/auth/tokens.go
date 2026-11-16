@@ -22,14 +22,14 @@ const (
 	RoleAdmin Role = "admin"
 )
 
-// Tokens holds the tokens for the UI and the later query API. The tokens
-// file has one line per person or team:
+// Tokens holds the tokens of the UI tokens file (U4). The file has one line
+// per person or team:
 //
 //	name:role:pbkdf2-sha256$<iterations>$<salt>$<key>
 //
 // with role "read" or "admin" and the hash as in the senders file. Checks
 // cost the same for every name, like sender logins (I12): the token is a
-// password with a role.
+// password with a role. The query API has a file of its own (APITokens).
 type Tokens struct {
 	check *Senders
 	roles map[string]Role

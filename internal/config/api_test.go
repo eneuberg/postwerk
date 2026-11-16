@@ -10,7 +10,12 @@ import (
 
 func TestAPIListener(t *testing.T) {
 	f := baseFiles(t)
-	f["/run/secrets/api-tokens"] = tokenLine() + "\n"
+	apiLine, err := auth.APITokenLine("ops", auth.RoleAdmin, "api-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f["/run/secrets/api-tokens"] = apiLine + "\n"
+	f["/run/secrets/api-tokens-old"] = tokenLine() + "\n"
 	load := func(extra ...string) (*Config, error) {
 		t.Helper()
 		return Load(append(minimalEnv(), extra...), f.read)
@@ -36,7 +41,7 @@ func TestAPIListener(t *testing.T) {
 		c.SecretFiles["POSTWERK_API_TOKENS_FILE"] != "/run/secrets/api-tokens" {
 		t.Fatalf("api = %+v", c.API)
 	}
-	if role, ok := c.API.Tokens.Verify("ops", "ui-token"); !ok || role != auth.RoleAdmin {
+	if role, ok := c.API.Tokens.Verify("ops", "api-token"); !ok || role != auth.RoleAdmin {
 		t.Fatal("api token does not verify")
 	}
 	if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "POSTWERK_API_LISTEN is not a loopback address and the API has no TLS") {
@@ -64,6 +69,8 @@ func TestAPIListener(t *testing.T) {
 		{[]string{"POSTWERK_API_LISTEN=127.0.0.1:8081", "POSTWERK_API_TOKENS_FILE=/run/secrets/api-tokens"}, "must differ"},
 		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/run/secrets/senders"}, "POSTWERK_API_TOKENS_FILE: line 1"},
 		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/nope"}, "POSTWERK_API_TOKENS_FILE: cannot read"},
+		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/run/secrets/api-tokens-old"},
+			"POSTWERK_API_TOKENS_FILE: line 1: a pbkdf2-sha256 hash; API tokens use sha256 now (D41)"},
 		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/run/secrets/api-tokens", "POSTWERK_API_HOSTS=a:80"}, "not a host name"},
 		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/run/secrets/api-tokens", "POSTWERK_API_TLS_CERT_FILE=/c"}, "must be set together"},
 		{[]string{"POSTWERK_API_LISTEN=:8082", "POSTWERK_API_TOKENS_FILE=/run/secrets/api-tokens",

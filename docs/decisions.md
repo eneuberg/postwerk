@@ -338,14 +338,13 @@ those pods can reach. Moving the admin listener to the pod address would put the
 
 ## D33 Bearer tokens `<name>.<token>`, from a file of their own
 
-- **Same format and checks as the UI tokens.** One `name:role:hash` line per calling application, PBKDF2 at the
-  strongest iteration count for every name, at most one check per CPU. One scheme to review.
-- **The name travels with the token.** With the name, a wrong token costs one PBKDF2 check; with the token alone it
+- **First: same format and checks as the UI tokens.** One `name:role:hash` line per calling application, PBKDF2 at
+  the strongest iteration count for every name, at most one check per CPU, and a cache of tokens that passed. D41
+  replaced this with a SHA-256 of the token: the tokens are random, so PBKDF2 protected nothing and let wrong tokens
+  burn CPU.
+- **The name travels with the token.** With the name, a token is checked against one line; with the token alone it
   would have to be checked against every line. The token is base64url and has no dot, so the last dot separates the
   two (names may contain dots). `postwerk gen-api-token` prints the whole value.
-- **A cache for tokens that passed.** A client calls on every lookup, and PBKDF2 for each would burn CPU. A token
-  that passed once is kept as an HMAC under a random in-memory key; only the right token takes that path, a wrong one
-  always pays the full check.
 - **A file of its own, `POSTWERK_API_TOKENS_FILE`.** People and applications get different credentials, and a
   token for a service never works for the UI or the other way round. The UI's own login can change without
   touching the API.
@@ -362,9 +361,10 @@ The purpose is "what happened to the mail for this address, id or ref", not a co
   the URL: it is random and not personal data. List filters never hold an address.
 - **Every request is an event, answered only after the event is written.** `api.request` names the token, the
   endpoint, the search kind, the status and the number of mails, never the term; that is enough to see who looked
-  up how much, without the log itself becoming a list of addresses. A failed token and a role refusal are `warn`
-  events. Requests over a rate limit write no event, so a flood cannot fill the log; the global limit counts requests
-  before the token check, so a flood of wrong tokens is bounded too.
+  up how much, without the log itself becoming a list of addresses. A role refusal is a `warn` event; failed tokens
+  are counted and written as one `warn` event per token name and minute (D42). Requests over a rate limit write no
+  event, so a flood cannot fill the log; the global limit counts requests before the token check, so a flood of wrong
+  tokens is bounded too.
 - **A returned detail names its mail.** The owner decided that opening a mail is an audit event, in the UI
   (`ui.view`) and the API alike: `api.view` carries the token name and the mail id, so "who looked at this mail?"
   has an answer. The id is random and not personal data; search terms still never reach the log. An unknown id
@@ -493,3 +493,39 @@ A fresh install has no accounts in its database, so the first admin has to come 
 
 With the admin listener on and neither a tokens file nor an account in the database, Postwerk does not start, with a
 message that says what to do; a UI nobody can log in to would be a silent misconfiguration (O1).
+
+## D41 API tokens as SHA-256, not PBKDF2
+
+The API first hashed its tokens like the UI tokens, with PBKDF2 at 600,000 iterations (D33). A slow hash makes a
+guessable secret, a password, expensive to brute-force from a leaked file. An API token is not guessable: it is 32
+bytes from the operating system's random source, made by `postwerk gen-api-token`. Trying 2^256 values is impossible
+with any hash, so PBKDF2 added no protection. It did add cost: every wrong token, up to the global limit of 600 a
+minute, took a CPU core for a noticeable time, and with a 1-CPU limit that slowed SMTP logins and delivery.
+
+- **Plain SHA-256 of the token, from the standard library.** The line is `name:role:sha256$<digest>`. A keyed hash
+  (HMAC) would only matter if the digest let someone find the token, which it does not for a random 256-bit value;
+  its key would be one more secret to create, store, rotate and lose, and losing it would invalidate every token.
+  SHA-256 is what services that issue random tokens commonly store, and it needs no new dependency (O4).
+- **Equal steps for every check.** One SHA-256 of what was sent and one constant-time comparison with 32 bytes: the
+  name's digest, or a random dummy for an unknown name. The time does not tell which names exist.
+- **No cache and no check slots.** Both existed only to bound PBKDF2; with one SHA-256 per request there is nothing
+  to save. The rate limits (D34) stay.
+- **Old lines are refused.** Postwerk has had no release yet, so a `pbkdf2-sha256$…` line in the API tokens file
+  stops the start with a message that says to make a new token. Accepting both schemes would keep the slow path, and
+  with it the reason for this change. UI tokens and UI passwords are typed or pasted by people and stay on PBKDF2
+  (D36, D37); the UI tokens file keeps its format.
+
+## D42 Failed API authentications are counted, one event per token name and minute
+
+Every failed authentication was an `api.auth_failed` event, a malformed header too. At the global limit of 600
+requests a minute that is about 860,000 events a day: enough to fill the volume over time, and each a `warn` event,
+so each also went to Sentry.
+
+- **One event per actor and minute, with the count.** The first failure of an actor starts a window of one minute;
+  the failures after it only count; when the window ends, one `api.auth_failed` event is written with
+  `failures=<n>` as text. At shutdown the open windows are written at once, before the final export. Someone
+  watching still sees which token fails and how often, within a minute.
+- **The actor stays as before.** The token name if it is in the file, otherwise empty: unknown names, malformed
+  headers and missing tokens share one count. So the counts held in memory are bounded by the lines in the file
+  plus one, whatever an attacker sends, and a token pasted into the name part still never reaches the log.
+- **Not a sampling.** Every failure is counted; nothing is dropped. The `401` itself does not wait for the event.

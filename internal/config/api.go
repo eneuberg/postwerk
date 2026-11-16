@@ -17,7 +17,7 @@ type API struct {
 	// (lower case, no port).
 	Hosts []string
 	// Tokens are the API's bearer tokens; set while Listen is not empty.
-	Tokens *auth.Tokens
+	Tokens *auth.APITokens
 	// TLSCertFile and TLSKeyFile name the certificate pair; empty: plain
 	// HTTP. The pair was checked at start and is reloaded while running.
 	TLSCertFile, TLSKeyFile string
@@ -63,7 +63,7 @@ func (l *loader) api(c *Config) {
 	}
 	l.apiTLS(c)
 	if l.env[envAPITokensFile] == "" {
-		l.errorf("%s: required while the API is on (one name:role:hash line per calling application; "+
+		l.errorf("%s: required while the API is on (one name:role:sha256$<digest> line per calling application; "+
 			"create one with 'postwerk gen-api-token <name> <read|admin>'), or set %s=off",
 			envAPITokensFile, envAPIListen)
 		return
@@ -72,7 +72,7 @@ func (l *loader) api(c *Config) {
 	if !ok {
 		return
 	}
-	t, err := auth.ParseTokens(bytes.NewReader(b))
+	t, err := auth.ParseAPITokens(bytes.NewReader(b))
 	if err != nil {
 		for _, e := range unjoin(err) {
 			l.errorf("%s: %v", envAPITokensFile, e)

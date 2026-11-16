@@ -148,7 +148,7 @@ Event kinds. Every result is an event per recipient: it carries the recipient's 
 | `api.request` | info | a query API request; `actor` is the token name, text the endpoint, search kind, HTTP status and number of mails (`search by=address status=200 results=1`), never the query |
 | `api.forbidden` | warn | an API token asked for an endpoint its role may not use; text the endpoint |
 | `api.view` | info | a mail's detail was returned through the API; `actor` is the token name, `mail_id` the mail; no text |
-| `api.auth_failed` | warn | a missing, malformed or wrong API token; `actor` only if the name is in the tokens file |
+| `api.auth_failed` | warn | missing, malformed or wrong API tokens, counted: at most one per actor and minute, text `failures=<n>`; `actor` only if the name is in the tokens file |
 
 The overall state of a delivery or a mail is derived from its recipients; it is not stored twice.
 

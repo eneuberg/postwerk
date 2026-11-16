@@ -22,14 +22,15 @@ Details: [configuration.md](configuration.md#query-api). In Kubernetes: `api.ena
 ([kubernetes.md](kubernetes.md#51-a-client-of-the-query-api)).
 
 **Tokens.** `postwerk gen-api-token <name> <read|admin>` prints two lines: the bearer value `<name>.<token>` for the
-calling application, and the line for `POSTWERK_API_TOKENS_FILE`. The file format and the hashing are the same as for
-the UI tokens. Use one token per calling application, so the `actor` of every event names it. The file is read once at
-start.
+calling application, and the line for `POSTWERK_API_TOKENS_FILE`, `<name>:<role>:sha256$<digest>`: the SHA-256 of
+the token, never the token itself (D41). Use one token per calling application, so the `actor` of every event names
+it. The file is read once at start. A line with a `pbkdf2-sha256$…` hash, from a version before D41, stops the start
+with a message that says to make a new token.
 
 ```sh
 $ postwerk gen-api-token support-tool read
 support-tool.Xb3k…43 characters…
-support-tool:read:pbkdf2-sha256$600000$…
+support-tool:read:sha256$…43 characters…
 ```
 
 Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
@@ -186,14 +187,13 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | 413 | `too_large` | body over 4 KiB |
 | 415 | `unsupported_media_type` | a `POST` without `Content-Type: application/json` (UTF-8) |
 | 429 | `rate_limited` | over a rate limit; with `Retry-After` in seconds |
-| 503 | `unavailable` | the request could not be written to the event log, or too many token checks at once; with `Retry-After` |
+| 503 | `unavailable` | the request could not be written to the event log; with `Retry-After` |
 
 ## 4. Protection
 
-- **Tokens.** Every check of an unknown or wrong token costs one PBKDF2 check with the strongest iteration count in
-  the file, for unknown names too; at most one check per CPU runs at once, and a request that waits more than 5 s for
-  a slot gets `503`. A token that passed once is remembered as an HMAC in memory, so a client that calls often costs
-  one HMAC per request.
+- **Tokens.** A token is 32 random bytes, so it cannot be guessed, and the file holds only its SHA-256. Every check
+  is one SHA-256 and one constant-time comparison, for unknown names too (against a random dummy), so wrong tokens
+  cost no noticeable CPU and the time of a check does not tell which names exist (D41).
 - **Rate limits** (fixed): 60 requests per minute per token name, and 600 per minute for all callers together,
   counted before the token check, so a flood of wrong tokens is bounded too. Over a limit: `429` with `Retry-After`.
 - **No browsers.** No CORS headers, so a browser cannot call the API from a page; `OPTIONS` gets `405`; requests with
@@ -215,12 +215,15 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | `api.request` | info | `actor`: the token name; `text`: endpoint, search kind, HTTP status and number of mails, for example `search by=address status=200 results=1` |
 | `api.view` | info | `actor`: the token name, `mail_id`: the mail whose detail was returned; no text. Written instead of `api.request` for a successful `GET /v1/mails/{id}`, like the UI's `ui.view` |
 | `api.forbidden` | warn | `actor`: the token name; `text`: the endpoint |
-| `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file; no text |
+| `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file, otherwise empty; `text`: `failures=<n>`, the missing, malformed or wrong tokens of that actor in one minute. At most one per actor and minute (D42) |
 
 Never the search term, a ref, a Message-ID or an address; a mail id only in `api.view`, for a mail that was returned
 (a lookup of an unknown id is an `api.request` with status `404` and no id). So the event log answers "who looked at
 this mail?" without becoming a list of what was searched for. A request is answered only after its event is
-written; if that fails, the client gets `503` and no data. Requests over a rate limit write no event. Events caused
+written; if that fails, the client gets `503` and no data. Failed authentications are not single events: the first
+one of an actor starts a minute, the ones after it are counted, and one `api.auth_failed` with the count is written
+when the minute ends or Postwerk stops. So a flood of wrong tokens writes at most one event per token name, plus one
+for the rest, per minute, and the same to Sentry. Requests over a rate limit write no event. Events caused
 by a token or a person (`api.view`, `ui.view`) are not part of a mail's own timeline in the detail response.
 
 ## 6. Code

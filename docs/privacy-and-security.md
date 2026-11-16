@@ -348,8 +348,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   `no-referrer`, `no-store` and `DENY` for framing; there is no JavaScript. A login, search, opened mail or account
   change that cannot be written to the event log is refused.
 - **Query API** (built, [api.md](api.md)). Off by default; on its own listener, for other pods. Bearer tokens
-  `<name>.<token>` from `POSTWERK_API_TOKENS_FILE`, hashed and checked like the UI tokens (`postwerk gen-api-token`);
-  a token that passed once costs one HMAC. `read` tokens can only look up one mail or one search at a time (at most
+  `<name>.<token>` from `POSTWERK_API_TOKENS_FILE` (`postwerk gen-api-token`): 32 random bytes, kept as SHA-256 and
+  checked in constant time, the same for unknown names (D41). Failed authentications are counted, one event per token
+  name and minute (D42). `read` tokens can only look up one mail or one search at a time (at most
   20 mails), with addresses masked; `admin` tokens also list mails. 60 requests per minute per token, 600 in all.
   JSON only, 4 KiB bodies, no CORS and browser requests refused, strict headers, optional `Host` allow-list,
   optional TLS (on by default in the chart). A request that cannot be written to the event log gets no answer.

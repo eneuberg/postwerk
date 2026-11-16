@@ -13,22 +13,20 @@
 // Host allow-list, a refusal of browser requests and a global rate limit.
 // Every endpoint then checks the method, the content type and the body
 // size, the bearer token and a per-token rate limit. Every authenticated
-// request and every failed authentication is an event; search terms never
-// appear in a URL, an event or a log line.
+// request is an event; failed authentications are counted and written as one
+// event per token name and minute. Search terms never appear in a URL, an
+// event or a log line.
 package api
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,8 +47,10 @@ const (
 	// KindForbidden is a request for an endpoint the token's role may not
 	// use (warn).
 	KindForbidden = "api.forbidden"
-	// KindAuthFailed is a missing, malformed or wrong token (warn). The
-	// actor is the token name only if it is in the tokens file.
+	// KindAuthFailed counts missing, malformed and wrong tokens (warn): one
+	// event per actor and AuthFailWindow, with "failures=<n>" as text. The
+	// actor is the token name only if it is in the tokens file; all other
+	// failures share the empty actor.
 	KindAuthFailed = "api.auth_failed"
 	// KindView is a mail's detail returned to a token: the token name as
 	// actor and the mail's id, like ui.view. It takes the place of
@@ -65,8 +65,9 @@ const (
 	// DefaultGlobal is the number of requests per minute for all callers
 	// together, authenticated or not.
 	DefaultGlobal = 600
-	// DefaultCheckWait is how long a request waits for a token check slot.
-	DefaultCheckWait = 5 * time.Second
+	// DefaultAuthFailWindow is the window over which failed
+	// authentications of one actor are folded into one event.
+	DefaultAuthFailWindow = time.Minute
 	// ReadMaxResults bounds the mails one search returns to a read token;
 	// admin tokens get up to query.MaxResults.
 	ReadMaxResults = 20
@@ -80,7 +81,7 @@ const (
 // or framed, should a browser ever render one.
 const ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 
-// Verifier checks API tokens (auth.Tokens).
+// Verifier checks API tokens (auth.APITokens).
 type Verifier interface {
 	Verify(name, token string) (auth.Role, bool)
 	Known(name string) bool
@@ -104,10 +105,9 @@ type Options struct {
 	Now func() time.Time
 
 	// Zero values take the defaults above; tests change them.
-	PerToken   int
-	Global     int
-	CheckSlots int // default runtime.GOMAXPROCS(0)
-	CheckWait  time.Duration
+	PerToken       int
+	Global         int
+	AuthFailWindow time.Duration
 }
 
 // API is the query API's HTTP handler.
@@ -115,8 +115,7 @@ type API struct {
 	opts     Options
 	perToken *rateLimit
 	global   *rateLimit
-	slots    chan struct{}
-	cache    *goodTokens
+	failures *authFailures
 	handler  http.Handler
 }
 
@@ -137,19 +136,15 @@ func New(opts Options) (*API, error) {
 	if opts.Global <= 0 {
 		opts.Global = DefaultGlobal
 	}
-	if opts.CheckSlots <= 0 {
-		opts.CheckSlots = runtime.GOMAXPROCS(0)
-	}
-	if opts.CheckWait <= 0 {
-		opts.CheckWait = DefaultCheckWait
+	if opts.AuthFailWindow <= 0 {
+		opts.AuthFailWindow = DefaultAuthFailWindow
 	}
 	a := &API{
 		opts:     opts,
 		perToken: newRateLimit(opts.Now, opts.PerToken, time.Minute),
 		global:   newRateLimit(opts.Now, opts.Global, time.Minute),
-		slots:    make(chan struct{}, opts.CheckSlots),
-		cache:    newGoodTokens(),
 	}
+	a.failures = newAuthFailures(opts.AuthFailWindow, a.writeAuthFailed)
 	mux := http.NewServeMux()
 	a.routes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -162,6 +157,11 @@ func New(opts Options) (*API, error) {
 // ServeHTTP implements http.Handler.
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) { a.handler.ServeHTTP(w, r) }
 
+// Close writes the failed authentications counted so far, without waiting
+// for their windows to end. Call it once the listener is shut down; a
+// failure after Close is written at once.
+func (a *API) Close() { a.failures.close() }
+
 // NewServer returns an HTTP server for the API listener with tight timeouts
 // (H9). Its own error log goes to logger; it never holds request content.
 func NewServer(addr string, h http.Handler, logger *slog.Logger) *http.Server {
@@ -173,8 +173,7 @@ func NewServer(addr string, h http.Handler, logger *slog.Logger) *http.Server {
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		// A request waits up to CheckWait for a token check slot and then
-		// runs PBKDF2.
+		// Covers the store reads of the largest response.
 		WriteTimeout:   20 * time.Second,
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 8 << 10,
@@ -355,53 +354,44 @@ func decode(r *http.Request, v any) *apiError {
 	return nil
 }
 
-// authenticate reads "Authorization: Bearer <name>.<token>" and checks it.
-// A wrong token costs one PBKDF2 check, whatever was sent; a token that was
-// right before costs one HMAC. At most CheckSlots checks run at once.
+// authenticate reads "Authorization: Bearer <name>.<token>" and checks it:
+// one SHA-256 and one constant-time comparison, whatever was sent (D41).
 func (a *API) authenticate(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	name, token, ok := parseBearer(r.Header.Get("Authorization"))
 	if !ok {
-		a.authFailed(w, r, "")
-		return caller{}, false
-	}
-	if role, ok := a.cache.lookup(name, token); ok {
-		return caller{name: name, role: role}, true
-	}
-	timer := time.NewTimer(a.opts.CheckWait)
-	select {
-	case a.slots <- struct{}{}:
-		timer.Stop()
-	case <-timer.C:
-		a.opts.Logger.Warn("api request refused, too many token checks at once", "limit", cap(a.slots))
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "Too many token checks at once. Try again in a moment.")
-		return caller{}, false
-	case <-r.Context().Done():
+		a.authFailed(w, "")
 		return caller{}, false
 	}
 	role, ok := a.opts.Tokens.Verify(name, token)
-	<-a.slots
 	if !ok {
-		a.authFailed(w, r, name)
+		a.authFailed(w, name)
 		return caller{}, false
 	}
-	a.cache.store(name, token, role)
 	return caller{name: name, role: role}, true
 }
 
-// authFailed writes the event and the 401. The name goes into the event only
-// if it is in the tokens file: a token pasted into the name part must not
-// reach the event log.
-func (a *API) authFailed(w http.ResponseWriter, r *http.Request, name string) {
+// authFailed counts the failure and writes the 401. The name is counted
+// under its own actor only if it is in the tokens file: a token pasted into
+// the name part must not reach the event log, and the counts stay bounded
+// by the number of names in the file.
+func (a *API) authFailed(w http.ResponseWriter, name string) {
 	actor := ""
 	if name != "" && a.opts.Tokens.Known(name) {
 		actor = name
 	}
-	if err := a.event(r.Context(), KindAuthFailed, store.Warn, actor, ""); err != nil {
-		a.opts.Logger.Error("api: writing the failed-auth event failed", "err", err)
-	}
+	a.failures.add(actor)
 	w.Header().Set("WWW-Authenticate", `Bearer realm="postwerk"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized", "A valid bearer token is required.")
+}
+
+// writeAuthFailed writes one api.auth_failed event for n failures of actor.
+// It runs outside any request, so it has its own deadline.
+func (a *API) writeAuthFailed(actor string, n int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.event(ctx, KindAuthFailed, store.Warn, actor, "failures="+strconv.Itoa(n)); err != nil {
+		a.opts.Logger.Error("api: writing the failed-auth event failed", "failures", n, "err", err)
+	}
 }
 
 // parseBearer splits "Bearer <name>.<token>". The token is base64url and has
@@ -488,47 +478,70 @@ func (l *rateLimit) allow(key string) (bool, time.Duration) {
 	return true, 0
 }
 
-// goodTokens remembers an HMAC of each token that passed a full check, under
-// a random key held in memory, so a client that calls often costs one HMAC
-// per request instead of PBKDF2. Only the right token takes that path; a
-// wrong one always pays the full check. The tokens file is read once at
-// start, so an entry never goes stale.
-type goodTokens struct {
-	key  []byte
-	mu   sync.Mutex
-	macs map[string]goodToken
+// authFailures folds failed authentications into one event per actor and
+// window (H7, D42): the first failure of an actor opens a window, later
+// ones only count, and the window's end writes one event with the count.
+// Actors are token names from the file or the empty actor, so the map holds
+// at most one entry more than the file has lines.
+type authFailures struct {
+	window time.Duration
+	write  func(actor string, n int)
+
+	mu     sync.Mutex
+	open   map[string]*failWindow
+	closed bool
 }
 
-type goodToken struct {
-	mac  []byte
-	role auth.Role
+type failWindow struct {
+	n     int
+	timer *time.Timer
 }
 
-func newGoodTokens() *goodTokens {
-	g := &goodTokens{key: make([]byte, 32), macs: make(map[string]goodToken)}
-	_, _ = rand.Read(g.key)
-	return g
+func newAuthFailures(window time.Duration, write func(actor string, n int)) *authFailures {
+	return &authFailures{window: window, write: write, open: make(map[string]*failWindow)}
 }
 
-func (g *goodTokens) mac(token string) []byte {
-	m := hmac.New(sha256.New, g.key)
-	m.Write([]byte(token))
-	return m.Sum(nil)
-}
-
-func (g *goodTokens) lookup(name, token string) (auth.Role, bool) {
-	g.mu.Lock()
-	t, ok := g.macs[name]
-	g.mu.Unlock()
-	if !ok || !hmac.Equal(t.mac, g.mac(token)) {
-		return "", false
+func (f *authFailures) add(actor string) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		f.write(actor, 1)
+		return
 	}
-	return t.role, true
+	if w := f.open[actor]; w != nil {
+		w.n++
+		f.mu.Unlock()
+		return
+	}
+	w := &failWindow{n: 1}
+	w.timer = time.AfterFunc(f.window, func() { f.flush(actor, w) })
+	f.open[actor] = w
+	f.mu.Unlock()
 }
 
-func (g *goodTokens) store(name, token string, role auth.Role) {
-	m := g.mac(token)
-	g.mu.Lock()
-	g.macs[name] = goodToken{mac: m, role: role}
-	g.mu.Unlock()
+// flush ends the window w of actor, unless close took it already.
+func (f *authFailures) flush(actor string, w *failWindow) {
+	f.mu.Lock()
+	if f.open[actor] != w {
+		f.mu.Unlock()
+		return
+	}
+	delete(f.open, actor)
+	n := w.n
+	f.mu.Unlock()
+	f.write(actor, n)
+}
+
+// close ends every open window at once, in the order of the actors.
+func (f *authFailures) close() {
+	f.mu.Lock()
+	f.closed = true
+	open := f.open
+	f.open = make(map[string]*failWindow)
+	f.mu.Unlock()
+	for _, actor := range slices.Sorted(maps.Keys(open)) {
+		w := open[actor]
+		w.timer.Stop()
+		f.write(actor, w.n)
+	}
 }

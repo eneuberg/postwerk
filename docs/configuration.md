@@ -87,7 +87,7 @@ default. Unlike the admin listener it may bind a pod address, because another po
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
 | `POSTWERK_API_LISTEN` | `off` | `host:port` or `:port`; `off` or empty turns it off | Address of the API listener. Must differ from the health, SMTP and admin listeners. |
-| `POSTWERK_API_TOKENS_FILE` | required while the API is on | path | Bearer tokens, one line per calling application, in the format of `POSTWERK_UI_TOKENS_FILE`: `name:role:pbkdf2-sha256$…`, role `read` (lookups only, addresses masked) or `admin` (also lists and the overview, addresses in full). Secret file. |
+| `POSTWERK_API_TOKENS_FILE` | required while the API is on | path | Bearer tokens, one line per calling application: `name:role:sha256$<digest>`, the SHA-256 of the token (D41); a `pbkdf2-sha256$…` line from an older version is an error. Role `read` (lookups only, addresses masked) or `admin` (also lists and the overview, addresses in full). Secret file. |
 | `POSTWERK_API_HOSTS` | none (any `Host`) | comma-separated host names or IP addresses, no port | If set, the only `Host` names the API answers to (any port); every other `Host` gets `403`. The Helm chart sets the Service names. |
 | `POSTWERK_API_TLS_CERT_FILE` | none | path to a PEM file | Certificate for TLS on the API. Set together with the key file. Re-read every minute; a renewed pair is served without a restart. |
 | `POSTWERK_API_TLS_KEY_FILE` | none | path to a PEM file | Private key for TLS on the API. Secret file. |
@@ -98,8 +98,8 @@ is `off` is a configuration error (ambiguous). Without TLS on an address that is
 every start: bearer tokens and addresses would cross the pod network in cleartext.
 
 Fixed, not configurable: 60 requests per minute per token name and 600 for all callers together (then `429` with
-`Retry-After`); at most one token check per CPU at once (a request waits up to 5 s, then gets `503`); bodies at most
-4 KiB; a `read` search returns at most 20 mails.
+`Retry-After`); failed authentications as at most one `api.auth_failed` event per token name and minute; bodies at
+most 4 KiB; a `read` search returns at most 20 mails.
 
 ## Store and keys
 
