@@ -1,12 +1,15 @@
 package delivery
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/emersion/go-smtp"
 
 	"github.com/eneuberg/postwerk/internal/config"
+	"github.com/eneuberg/postwerk/internal/id"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -156,4 +159,74 @@ func TestMessageSize(t *testing.T) {
 			t.Fatalf("SIZE=%d, message has %d bytes", r.opts.Size, len(r.data))
 		}
 	}
+}
+
+// msgOfSize returns a message of exactly n bytes with CRLF line ends.
+func msgOfSize(t *testing.T, n int) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("Subject: size\r\n\r\n")
+	for n-b.Len() > 80 {
+		b.WriteString(strings.Repeat("x", 76) + "\r\n")
+	}
+	rest := n - b.Len()
+	if rest < 2 {
+		t.Fatalf("cannot build a message of %d bytes", n)
+	}
+	b.WriteString(strings.Repeat("y", rest-2) + "\r\n")
+	return b.String()
+}
+
+// The configured maximum is what a target receives, Postwerk's own header
+// fields included; ingress accepts that minus those fields, exactly (I17).
+// A mail of the largest accepted size fits a target whose SIZE is the
+// configured maximum; one byte more is refused at ingress with 552.
+func TestSizeBoundaryLeavesRoomForOwnHeaders(t *testing.T) {
+	const configured = 8192
+	mj := newTarget(t, plain, nil, "", "")
+	mj.set(func(b *behavior) { b.size = strconv.Itoa(configured) })
+	other := newTarget(t, plain, nil, "", "")
+	other.set(func(b *behavior) { b.size = strconv.Itoa(configured) })
+	targets := []config.Target{
+		target("mj", mj, plain, func(t *config.Target) { t.Status = config.StatusMailjet }),
+		target("other", other, plain),
+	}
+	added := MaxAddedBytes(targets)
+	// X-Postwerk-Id and X-MJ-CustomID, each "Name: pw_<26>\r\n".
+	if want := len("X-Postwerk-Id: \r\n") + id.Len + len("X-MJ-CustomID: \r\n") + id.Len; added != want {
+		t.Fatalf("MaxAddedBytes = %d, want %d", added, want)
+	}
+	if n := MaxAddedBytes(targets[1:]); n != len("X-Postwerk-Id: \r\n")+id.Len {
+		t.Fatalf("MaxAddedBytes without Mailjet = %d", n)
+	}
+	accept := configured - added
+	h := startPostwerk(t, targets, harnessOpts{maxBytes: int64(accept)})
+
+	// The SMTP library's DATA reader refuses a message of exactly SIZE
+	// bytes, so the largest one through DATA is one byte less.
+	largest := h.send([]string{canary}, msgOfSize(t, accept-1))
+	h.waitStatus(largest, "mj", store.HandedOff)
+	h.waitStatus(largest, "other", store.HandedOff)
+	// The Mailjet target gets one byte under its SIZE, the other one the
+	// message plus X-Postwerk-Id only.
+	if got := mj.got(); len(got) != 1 || len(got[0].data) != configured-1 || got[0].opts.Size != configured-1 {
+		t.Fatalf("mailjet target got %d mails, first %d bytes", len(got), len(got[0].data))
+	}
+	if got := other.got(); len(got) != 1 || len(got[0].data) != accept-1+MaxAddedBytes(targets[1:]) {
+		t.Fatalf("other target got %d mails, first %d bytes", len(got), len(got[0].data))
+	}
+
+	for _, n := range []int{accept, accept + 1} {
+		if _, err := h.trySend([]string{canary}, msgOfSize(t, n)); smtpCode(err) != 552 {
+			t.Fatalf("message of %d bytes (accepted size %d): %v, want 552", n, accept, err)
+		}
+	}
+}
+
+func smtpCode(err error) int {
+	var se *smtp.SMTPError
+	if errors.As(err, &se) {
+		return se.Code
+	}
+	return 0
 }

@@ -283,7 +283,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	ing := ingress.New(ingress.Options{
 		Store: st, Sealer: sealer, Senders: cfg.Senders, Targets: cfg.Targets, Hostname: cfg.Hostname,
 		GetCertificate: getCert, AllowInsecure: cfg.AllowInsecureAuth,
-		MaxMessageBytes: cfg.MaxMessageBytes, MaxRecipients: cfg.MaxRecipients,
+		MaxMessageBytes: acceptBytes(cfg), MaxRecipients: cfg.MaxRecipients,
 		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
 	})
 	httpSrv := httpapi.New(cfg.HTTPListen, func(ctx context.Context) error {
@@ -392,6 +392,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	logger.Info("postwerk started", "version", version, "smtp", smtpL.Addr().String(),
 		"http", httpL.Addr().String(), "admin", adminLog, "api", apiLog, "api_tls", apiTLS != nil,
 		"targets", strings.Join(names, ","), "sentry", sentryLog,
+		"max_message_bytes", cfg.MaxMessageBytes, "smtp_size", acceptBytes(cfg),
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String())
 	if listening != nil {
@@ -495,6 +496,13 @@ func apiListener(cfg *config.Config, st *store.Store, logger *slog.Logger) (*htt
 		l = tls.NewListener(l, srv.TLSConfig)
 	}
 	return srv, l, reloader, nil
+}
+
+// acceptBytes is the largest message ingress accepts (its SIZE):
+// POSTWERK_MAX_MESSAGE_BYTES is the largest message sent to a target, so
+// the header fields Postwerk adds are taken off (I17).
+func acceptBytes(cfg *config.Config) int64 {
+	return cfg.MaxMessageBytes - int64(delivery.MaxAddedBytes(cfg.Targets))
 }
 
 // eventAppender writes certificate reload events to the event log, so they

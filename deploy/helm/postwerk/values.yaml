@@ -100,7 +100,10 @@ targets:
 retryWindow: 24h
 
 limits:
-  maxMessageBytes: 15728640       # recommended: 15 MiB, the SIZE Mailjet offers
+  # The smallest message limit of your targets (recommended: 15 MiB, the
+  # SIZE Mailjet offers). Ingress accepts this minus the header lines
+  # Postwerk adds (docs/configuration.md, "Message size").
+  maxMessageBytes: 15728640
   maxRecipients: 50
   maxConnections: 100
   maxInflightBytes: 268435456     # recommended: 256 MiB memory budget for messages being received

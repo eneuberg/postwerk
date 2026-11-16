@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/emersion/go-smtp"
 
 	"github.com/eneuberg/postwerk/internal/config"
+	"github.com/eneuberg/postwerk/internal/id"
 	"github.com/eneuberg/postwerk/internal/message"
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
@@ -578,12 +580,28 @@ func isASCII(s string) bool {
 	return true
 }
 
-func (w *worker) headers(mailID string) []message.Field {
+func (w *worker) headers(mailID string) []message.Field { return headersFor(w.target, mailID) }
+
+// headersFor returns the header fields Postwerk adds for target t.
+func headersFor(t config.Target, mailID string) []message.Field {
 	h := []message.Field{{Name: message.HeaderID, Value: mailID}}
-	if w.target.Status == config.StatusMailjet {
+	if t.Status == config.StatusMailjet {
 		h = append(h, message.Field{Name: message.HeaderMailjetCustomID, Value: mailID})
 	}
 	return h
+}
+
+// MaxAddedBytes returns the most bytes Postwerk adds to a message for any of
+// targets: its own header fields, which have a fixed length because every
+// mail id has id.Len bytes (I17). Ingress accepts the configured maximum
+// minus this, so whatever it accepts also fits the targets.
+func MaxAddedBytes(targets []config.Target) int {
+	placeholder := strings.Repeat("0", id.Len)
+	most := 0
+	for _, t := range targets {
+		most = max(most, message.FieldsSize(headersFor(t, placeholder)))
+	}
+	return most
 }
 
 func (w *worker) tlsConfig() *tls.Config {

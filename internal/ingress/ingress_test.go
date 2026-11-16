@@ -21,6 +21,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/config"
 	"github.com/eneuberg/postwerk/internal/id"
 	"github.com/eneuberg/postwerk/internal/keys"
+	"github.com/eneuberg/postwerk/internal/message"
 	"github.com/eneuberg/postwerk/internal/seal"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
@@ -818,4 +819,63 @@ func TestMemoryBudget(t *testing.T) {
 	if n := e.srv.budget.inUse(); n != 0 {
 		t.Fatalf("budget in use at the end: %d", n)
 	}
+}
+
+// A message with bare LF line ends grows on the way to a target (each LF
+// becomes CRLF), so ingress counts it that way (I17).
+func TestSizeCountsBareLFAsCRLF(t *testing.T) {
+	e := start(t, func(o *Options) { o.MaxMessageBytes = 4096 })
+	// The last line ends in CRLF, so ".\r\n" ends the data.
+	// 2958 bytes as received, 3009 on the way out: fits.
+	fits := "Subject: lf\n\n" + strings.Repeat(strings.Repeat("a", 59)+"\n", 49) + "end\r\n"
+	// 3906 bytes as received, but 4151 on the way out: refused.
+	tooBig := "Subject: lf\n\n" + strings.Repeat(strings.Repeat("b", 15)+"\n", 243) + "end\r\n"
+	for _, tc := range []struct {
+		msg  string
+		want int
+	}{{fits, 250}, {tooBig, 552}} {
+		if n := len(tc.msg); n > 4096 {
+			t.Fatalf("test message has %d bytes", n)
+		}
+		if got := rawData(t, e.addr, tc.msg); got != tc.want {
+			t.Fatalf("message of %d bytes (%d on the wire): reply %d, want %d",
+				len(tc.msg), message.WireSize([]byte(tc.msg)), got, tc.want)
+		}
+	}
+}
+
+// rawData sends msg as DATA byte for byte (no LF to CRLF conversion) and
+// returns the reply code.
+func rawData(t *testing.T, addr, msg string) int {
+	t.Helper()
+	conn, err := textproto.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	step := func(cmd string, want int) {
+		t.Helper()
+		if cmd != "" {
+			if _, err := conn.Cmd("%s", cmd); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, err := conn.ReadResponse(want); err != nil {
+			t.Fatalf("%q: %v", cmd, err)
+		}
+	}
+	step("", 220)
+	step("EHLO x", 250)
+	step("AUTH PLAIN AGFwcABzZWNyZXQ=", 235) // \0app\0secret
+	step("MAIL FROM:<a@example.test>", 250)
+	step("RCPT TO:<b@example.test>", 250)
+	step("DATA", 354)
+	if _, err := conn.W.WriteString(msg + ".\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.W.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := conn.ReadResponse(0)
+	return code
 }

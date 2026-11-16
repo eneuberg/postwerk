@@ -37,7 +37,8 @@ const (
 	DefaultDataPath    = "/data/postwerk.db"
 	DefaultHostname    = "postwerk"
 	// DefaultMaxMessageBytes (recommended) is 15 MiB, the SIZE that
-	// Mailjet's relay offers, so a mail Postwerk accepts also fits there.
+	// Mailjet's relay offers. It is the largest message a target receives;
+	// ingress accepts that minus Postwerk's own header lines (I17).
 	DefaultMaxMessageBytes = 15 << 20
 	DefaultMaxRecipients   = 50
 	DefaultMaxConnections  = 100

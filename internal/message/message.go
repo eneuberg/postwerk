@@ -182,11 +182,41 @@ func Write(w io.Writer, fields []Field, msg []byte) error {
 	return err
 }
 
-// Size returns the number of bytes Write writes for fields and msg.
+// Size returns the size of fields and msg as a target receives them (I17):
+// the SMTP client's DATA writer turns every LF without a CR before it into
+// CRLF and ends a message that has no final line break with one. This is
+// the size RFC 1870 means; the dots added for transparency are not counted.
 func Size(fields []Field, msg []byte) int {
-	n := len(msg)
+	return FieldsSize(fields) + WireSize(msg)
+}
+
+// FieldsSize returns the number of bytes of fields as Write writes them.
+func FieldsSize(fields []Field) int {
+	n := 0
 	for _, f := range fields {
 		n += len(f.Name) + len(": ") + len(f.Value) + len("\r\n")
+	}
+	return n
+}
+
+// WireSize returns the size of msg as a target receives it, written after
+// complete header lines; see Size. It follows net/textproto's DotWriter: a
+// CR only pairs with the LF right after it, and a CR that follows a CR
+// starts no pair.
+func WireSize(msg []byte) int {
+	n := len(msg)
+	cr := false // the previous byte was a CR that can pair with an LF
+	for _, c := range msg {
+		if c == '\n' && !cr {
+			n++
+		}
+		cr = c == '\r' && !cr
+	}
+	switch {
+	case cr:
+		n++ // a final CR gets its LF
+	case len(msg) > 0 && msg[len(msg)-1] != '\n':
+		n += len("\r\n")
 	}
 	return n
 }

@@ -87,8 +87,11 @@ type Options struct {
 	TLSCertificate *tls.Certificate // nil: no STARTTLS (unless GetCertificate is set)
 	// GetCertificate, if set, supplies the certificate for each STARTTLS
 	// handshake instead of TLSCertificate (tlsreload.Reloader, I16).
-	GetCertificate  func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	AllowInsecure   bool // AUTH without TLS
+	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	AllowInsecure  bool // AUTH without TLS
+	// MaxMessageBytes is the largest message accepted, offered as SIZE and
+	// counted as a target receives it (message.WireSize). The caller
+	// leaves room for the header fields delivery adds (I17).
 	MaxMessageBytes int64
 	MaxRecipients   int
 	// MaxConnections limits concurrent connections; 0 means
@@ -530,7 +533,9 @@ func (s *session) Data(r io.Reader) error {
 		s.srv.opts.Logger.Warn("reading message failed", "remote", s.remote, "sender", sender)
 		return errReadFailed
 	}
-	if int64(len(raw)) > limit {
+	// Counted as a target receives it: an LF without CR becomes CRLF on
+	// the way out (I17).
+	if int64(message.WireSize(raw)) > limit {
 		return errTooBig
 	}
 

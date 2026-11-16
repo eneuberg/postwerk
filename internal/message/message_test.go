@@ -1,8 +1,11 @@
 package message
 
 import (
+	"bufio"
 	"bytes"
+	"net/textproto"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -188,5 +191,48 @@ func TestSize(t *testing.T) {
 	}
 	if got := Size(fields, msg); got != buf.Len() {
 		t.Fatalf("Size = %d, Write wrote %d", got, buf.Len())
+	}
+}
+
+// Size must match what the SMTP client's DATA writer really sends, for every
+// mix of CR, LF and text (no dots, so no transparency dots are added).
+func TestSizeMatchesDotWriter(t *testing.T) {
+	fields := []Field{{Name: HeaderID, Value: "pw_01JD0000000000000000000000"}}
+	alphabet := []byte("\r\na")
+	check := func(msg []byte) {
+		var buf bytes.Buffer
+		tw := textproto.NewWriter(bufio.NewWriter(&buf))
+		dw := tw.DotWriter()
+		if err := Write(dw, fields, msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := dw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// The writer ends with ".\r\n", which is not part of the message.
+		if got, want := Size(fields, msg), buf.Len()-len(".\r\n"); got != want {
+			t.Fatalf("Size(%q) = %d, the writer sent %d", msg, got, want)
+		}
+	}
+	// Every message of up to 6 bytes from the alphabet.
+	var gen func(prefix []byte, n int)
+	gen = func(prefix []byte, n int) {
+		check(prefix)
+		if n == 0 {
+			return
+		}
+		for _, c := range alphabet {
+			gen(append(slices.Clone(prefix), c), n-1)
+		}
+	}
+	gen(nil, 6)
+	check([]byte("Subject: x\n\nbody\nwith LF only"))
+	check([]byte("Subject: x\r\n\r\nbody\r\r\n\r\n"))
+}
+
+func TestFieldsSize(t *testing.T) {
+	f := []Field{{Name: "X-A", Value: "1"}, {Name: "X-Bb", Value: "22"}}
+	if got := FieldsSize(f); got != len("X-A: 1\r\nX-Bb: 22\r\n") {
+		t.Fatalf("FieldsSize = %d", got)
 	}
 }
