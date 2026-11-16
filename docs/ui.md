@@ -112,8 +112,10 @@ symbols, not the account name. A passphrase of a few words works well. They are 
 - **Throttling** (U22), in memory. After 5 failed checks for one name, every further failure makes that name wait 1
   minute, then 2, 4, 8 and at most 15 minutes; a name without a failure for 24 hours, or with a good login, starts over.
   From one source address, 20 failures are free and the count is forgotten after an hour. Names that do not exist are
-  counted the same way. A login that has to wait gets `429` without a check. The same limits apply to the password
-  asked for a change. This allows about 100 wrong guesses a day per name and never locks an account for good, so
+  counted the same way. A login that has to wait gets `429` without a check. Checks that are still running count
+  against the free failures, so requests sent at once get no more checks than requests sent one after another; past
+  the free failures, a name or source gets one check at a time (a second one gets the "try again" page). The same
+  limits apply to the password asked for a change. This allows about 100 wrong guesses a day per name and never locks an account for good, so
   nobody can lock out an admin. Behind `kubectl port-forward` every person comes from `127.0.0.1`, which is why the
   source limit is the looser one.
 - **Sessions** live in memory on the server: a random 32-byte id, an idle timeout of 30 minutes and an absolute limit

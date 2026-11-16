@@ -62,8 +62,21 @@ type checkResult struct {
 // failure event ("" for a login, "confirm" for a change).
 func (u *UI) checkPassword(r *http.Request, name, password, why string) (checkResult, error) {
 	nameKey, sourceKey := throttleName(name), sourceOf(r)
-	if wait := max(u.nameFails.wait(nameKey), u.sourceFails.wait(sourceKey)); wait > 0 {
+	// Reserve the check with both throttles first: requests that arrive
+	// together count as if they came one after another.
+	nameWait, nameOK := u.nameFails.begin(nameKey)
+	sourceWait, sourceOK := u.sourceFails.begin(sourceKey)
+	if nameOK {
+		defer u.nameFails.done(nameKey)
+	}
+	if sourceOK {
+		defer u.sourceFails.done(sourceKey)
+	}
+	if wait := max(nameWait, sourceWait); wait > 0 {
 		return checkResult{wait: wait}, errThrottled
+	}
+	if !nameOK || !sourceOK {
+		return checkResult{}, errBusy
 	}
 	timer := time.NewTimer(u.opts.LoginWait)
 	select {
