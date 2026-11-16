@@ -23,8 +23,11 @@ import (
 )
 
 const (
+	// adminToken is the token of "ops" in the tokens file.
 	adminToken = "admin-token-for-tests"
-	readToken  = "read-token-for-tests"
+	// viewerPassword is the password of "viewer", an account in the
+	// database.
+	viewerPassword = "viewer-password-for-tests"
 )
 
 var tokenFile = sync.OnceValue(func() string {
@@ -32,11 +35,15 @@ var tokenFile = sync.OnceValue(func() string {
 	if err != nil {
 		panic(err)
 	}
-	r, err := auth.TokenLine("viewer", auth.RoleRead, readToken, auth.MinIterations)
+	return a + "\n"
+})
+
+var viewerHash = sync.OnceValue(func() string {
+	h, err := auth.Hash(viewerPassword, auth.MinIterations)
 	if err != nil {
 		panic(err)
 	}
-	return a + "\n" + r + "\n"
+	return h
 })
 
 // clock is a settable time source.
@@ -87,6 +94,8 @@ type harness struct {
 	tokens *countingVerifier
 	dbPath string
 	sender string // of seeded mails; default "shop"
+	// setupEvents is the number of events the harness wrote itself.
+	setupEvents int
 }
 
 func newHarness(t *testing.T, opts ...func(*Options)) *harness {
@@ -109,14 +118,20 @@ func newHarnessWithHasher(t *testing.T, hs *addrhash.Hasher, opts ...func(*Optio
 	}
 	h := &harness{t: t, st: st, clock: &clock{t: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		logs: &testutil.SafeBuffer{}, tokens: &countingVerifier{Verifier: tokens}, dbPath: dbPath}
+	if err := st.CreateUIAccount(context.Background(), "viewer", viewerHash(), "ops", h.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	h.setupEvents = len(h.events())
 	o := Options{
-		Query:    query.New(query.Options{Store: st, Hasher: hs, Targets: []string{"mailjet", "capture"}, Now: h.clock.Now}),
-		Tokens:   h.tokens,
-		Events:   st,
-		Hosts:    []string{"relay.example.test"},
-		Instance: "test",
-		Logger:   testutil.Logger(h.logs),
-		Now:      h.clock.Now,
+		Query:      query.New(query.Options{Store: st, Hasher: hs, Targets: []string{"mailjet", "capture"}, Now: h.clock.Now}),
+		Tokens:     h.tokens,
+		Accounts:   st,
+		Iterations: auth.MinIterations,
+		Events:     st,
+		Hosts:      []string{"relay.example.test"},
+		Instance:   "test",
+		Logger:     testutil.Logger(h.logs),
+		Now:        h.clock.Now,
 	}
 	for _, f := range opts {
 		f(&o)
@@ -195,7 +210,7 @@ func csrf(t *testing.T, page string) string {
 func (b *browser) login(name, token string) response {
 	b.h.t.Helper()
 	form := b.get("/login")
-	return b.do("POST", "/login", url.Values{"csrf": {csrf(b.h.t, form.body)}, "name": {name}, "token": {token}})
+	return b.do("POST", "/login", url.Values{"csrf": {csrf(b.h.t, form.body)}, "name": {name}, "password": {token}})
 }
 
 func (h *harness) loggedIn(name, token string) *browser {
@@ -311,8 +326,8 @@ func TestLoginCSRF(t *testing.T) {
 		t.Fatalf("login cookie = %+v", c)
 	}
 	for name, f := range map[string]url.Values{
-		"missing field": {"name": {"ops"}, "token": {adminToken}},
-		"wrong field":   {"csrf": {strings.Repeat("A", 43)}, "name": {"ops"}, "token": {adminToken}},
+		"missing field": {"name": {"ops"}, "password": {adminToken}},
+		"wrong field":   {"csrf": {strings.Repeat("A", 43)}, "name": {"ops"}, "password": {adminToken}},
 	} {
 		if r := b.do("POST", "/login", f); r.StatusCode != 403 {
 			t.Errorf("%s: %d", name, r.StatusCode)
@@ -321,10 +336,10 @@ func TestLoginCSRF(t *testing.T) {
 	// A form without the cookie (posted from another browser, or by a
 	// page that cannot read the cookie).
 	other := h.browser()
-	if r := other.do("POST", "/login", url.Values{"csrf": {token}, "name": {"ops"}, "token": {adminToken}}); r.StatusCode != 403 {
+	if r := other.do("POST", "/login", url.Values{"csrf": {token}, "name": {"ops"}, "password": {adminToken}}); r.StatusCode != 403 {
 		t.Errorf("no cookie: %d", r.StatusCode)
 	}
-	if n := h.tokens.calls.Load(); n != 0 {
+	if n := h.ui.checks.Load(); n != 0 {
 		t.Fatalf("token checked %d times before the CSRF check passed", n)
 	}
 	if _, ok := other.cookies[sessionCookie]; ok {
@@ -337,7 +352,7 @@ func TestLoginSuccessAndFailure(t *testing.T) {
 	b := h.browser()
 
 	r := b.login("ops", "wrong")
-	if r.StatusCode != http.StatusUnauthorized || !strings.Contains(r.body, "Name or token is wrong.") {
+	if r.StatusCode != http.StatusUnauthorized || !strings.Contains(r.body, "Name or password is wrong.") {
 		t.Fatalf("wrong token: %d", r.StatusCode)
 	}
 	r2 := b.login("nobody", "wrong")
@@ -362,7 +377,7 @@ func TestLoginSuccessAndFailure(t *testing.T) {
 	if _, ok := b.cookies[loginCookie]; ok {
 		t.Fatal("login cookie kept after login")
 	}
-	if page := b.get("/"); page.StatusCode != 200 || !strings.Contains(page.body, "ops") || !strings.Contains(page.body, "admin") {
+	if page := b.get("/"); page.StatusCode != 200 || !strings.Contains(page.body, ">ops<") || !strings.Contains(page.body, ">file<") {
 		t.Fatalf("overview after login: %d", page.StatusCode)
 	}
 	// Logged in, the login page sends you on.
@@ -370,13 +385,13 @@ func TestLoginSuccessAndFailure(t *testing.T) {
 		t.Fatalf("login page while logged in: %d", r.StatusCode)
 	}
 
-	evs := h.events()
+	evs := h.events()[h.setupEvents:]
 	var kinds []string
 	for _, e := range evs {
 		kinds = append(kinds, e.Kind+"/"+e.Actor+"/"+e.Text+"/"+string(e.Level))
 	}
 	want := []string{
-		"ui.login_failed/ops//warn", "ui.login_failed///warn", "ui.login_failed///warn", "ui.login/ops/admin/info",
+		"ui.login_failed/ops//warn", "ui.login_failed///warn", "ui.login_failed///warn", "ui.login/ops/file/info",
 	}
 	if strings.Join(kinds, " ") != strings.Join(want, " ") {
 		t.Fatalf("events = %q, want %q", kinds, want)
@@ -393,18 +408,19 @@ func TestLoginSuccessAndFailure(t *testing.T) {
 	}
 }
 
-// Every login attempt costs exactly one token check, whatever was typed,
-// so its time does not depend on the name (U5). The auth package proves
-// that each check costs the strongest hash in the file.
+// Every login attempt costs exactly one password check, whatever was
+// typed, so its time does not depend on the name (U5). The auth package
+// proves that each check costs the same number of PBKDF2 rounds, for the
+// tokens file (padded by the checker), database hashes and unknown names.
 func TestLoginTimingPath(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range [][2]string{
 		{"ops", "wrong"}, {"nobody", "wrong"}, {"", ""}, {"ops", ""}, {"ops", strings.Repeat("x", 5000)},
-		{strings.Repeat("n", 300), "x"}, {"ops", adminToken},
+		{strings.Repeat("n", 300), "x"}, {"ops", adminToken}, {"viewer", "wrong"}, {"viewer", viewerPassword},
 	} {
-		before := h.tokens.calls.Load()
+		before := h.ui.checks.Load()
 		h.browser().login(c[0], c[1])
-		if n := h.tokens.calls.Load() - before; n != 1 {
+		if n := h.ui.checks.Load() - before; n != 1 {
 			t.Errorf("login %.20q cost %d checks, want 1", c[0], n)
 		}
 	}
@@ -417,7 +433,7 @@ func TestLoginConcurrencyLimit(t *testing.T) {
 	form := first.get("/login")
 	done := make(chan response)
 	go func() {
-		done <- first.do("POST", "/login", url.Values{"csrf": {csrf(t, form.body)}, "name": {"ops"}, "token": {adminToken}})
+		done <- first.do("POST", "/login", url.Values{"csrf": {csrf(t, form.body)}, "name": {"ops"}, "password": {adminToken}})
 	}()
 	testutil.Eventually(t, 5*time.Second, "first check running", func() bool { return h.tokens.calls.Load() == 1 })
 
@@ -512,7 +528,7 @@ func TestLogout(t *testing.T) {
 		t.Fatal("refused logouts ended the session")
 	}
 	// The token of another session does not work either.
-	other := h.loggedIn("viewer", readToken)
+	other := h.loggedIn("viewer", viewerPassword)
 	if r := b.do("POST", "/logout", url.Values{"csrf": {csrf(t, other.get("/").body)}}); r.StatusCode != 403 {
 		t.Fatalf("logout with another session's csrf: %d", r.StatusCode)
 	}

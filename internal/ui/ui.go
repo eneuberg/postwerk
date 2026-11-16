@@ -1,13 +1,15 @@
 // Package ui serves Postwerk's internal web UI on the admin listener
-// (H3, U1–U16; docs/ui.md).
+// (H3, U1–U24; docs/ui.md).
 //
 // Every response goes through the same outer layer: strict security headers,
 // a Host check against DNS rebinding and a bound on the request body. Every
-// page needs a session from a token login; every POST needs the session's
-// CSRF token and must not come from another site. The pages read through
-// internal/query, which masks addresses by role; nothing here touches
-// message content. Searches are POSTs, and neither the query nor an address
-// is ever logged or written to an event.
+// page needs a session from a login; every POST needs the session's CSRF
+// token and must not come from another site. There is one kind of account,
+// admin: from the tokens file (start and break-glass access) or from the
+// database (managed on the accounts pages). The pages read through
+// internal/query; nothing here touches message content. Searches are POSTs,
+// and neither the query, an address nor a password is ever logged or
+// written to an event.
 package ui
 
 import (
@@ -21,6 +23,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/auth"
@@ -52,10 +55,13 @@ const (
 const ContentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'"
 
-// Verifier checks UI tokens (auth.Tokens).
+// Verifier checks the tokens of the tokens file (auth.Tokens).
 type Verifier interface {
 	Verify(name, token string) (auth.Role, bool)
 	Known(name string) bool
+	// Iterations is the cost of one Verify.
+	Iterations() int
+	Names() []string
 }
 
 // EventLog takes the UI's own events (store.Store).
@@ -63,11 +69,23 @@ type EventLog interface {
 	Append(ctx context.Context, e store.Event) error
 }
 
+// AccountStore keeps the accounts managed in the panel (store.Store). Each
+// change writes its event in the same transaction.
+type AccountStore interface {
+	UIAccounts(ctx context.Context) ([]store.UIAccount, error)
+	UIAccount(ctx context.Context, name string) (store.UIAccount, error)
+	CreateUIAccount(ctx context.Context, name, hash, actor string, at time.Time) error
+	SetUIPassword(ctx context.Context, name, hash, actor string, at time.Time) error
+	DeleteUIAccount(ctx context.Context, name, actor string, at time.Time) error
+}
+
 // Options configure the UI.
 type Options struct {
-	Query  *query.Service
-	Tokens Verifier
-	Events EventLog
+	Query *query.Service
+	// Tokens are the accounts of the tokens file; nil without one.
+	Tokens   Verifier
+	Accounts AccountStore
+	Events   EventLog
 	// Hosts are extra host names (POSTWERK_ADMIN_HOSTS) besides localhost,
 	// 127.0.0.1 and ::1.
 	Hosts []string
@@ -83,6 +101,10 @@ type Options struct {
 	LoginSlots        int // default runtime.GOMAXPROCS(0)
 	LoginWait         time.Duration
 	SearchesPerMinute int
+	// Iterations is the PBKDF2 cost of new passwords and of every check
+	// (default auth.DefaultIterations, or more if the tokens file has
+	// stronger hashes).
+	Iterations int
 }
 
 // UI is the web UI's HTTP handler.
@@ -91,14 +113,19 @@ type UI struct {
 	sessions   *sessions
 	loginSlots chan struct{}
 	searches   *rateLimit
-	pages      map[string]*template.Template
-	handler    http.Handler
+	checker    *auth.Checker
+	// checks counts password checks, for tests of the equal cost.
+	checks      atomic.Int64
+	nameFails   *throttle
+	sourceFails *throttle
+	pages       map[string]*template.Template
+	handler     http.Handler
 }
 
 // New returns the UI.
 func New(opts Options) (*UI, error) {
-	if opts.Query == nil || opts.Tokens == nil || opts.Events == nil {
-		return nil, errors.New("ui: Query, Tokens and Events are required")
+	if opts.Query == nil || opts.Accounts == nil || opts.Events == nil {
+		return nil, errors.New("ui: Query, Accounts and Events are required")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -121,16 +148,25 @@ func New(opts Options) (*UI, error) {
 	if opts.SearchesPerMinute <= 0 {
 		opts.SearchesPerMinute = DefaultSearchesPerMinute
 	}
+	if opts.Iterations <= 0 {
+		opts.Iterations = auth.DefaultIterations
+	}
+	if opts.Tokens != nil {
+		opts.Iterations = max(opts.Iterations, opts.Tokens.Iterations())
+	}
 	pages, err := parseTemplates()
 	if err != nil {
 		return nil, err
 	}
 	u := &UI{
-		opts:       opts,
-		sessions:   newSessions(opts.Now, opts.IdleTimeout, opts.MaxSessionAge, maxSessions),
-		loginSlots: make(chan struct{}, opts.LoginSlots),
-		searches:   newRateLimit(opts.Now, opts.SearchesPerMinute, time.Minute),
-		pages:      pages,
+		opts:        opts,
+		sessions:    newSessions(opts.Now, opts.IdleTimeout, opts.MaxSessionAge, maxSessions),
+		loginSlots:  make(chan struct{}, opts.LoginSlots),
+		searches:    newRateLimit(opts.Now, opts.SearchesPerMinute, time.Minute),
+		checker:     auth.NewChecker(opts.Iterations),
+		nameFails:   newThrottle(opts.Now, accountFreeFailures, accountForget),
+		sourceFails: newThrottle(opts.Now, sourceFreeFailures, sourceForget),
+		pages:       pages,
 	}
 
 	mux := http.NewServeMux()
@@ -139,6 +175,7 @@ func New(opts Options) (*UI, error) {
 	mux.HandleFunc("POST /login", u.login)
 	mux.HandleFunc("POST /logout", u.authed(u.logout))
 	u.pageRoutes(mux)
+	u.accountRoutes(mux)
 
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -261,4 +298,10 @@ func serveStatic(w http.ResponseWriter, r *http.Request) {
 // event writes one of the UI's own events.
 func (u *UI) event(ctx context.Context, kind string, level store.Level, actor, text string) error {
 	return u.opts.Events.Append(ctx, store.Event{Time: u.opts.Now(), Kind: kind, Level: level, Actor: actor, Text: text})
+}
+
+// fileAccount reports whether name is in the tokens file. The file wins
+// over a database account of the same name.
+func (u *UI) fileAccount(name string) bool {
+	return u.opts.Tokens != nil && u.opts.Tokens.Known(name)
 }

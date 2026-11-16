@@ -39,6 +39,14 @@ var tokenLine = sync.OnceValue(func() string {
 	return line
 })
 
+var readTokenLine = sync.OnceValue(func() string {
+	line, err := auth.TokenLine("support", auth.RoleRead, "ui-token-2", auth.MinIterations)
+	if err != nil {
+		panic(err)
+	}
+	return line
+})
+
 var senderHash = sync.OnceValue(func() string {
 	h, err := auth.Hash("pw", auth.MinIterations)
 	if err != nil {
@@ -55,6 +63,7 @@ func baseFiles(t *testing.T) files {
 		"/run/secrets/store-key": "# active key first\n" + storeKeyLine + "\n\n" + storeOldLine + "\n",
 		"/run/secrets/hash-key":  hashKeyLine + "\n",
 		"/run/secrets/ui-tokens": tokenLine() + "\n",
+		"/run/secrets/ui-read":   tokenLine() + "\n" + readTokenLine() + "\n",
 	}
 }
 
@@ -309,7 +318,7 @@ func TestErrors(t *testing.T) {
 		{"admin bad address", []string{"POSTWERK_ADMIN_LISTEN=8081"}, "POSTWERK_ADMIN_LISTEN: expected host:port"},
 		{"admin shares health", []string{"POSTWERK_ADMIN_LISTEN=127.0.0.1:8080"}, "must differ from POSTWERK_HTTP_LISTEN"},
 		{"admin bad allow", []string{"POSTWERK_ADMIN_ALLOW_NON_LOOPBACK=yes"}, "POSTWERK_ADMIN_ALLOW_NON_LOOPBACK: expected true or false"},
-		{"admin without tokens", []string{"POSTWERK_UI_TOKENS_FILE="}, "POSTWERK_UI_TOKENS_FILE: required while the admin listener is on"},
+		{"admin read token", []string{"POSTWERK_UI_TOKENS_FILE=/run/secrets/ui-read"}, `POSTWERK_UI_TOKENS_FILE: "support" has role read; the UI has admin accounts only`},
 		{"admin unreadable tokens", []string{"POSTWERK_UI_TOKENS_FILE=/nope"}, "POSTWERK_UI_TOKENS_FILE: cannot read file"},
 		{"admin senders as tokens", []string{"POSTWERK_UI_TOKENS_FILE=/run/secrets/senders"}, "POSTWERK_UI_TOKENS_FILE: line 1: expected name:role:hash"},
 		{"admin bad host", []string{"POSTWERK_ADMIN_HOSTS=https://relay.example.test"}, "POSTWERK_ADMIN_HOSTS"},
@@ -365,9 +374,9 @@ func TestAllErrorsTogether(t *testing.T) {
 	if j, ok := err.(interface{ Unwrap() []error }); ok {
 		n = len(j.Unwrap())
 	}
-	// recipients, window, senders, TLS rule, store key, hash key, UI tokens, targets, typo
-	if n != 9 {
-		t.Fatalf("got %d errors, want 9:\n%v", n, err)
+	// recipients, window, senders, TLS rule, store key, hash key, targets, typo
+	if n != 8 {
+		t.Fatalf("got %d errors, want 8:\n%v", n, err)
 	}
 	if !errors.Is(err, err) {
 		t.Fatal("unreachable")
@@ -491,6 +500,10 @@ func TestAdminListener(t *testing.T) {
 		if c := load("POSTWERK_ADMIN_LISTEN=" + addr); c.Admin.Listen != addr || c.Admin.NonLoopback {
 			t.Errorf("%s: %+v", addr, c.Admin)
 		}
+	}
+	// Without a tokens file the UI uses the accounts in the database only.
+	if c := load("POSTWERK_UI_TOKENS_FILE="); c.Admin.Listen != "127.0.0.1:8081" || c.Admin.Tokens != nil {
+		t.Errorf("without tokens file: %+v", c.Admin)
 	}
 	// Off: empty or "off", and then nothing else of the UI may be set.
 	for _, v := range []string{"", "off"} {

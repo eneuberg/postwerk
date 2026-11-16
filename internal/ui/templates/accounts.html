@@ -1,0 +1,43 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Accounts</h1>
+  <p class="muted">Every account sees all pages and addresses in full, and may manage accounts.</p>
+</div>
+<section class="card">
+  <div class="table-wrap">
+  <table class="accounts">
+    <thead><tr><th scope="col">Name</th><th scope="col">Kept in</th><th scope="col">Created</th><th scope="col">Last change</th></tr></thead>
+    <tbody>
+    {{range .Data.Accounts}}
+    <tr>
+      <td><a href="/accounts/{{.Name}}">{{.Name}}</a>{{if .Self}} <span class="tag">you</span>{{end}}</td>
+      <td>{{if .FromFile}}<span class="tag tag-file" title="POSTWERK_UI_TOKENS_FILE: start and break-glass access, not editable here">tokens file</span>{{else}}database{{if .Shadowed}} <span class="tag tag-warn" title="The tokens file has the same name and wins at login">shadowed by the file</span>{{end}}{{end}}</td>
+      <td class="nowrap">{{if .FromFile}}<span class="muted">—</span>{{else}}{{when .CreatedAt}} <span class="muted">by {{.CreatedBy}}</span>{{end}}</td>
+      <td class="nowrap">{{if .FromFile}}<span class="muted">—</span>{{else}}{{when .UpdatedAt}} <span class="muted">by {{.UpdatedBy}}</span>{{end}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4" class="empty">No accounts.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card narrow" aria-labelledby="create-h">
+  <h2 id="create-h">New account</h2>
+  {{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/accounts" autocomplete="off">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" value="{{.Data.Name}}" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" pattern="[a-z0-9][a-z0-9._\-]{0,63}" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{.Data.Min}}" maxlength="{{.Data.Max}}" required aria-describedby="pw-rules">
+    <label for="confirm">Repeat the password</label>
+    <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{.Data.Min}}" maxlength="{{.Data.Max}}" required>
+    <p id="pw-rules" class="muted small">{{.Data.Min}} to {{.Data.Max}} characters, any characters, not the name. A passphrase of a few words works well. Give it to the person through a safe channel; they can change it on their account page.</p>
+    <label for="current">Your current password</label>
+    <input id="current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+    <div class="form-actions"><button type="submit">Create account</button></div>
+  </form>
+</section>
+{{end}}

@@ -20,8 +20,10 @@ type view struct {
 	Nav      string // the active navigation entry
 	Instance string
 	User     string
-	Role     string
+	// FileUser is set when the account is from the tokens file.
+	FileUser bool
 	CSRF     string // for the logout form and other POST forms
+	Flash    string // a one-time notice
 	Data     any
 }
 
@@ -59,6 +61,9 @@ func (u *UI) render(w http.ResponseWriter, r *http.Request, status int, name str
 		return
 	}
 	v.Instance = u.opts.Instance
+	if v.User != "" {
+		v.FileUser = u.fileAccount(v.User)
+	}
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout.html", v); err != nil {
 		u.opts.Logger.Error("ui: rendering failed", "template", name, "err", err)
@@ -72,7 +77,7 @@ func (u *UI) render(w http.ResponseWriter, r *http.Request, status int, name str
 
 // pageView is a view for a logged-in page.
 func pageView(sess session, nav, title string, data any) view {
-	return view{Title: title, Nav: nav, User: sess.name, Role: string(sess.role), CSRF: sess.csrf, Data: data}
+	return view{Title: title, Nav: nav, User: sess.name, CSRF: sess.csrf, Data: data}
 }
 
 type failView struct {
@@ -95,7 +100,6 @@ var funcs = template.FuncMap{
 	"size":        formatSize,
 	"status":      statusLabel,
 	"statusClass": func(s store.Status) string { return "st-" + string(s) },
-	"masked":      func(a query.Address) bool { return a.State == query.MaskedAddr },
 	"pseudo":      func(a query.Address) bool { return a.State == query.Pseudonymized },
 	"nullSender":  func(a query.Address) bool { return a.State == query.NullSender },
 	"date":        func(t time.Time) string { return dateValue(t) },

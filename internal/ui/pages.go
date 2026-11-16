@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/store"
 )
@@ -125,24 +124,29 @@ func parseDay(s string) (time.Time, bool) {
 
 var mailIDRe = regexp.MustCompile(`^pw_[0-9A-Za-z_]{1,64}$`)
 
-// mail shows one mail (U10, U12): addresses in full only for admin.
+// mail shows one mail (U10, U12) and records who opened it (U24): the
+// page is shown only once its ui.view event is in the event log.
 func (u *UI) mail(w http.ResponseWriter, r *http.Request, sess session) {
 	id := r.PathValue("id")
 	if !mailIDRe.MatchString(id) {
 		u.fail(w, r, http.StatusNotFound, "There is no mail with this id.")
 		return
 	}
-	access := query.Masked
-	if sess.role == auth.RoleAdmin {
-		access = query.Full
-	}
-	m, err := u.opts.Query.Mail(r.Context(), id, access)
+	m, err := u.opts.Query.Mail(r.Context(), id, query.Full)
 	if errors.Is(err, query.ErrNotFound) {
 		u.fail(w, r, http.StatusNotFound, "There is no mail with this id. It may have been deleted by retention.")
 		return
 	}
 	if err != nil {
 		u.queryFailed(w, r, "mail", err)
+		return
+	}
+	err = u.opts.Events.Append(r.Context(), store.Event{
+		Time: u.opts.Now(), Kind: store.KindUIView, Level: store.Info, MailID: m.ID, Actor: sess.name,
+	})
+	if err != nil {
+		u.opts.Logger.Error("ui: writing the view event failed; page not shown", "err", err)
+		u.fail(w, r, http.StatusServiceUnavailable, "Opening the mail could not be recorded, so it is not shown. Please try again later.")
 		return
 	}
 	u.render(w, r, http.StatusOK, "mail", pageView(sess, "mails", "Mail "+m.ID, m))

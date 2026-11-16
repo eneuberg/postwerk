@@ -5,7 +5,7 @@
 //	postwerk [serve]        run the relay (configuration from POSTWERK_* variables)
 //	postwerk hash-password  read a password from stdin, print a senders-file hash
 //	postwerk gen-key        print a new key line for a store or hash key file
-//	postwerk gen-token NAME ROLE  print a new UI token and its tokens-file line
+//	postwerk gen-token NAME  print a new UI token and its tokens-file line
 //	postwerk gen-api-token NAME ROLE  print a new API bearer token and its tokens-file line
 //	postwerk version        print the version
 package main
@@ -57,9 +57,9 @@ commands:
   hash-password  read one password from stdin and print the value for the senders file
   gen-key        print a new random key line (<key-id>:<base64>) for POSTWERK_STORE_KEY_FILE
                  or POSTWERK_HASH_KEY_FILE; use a separate key for each file
-  gen-token NAME ROLE
+  gen-token NAME [admin]
                  print a new random UI token (first line, give it to the person) and its line
-                 for POSTWERK_UI_TOKENS_FILE (second line); ROLE is read or admin
+                 for POSTWERK_UI_TOKENS_FILE (second line); every UI account is an admin
   gen-api-token NAME ROLE
                  print a new random API bearer token (first line, for the calling application)
                  and its line for POSTWERK_API_TOKENS_FILE (second line); ROLE is read or admin
@@ -117,8 +117,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // genToken prints a new UI token and the matching tokens-file line (U4).
-// For the API (H5) the first line is the whole bearer value, <name>.<token>.
+// A UI token is always admin; "admin" may still be given, as in older
+// guides. For the API (H5) the role is required and the first line is the
+// whole bearer value, <name>.<token>.
 func genToken(args []string, stdout, stderr io.Writer, forAPI bool) int {
+	if !forAPI && len(args) == 2 && args[1] != string(auth.RoleAdmin) {
+		fmt.Fprintln(stderr, "postwerk: the UI has admin accounts only; use 'postwerk gen-token NAME'")
+		return 2
+	}
+	if !forAPI && len(args) == 1 {
+		args = append(args, string(auth.RoleAdmin))
+	}
 	if len(args) != 2 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -315,10 +324,18 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			names = append(names, t.Name)
 		}
 		q := query.New(query.Options{Store: st, Hasher: hasher(cfg), Targets: names})
-		u, err := ui.New(ui.Options{
-			Query: q, Tokens: cfg.Admin.Tokens, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
-			Logger: logger,
-		})
+		var tokens ui.Verifier // nil without a tokens file
+		if cfg.Admin.Tokens != nil {
+			tokens = cfg.Admin.Tokens
+		}
+		err := checkUIAccounts(ctx, cfg.Admin.Tokens, st, logger)
+		var u *ui.UI
+		if err == nil {
+			u, err = ui.New(ui.Options{
+				Query: q, Tokens: tokens, Accounts: st, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
+				Logger: logger,
+			})
+		}
 		if err == nil {
 			adminL, err = net.Listen("tcp", cfg.Admin.Listen)
 		}
@@ -516,6 +533,32 @@ func eventAppender(st *store.Store, logger *slog.Logger) func(tlsreload.Event) {
 			logger.Warn("writing a certificate event failed", "kind", e.Kind, "err", err)
 		}
 	}
+}
+
+// checkUIAccounts makes sure someone can log in to the UI (U23): the first
+// account comes from the tokens file, later ones live in the database. With
+// neither, Postwerk does not start. Names in both are logged: the file
+// wins at login.
+func checkUIAccounts(ctx context.Context, tokens *auth.Tokens, st *store.Store, logger *slog.Logger) error {
+	accounts, err := st.UIAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	if tokens == nil && len(accounts) == 0 {
+		return errors.New("the UI has no account yet: set POSTWERK_UI_TOKENS_FILE for the first login " +
+			"(make a line with 'postwerk gen-token <name>'), create accounts with passwords in the UI, " +
+			"then remove the file if you like; or set POSTWERK_ADMIN_LISTEN=off (docs/ui.md)")
+	}
+	for _, a := range accounts {
+		if tokens != nil && tokens.Known(a.Name) {
+			logger.Warn("UI account is in the tokens file and in the database; the tokens file wins at login",
+				"account", a.Name)
+		}
+	}
+	if tokens != nil {
+		logger.Info("UI tokens file in use", "file_accounts", tokens.Len(), "database_accounts", len(accounts))
+	}
+	return nil
 }
 
 // retainPolicy builds the store's retention policy from the configuration.

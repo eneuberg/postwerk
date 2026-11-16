@@ -1,14 +1,15 @@
 {{define "content"}}
 <section class="login card">
   <h1>Log in</h1>
-  <p class="muted">Use the name and token from the UI tokens file.</p>
+  <p class="muted">Your account name and password, or a name and token from the UI tokens file.</p>
+  {{with .Data.Notice}}<p class="notice notice-ok" role="status">{{.}}</p>{{end}}
   {{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
   <form method="post" action="/login">
     <input type="hidden" name="csrf" value="{{.Data.CSRF}}">
     <label for="name">Name</label>
     <input id="name" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
-    <label for="token">Token</label>
-    <input id="token" name="token" type="password" autocomplete="current-password" maxlength="1024" required>
+    <label for="password">Password or token</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
     <button type="submit">Log in</button>
   </form>
 </section>

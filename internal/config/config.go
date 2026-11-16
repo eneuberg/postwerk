@@ -216,7 +216,8 @@ type Admin struct {
 	// Hosts are extra host names the UI answers to besides the loopback
 	// names (lower case).
 	Hosts []string
-	// Tokens are the UI tokens; set while Listen is not empty.
+	// Tokens are the UI tokens from POSTWERK_UI_TOKENS_FILE, all admin;
+	// nil without the file (the accounts are then in the database only).
 	Tokens *auth.Tokens
 }
 
@@ -705,10 +706,10 @@ func (l *loader) admin(c *Config) {
 			c.Admin.Hosts = append(c.Admin.Hosts, h)
 		}
 	}
+	// The tokens file is optional: accounts in the database are enough once
+	// there is one. Whether there is one is checked at start, with the
+	// store open (U23).
 	if l.env[envUITokensFile] == "" {
-		l.errorf("%s: required while the admin listener is on (one name:role:hash line per person; "+
-			"create one with 'postwerk gen-token <name> <read|admin>'), or set %s=off",
-			envUITokensFile, envAdminListen)
 		return
 	}
 	b, ok := l.file(envUITokensFile)
@@ -721,6 +722,14 @@ func (l *loader) admin(c *Config) {
 			l.errorf("%s: %v", envUITokensFile, e)
 		}
 		return
+	}
+	// The UI has one kind of account (D35): every token is admin. A read
+	// line from an older file must not silently become admin.
+	for _, name := range t.Names() {
+		if t.Role(name) != auth.RoleAdmin {
+			l.errorf("%s: %q has role %s; the UI has admin accounts only, so change the line to "+
+				"%s:admin:… or remove it (docs/ui.md)", envUITokensFile, name, t.Role(name), name)
+		}
 	}
 	c.Admin.Tokens = t
 }

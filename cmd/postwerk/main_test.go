@@ -76,8 +76,14 @@ func TestGenToken(t *testing.T) {
 	if role, ok := ts.Verify("ops", lines[0]); !ok || role != auth.RoleAdmin {
 		t.Fatal("printed token does not verify against its line")
 	}
-	for _, args := range [][]string{{"gen-token"}, {"gen-token", "ops"}, {"gen-token", "ops", "root"},
-		{"gen-token", "Bad Name", "read"}, {"gen-token", "ops", "read", "extra"}} {
+	// The role is optional and always admin.
+	out.Reset()
+	if code := run([]string{"gen-token", "ops"}, nil, &out, &errOut); code != 0 ||
+		!strings.Contains(out.String(), "\nops:admin:pbkdf2-sha256$") {
+		t.Fatalf("without role: %d %q", code, out.String())
+	}
+	for _, args := range [][]string{{"gen-token"}, {"gen-token", "ops", "read"}, {"gen-token", "ops", "root"},
+		{"gen-token", "Bad Name"}, {"gen-token", "ops", "admin", "extra"}} {
 		out.Reset()
 		if code := run(args, nil, &out, &errOut); code != 2 || out.Len() != 0 {
 			t.Errorf("%q: code %d, out %q", args, code, out.String())
@@ -454,5 +460,69 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"kind":"retention.raw_expired"`) {
 		t.Fatalf("no retention.raw_expired event: %s", out.String())
+	}
+}
+
+// Without a tokens file, the UI needs an account in the database; with
+// neither, Postwerk does not start (U23).
+func TestServeNeedsAUIAccount(t *testing.T) {
+	h, err := auth.Hash("secret", auth.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "pw.db")
+	files := map[string]string{
+		"/senders":   "app:" + h + "\n",
+		"/store-key": keys.Generate(time.Now()) + "\n",
+	}
+	cfg, err := config.Load([]string{
+		"POSTWERK_SMTP_LISTEN=127.0.0.1:0",
+		"POSTWERK_HTTP_LISTEN=127.0.0.1:0",
+		"POSTWERK_ADMIN_LISTEN=127.0.0.1:0",
+		"POSTWERK_DATA=" + dbPath,
+		"POSTWERK_SENDERS_FILE=/senders",
+		"POSTWERK_STORE_KEY_FILE=/store-key",
+		"POSTWERK_PSEUDONYMIZE_AFTER=0",
+		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
+		"POSTWERK_SHUTDOWN_TIMEOUT=5s",
+		"POSTWERK_TARGETS=capture",
+		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://127.0.0.1:1",
+	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var out testutil.SafeBuffer
+	err = serve(ctx, cfg, testutil.Logger(&out), &out, nil)
+	if err == nil || !strings.Contains(err.Error(), "the UI has no account yet: set POSTWERK_UI_TOKENS_FILE") {
+		t.Fatalf("serve without any UI account: %v", err)
+	}
+
+	st, err := store.Open(ctx, dbPath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := auth.Hash("a long enough password", auth.MinIterations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateUIAccount(ctx, "ops", hash, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	runCtx, cancel := context.WithCancel(ctx)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(runCtx, cfg, testutil.Logger(&out), &out, func(net.Addr, net.Addr, net.Addr, net.Addr) { close(started) })
+	}()
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("serve with a database account returned early: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

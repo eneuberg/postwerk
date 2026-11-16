@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/eneuberg/postwerk/internal/auth"
 )
 
 // Cookie names.
@@ -25,10 +23,12 @@ const (
 type session struct {
 	id       string
 	name     string
-	role     auth.Role
 	csrf     string
 	created  time.Time
 	lastSeen time.Time
+	// flash is a one-time notice for the next page, such as "account
+	// created" after a redirect.
+	flash string
 }
 
 // sessions keeps sessions in memory. A restart ends them all.
@@ -46,9 +46,9 @@ func newSessions(now func() time.Time, idle, absolute time.Duration, max int) *s
 }
 
 // create starts a session with a new random id and CSRF token.
-func (s *sessions) create(name string, role auth.Role) session {
+func (s *sessions) create(name string) session {
 	now := s.now()
-	sess := &session{id: randomToken(), name: name, role: role, csrf: randomToken(), created: now, lastSeen: now}
+	sess := &session{id: randomToken(), name: name, csrf: randomToken(), created: now, lastSeen: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep(now)
@@ -86,6 +86,42 @@ func (s *sessions) delete(id string) {
 	s.mu.Lock()
 	delete(s.m, id)
 	s.mu.Unlock()
+}
+
+// deleteName ends every session of the account name (U21).
+func (s *sessions) deleteName(name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for id, sess := range s.m {
+		if sess.name == name {
+			delete(s.m, id)
+			n++
+		}
+	}
+	return n
+}
+
+// setFlash keeps a notice for the session's next page.
+func (s *sessions) setFlash(id, msg string) {
+	s.mu.Lock()
+	if sess, ok := s.m[id]; ok {
+		sess.flash = msg
+	}
+	s.mu.Unlock()
+}
+
+// takeFlash returns the session's notice and clears it.
+func (s *sessions) takeFlash(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.m[id]
+	if !ok {
+		return ""
+	}
+	msg := sess.flash
+	sess.flash = ""
+	return msg
 }
 
 func (s *sessions) len() int {

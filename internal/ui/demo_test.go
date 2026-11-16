@@ -20,9 +20,11 @@ import (
 //
 //	UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m
 //
-// It listens on that address logged in as admin, and on the next port
-// logged in as read; /login shows the login page. It runs until the test
-// times out or is stopped.
+// It listens on that address logged in as "ops" (an account from the
+// tokens file), and on the next port as "alice" (an account in the
+// database); /login shows the login page, where "viewer" logs in with
+// "viewer-password-for-tests". It runs until the test times out or is
+// stopped.
 func TestDemo(t *testing.T) {
 	addr := os.Getenv("UI_DEMO_ADDR")
 	if addr == "" {
@@ -65,8 +67,23 @@ func TestDemo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	serve := func(addr string, role auth.Role, name string) {
-		sess := h.ui.sessions.create(name, role)
+	ctx := context.Background()
+	for _, a := range []struct{ name, by string }{{"alice", "ops"}, {"bob.support", "alice"}} {
+		hash, err := auth.Hash("demo-password-"+a.name, auth.MinIterations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.st.CreateUIAccount(ctx, a.name, hash, a.by, now.Add(-72*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hash, _ := auth.Hash("demo-password-bob-new", auth.MinIterations)
+	if err := h.st.SetUIPassword(ctx, "bob.support", hash, "alice", now.Add(-26*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	serve := func(addr string, name string) {
+		sess := h.ui.sessions.create(name)
 		srv := &http.Server{Addr: addr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, err := r.Cookie(sessionCookie); err != nil && r.URL.Path != "/login" {
 				r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sess.id})
@@ -90,8 +107,8 @@ func TestDemo(t *testing.T) {
 	host, port, _ := net.SplitHostPort(addr)
 	var p int
 	fmt.Sscan(port, &p)
-	serve(addr, auth.RoleAdmin, "ops")
-	serve(net.JoinHostPort(host, fmt.Sprint(p+1)), auth.RoleRead, "support")
-	t.Logf("demo UI: http://localhost:%d (admin), http://localhost:%d (read)", p, p+1)
+	serve(addr, "ops")
+	serve(net.JoinHostPort(host, fmt.Sprint(p+1)), "alice")
+	t.Logf("demo UI: http://localhost:%d (ops, tokens file), http://localhost:%d (alice, database)", p, p+1)
 	select {}
 }

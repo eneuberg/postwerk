@@ -19,9 +19,10 @@
       <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
       <a href="/mails"{{if eq .Nav "mails"}} aria-current="page"{{end}}>Mails</a>
       <a href="/search"{{if eq .Nav "search"}} aria-current="page"{{end}}>Search</a>
+      <a href="/accounts"{{if eq .Nav "accounts"}} aria-current="page"{{end}}>Accounts</a>
     </nav>
     <form class="who" method="post" action="/logout">
-      <span><span class="who-name">{{.User}}</span> <span class="role role-{{.Role}}">{{.Role}}</span></span>
+      <span><a class="who-name" href="/accounts/{{.User}}" title="Your account">{{.User}}</a>{{if .FileUser}} <span class="role" title="This account is in the tokens file">file</span>{{end}}</span>
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="link">Log out</button>
     </form>
@@ -29,9 +30,10 @@
   </div>
 </header>
 <main>
+{{with .Flash}}<p class="notice notice-ok" role="status">{{.}}</p>{{end}}
 {{template "content" .}}
 </main>
-<footer class="foot">Read-only. Never shows message content.{{if eq .Role "read"}} Addresses are masked for your role.{{end}}</footer>
+<footer class="foot">Mail records are read-only here. Never shows message content. Every login, search and opened mail is recorded with your name.</footer>
 </body>
 </html>
 {{define "mailtable"}}
@@ -58,4 +60,4 @@
 {{end}}
 {{end}}
 
-{{define "addr"}}{{if pseudo .}}<span class="muted">pseudonymized</span>{{else if nullSender .}}<span class="muted">&lt;&gt; (null sender)</span>{{else if masked .}}<span class="mono masked" title="masked for your role">{{.Text}}</span>{{else}}<span class="mono">{{.Text}}</span>{{end}}{{end}}
+{{define "addr"}}{{if pseudo .}}<span class="muted">pseudonymized</span>{{else if nullSender .}}<span class="muted">&lt;&gt; (null sender)</span>{{else}}<span class="mono">{{.Text}}</span>{{end}}{{end}}

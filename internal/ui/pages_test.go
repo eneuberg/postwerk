@@ -100,9 +100,9 @@ func (b *browser) search(by, q string) response {
 	return b.do("POST", "/search", url.Values{"csrf": {csrf(b.h.t, form.body)}, "by": {by}, "q": {q}})
 }
 
-// No page ever shows message content, for either role; addresses are full
-// for admin and masked for read (U12, U14).
-func TestPagesForBothRoles(t *testing.T) {
+// No page ever shows message content; every account sees addresses in
+// full (U12, U14), whether it is from the tokens file or the database.
+func TestPages(t *testing.T) {
 	h := newHarness(t)
 	now := h.clock.Now()
 	h.seedMail("pw_01", now.Add(-3*time.Hour), []string{canary, utf8Canary},
@@ -111,12 +111,10 @@ func TestPagesForBothRoles(t *testing.T) {
 	h.seedMail("pw_03", now.Add(-time.Hour), []string{"lost@example.test"}, map[string][]store.Status{"mailjet": {store.Unknown}})
 	h.seedMail("pw_02", now.Add(-2*time.Hour), []string{"queued@example.test"}, map[string][]store.Status{"mailjet": nil})
 
-	admin := h.loggedIn("ops", adminToken)
-	reader := h.loggedIn("viewer", readToken)
 	for _, c := range []struct {
 		b    *browser
-		role string
-	}{{admin, "admin"}, {reader, "read"}} {
+		name string
+	}{{h.loggedIn("ops", adminToken), "file account"}, {h.loggedIn("viewer", viewerPassword), "database account"}} {
 		pages := map[string]response{
 			"overview": c.b.get("/"),
 			"mails":    c.b.get("/mails"),
@@ -125,41 +123,35 @@ func TestPagesForBothRoles(t *testing.T) {
 			"queued":   c.b.get("/mails/pw_02"),
 			"search":   c.b.get("/search"),
 			"results":  c.b.search("any", "order-pw_01"),
+			"accounts": c.b.get("/accounts"),
 		}
 		for name, r := range pages {
 			if r.StatusCode != 200 {
-				t.Fatalf("%s %s: %d\n%s", c.role, name, r.StatusCode, r.body)
+				t.Fatalf("%s %s: %d\n%s", c.name, name, r.StatusCode, r.body)
 			}
 			for _, secret := range []string{bodyMarker, "Your code", "Subject"} {
 				if strings.Contains(r.body, secret) {
-					t.Errorf("%s %s shows message content %q", c.role, name, secret)
+					t.Errorf("%s %s shows message content %q", c.name, name, secret)
 				}
+			}
+			if strings.Contains(r.body, "•••") {
+				t.Errorf("%s %s shows a masked address", c.name, name)
 			}
 		}
 		detail := pages["detail"].body
-		if c.role == "admin" {
-			if !strings.Contains(detail, canary) || !strings.Contains(detail, utf8Canary) ||
-				!strings.Contains(detail, "noreply@example.test") {
-				t.Errorf("admin does not see full addresses")
-			}
-		} else {
-			for _, full := range []string{canary, utf8Canary, "noreply@", "canary-leak", "example.test<"} {
-				if strings.Contains(detail, full) {
-					t.Errorf("read role sees %q", full)
-				}
-			}
-			for _, masked := range []string{"c•••@e•••.test", "k•••@e•••.test", "n•••@e•••.test"} {
-				if !strings.Contains(detail, masked) {
-					t.Errorf("read role does not see %q", masked)
-				}
-			}
+		if !strings.Contains(detail, canary) || !strings.Contains(detail, utf8Canary) ||
+			!strings.Contains(detail, "noreply@example.test") {
+			t.Errorf("%s does not see full addresses", c.name)
 		}
 		// Derived statuses are shown, with text.
 		for _, want := range []string{">partial<", ">handed off<", ">failed<", "order-pw_01", "&lt;pw_01@shop.example.test&gt;",
 			"mail.accepted", "delivery.failed", "5.1.1 &lt;redacted&gt;"} {
 			if !strings.Contains(detail, want) {
-				t.Errorf("%s detail lacks %q", c.role, want)
+				t.Errorf("%s detail lacks %q", c.name, want)
 			}
+		}
+		if strings.Contains(detail, "ui.view") {
+			t.Errorf("%s: the timeline shows ui.view", c.name)
 		}
 		if !slices.Equal(mailLinks(pages["filtered"].body), []string{"pw_01"}) {
 			t.Errorf("filter partial at mailjet: %v", mailLinks(pages["filtered"].body))
@@ -168,7 +160,7 @@ func TestPagesForBothRoles(t *testing.T) {
 			t.Errorf("search by ref: %v", got)
 		}
 		ov := pages["overview"].body
-		for _, want := range []string{">mailjet<", ">capture<", "Recent problems", "/mails/pw_01", "/mails/pw_03"} {
+		for _, want := range []string{">mailjet<", ">capture<", "Recent problems", "/mails/pw_01", "/mails/pw_03", `href="/accounts"`} {
 			if !strings.Contains(ov, want) {
 				t.Errorf("overview lacks %q", want)
 			}
@@ -176,9 +168,34 @@ func TestPagesForBothRoles(t *testing.T) {
 	}
 }
 
+// Opening a mail is an event with the account and the mail id (U24);
+// opening a mail that cannot be recorded shows nothing.
+func TestViewEvents(t *testing.T) {
+	ev := &switchEvents{}
+	h := newHarness(t, func(o *Options) { ev.st = o.Events; o.Events = ev })
+	h.seedMail("pw_01", h.clock.Now(), []string{canary}, map[string][]store.Status{"mailjet": {store.HandedOff}})
+	b := h.loggedIn("viewer", viewerPassword)
+	b.get("/mails/pw_01")
+	b.get("/mails/pw_missing")
+	var views []string
+	for _, e := range h.events() {
+		if e.Kind == store.KindUIView {
+			views = append(views, e.Actor+"/"+e.MailID+"/"+e.Sender+"/"+string(e.Level))
+		}
+	}
+	if want := []string{"viewer/pw_01/shop/info"}; !slices.Equal(views, want) {
+		t.Fatalf("view events = %v, want %v", views, want)
+	}
+	ev.fail = true
+	r := b.get("/mails/pw_01")
+	if r.StatusCode != http.StatusServiceUnavailable || strings.Contains(r.body, canary) {
+		t.Fatalf("unrecorded view: %d", r.StatusCode)
+	}
+}
+
 // A search by address leaves no trace of the address in logs, events or
-// exported events; the address appears in a page only for admin, and only
-// before pseudonymization (U11, U12, U13).
+// exported events; the address appears in a page only before
+// pseudonymization (U11, U12, U13).
 func TestUISearchCanaryLeak(t *testing.T) {
 	hs := testHasher(t)
 	h := newHarnessWithHasher(t, hs)
@@ -187,19 +204,18 @@ func TestUISearchCanaryLeak(t *testing.T) {
 		map[string][]store.Status{"mailjet": {store.HandedOff, store.HandedOff}})
 	h.seedMail("pw_02", now.Add(-time.Hour), []string{utf8Canary}, map[string][]store.Status{"mailjet": {store.Failed}})
 	admin := h.loggedIn("ops", adminToken)
-	reader := h.loggedIn("viewer", readToken)
+	other := h.loggedIn("viewer", viewerPassword)
 
 	for _, c := range []struct {
 		b       *browser
 		by, q   string
 		want    []string
-		canSee  bool
 		comment string
 	}{
-		{admin, "address", strings.ToUpper(canary), []string{"pw_01"}, true, "admin by address"},
-		{reader, "address", canary, []string{"pw_01"}, false, "read by address"},
-		{reader, "any", utf8Canary, []string{"pw_02"}, false, "read, any"},
-		{admin, "address", utf8Canary, []string{"pw_02"}, true, "admin, UTF-8"},
+		{admin, "address", strings.ToUpper(canary), []string{"pw_01"}, "by address, upper case"},
+		{other, "address", canary, []string{"pw_01"}, "by address"},
+		{other, "any", utf8Canary, []string{"pw_02"}, "any"},
+		{admin, "address", utf8Canary, []string{"pw_02"}, "UTF-8"},
 	} {
 		r := c.b.search(c.by, c.q)
 		if r.StatusCode != 200 || !slices.Equal(mailLinks(r.body), c.want) {
@@ -214,10 +230,7 @@ func TestUISearchCanaryLeak(t *testing.T) {
 		}
 	}
 	if d := admin.get("/mails/pw_01").body; !strings.Contains(d, canary) {
-		t.Error("admin does not see the address before pseudonymization")
-	}
-	if d := reader.get("/mails/pw_01").body; strings.Contains(d, "canary-leak") {
-		t.Error("read role sees the address")
+		t.Error("the address is not shown before pseudonymization")
 	}
 
 	// Pseudonymize pw_01 (40 days old); pw_02 stays plain.
@@ -227,7 +240,7 @@ func TestUISearchCanaryLeak(t *testing.T) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-	for _, b := range []*browser{admin, reader} {
+	for _, b := range []*browser{admin, other} {
 		d := b.get("/mails/pw_01").body
 		if strings.Contains(d, "canary-leak") || strings.Contains(d, "c•••@") || !strings.Contains(d, "pseudonymized") {
 			t.Error("pseudonymized address shown")
@@ -271,8 +284,8 @@ func TestUISearchCanaryLeak(t *testing.T) {
 	}
 }
 
-// Every link reachable from the overview, for both roles: never the
-// message content (U14).
+// Every link reachable from the overview: never the message content
+// (U14).
 func TestNoContentOnAnyReachablePage(t *testing.T) {
 	h := newHarness(t)
 	now := h.clock.Now()
@@ -285,7 +298,7 @@ func TestNoContentOnAnyReachablePage(t *testing.T) {
 			map[string][]store.Status{"mailjet": st})
 	}
 	hrefRe := regexp.MustCompile(`href="(/[^"]*)"`)
-	for _, b := range []*browser{h.loggedIn("ops", adminToken), h.loggedIn("viewer", readToken)} {
+	for _, b := range []*browser{h.loggedIn("ops", adminToken), h.loggedIn("viewer", viewerPassword)} {
 		seen := map[string]bool{}
 		queue := []string{"/"}
 		for len(queue) > 0 && len(seen) < 400 {
@@ -319,7 +332,7 @@ func TestMailListPagination(t *testing.T) {
 		h.seedMail(fmt.Sprintf("pw_%03d", i), now.Add(-time.Duration(120-i)*time.Minute), []string{"r@example.test"},
 			map[string][]store.Status{"mailjet": {store.HandedOff}})
 	}
-	b := h.loggedIn("viewer", readToken)
+	b := h.loggedIn("viewer", viewerPassword)
 	seen := map[string]bool{}
 	next := "/mails?state=handed_off"
 	for page := 1; next != ""; page++ {
@@ -406,7 +419,7 @@ func TestSearchChecks(t *testing.T) {
 	if r := h.loggedIn("ops", adminToken).search("any", "x"); r.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("second session of the same name: %d", r.StatusCode)
 	}
-	if r := h.loggedIn("viewer", readToken).search("any", "x"); r.StatusCode != 200 {
+	if r := h.loggedIn("viewer", viewerPassword).search("any", "x"); r.StatusCode != 200 {
 		t.Fatalf("another name: %d", r.StatusCode)
 	}
 	h.clock.Add(time.Minute)
