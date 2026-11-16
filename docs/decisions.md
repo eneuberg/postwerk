@@ -566,3 +566,32 @@ in full it can tell a support tool more than masked addresses do.
   recipient finds the mail, and the response does not hand it back in full.
 - **In the query layer**, next to the address masking (`query.MaskMessageID`), so every reader with masked access
   gets it. `admin` tokens and the UI, whose accounts are all admins (D35), see it in full.
+
+## D56 Semantic versioning from 1.0 covers the operator's contract
+
+Operators upgrade a relay that holds their queue and audit trail. They need to know which upgrades are safe without
+reading every commit. The rules are in [versioning.md](versioning.md).
+
+- **Covered:** what an operator or a client writes against: environment variables and defaults, secret file formats,
+  commands, SMTP behaviour, the `/v1` API, event kinds and their JSON fields, the Helm values, the health checks.
+  Additions are minor; removals and breaking changes only in a major release, after a deprecation in a minor one.
+- **Not covered:** the UI's HTML, log text, free text inside events, the database schema and `internal/` packages.
+  The UI is for people; programs use the API. Keeping these free lets the UI and messages improve in any release.
+- **Forward-only migrations.** The schema version lives in the file and every migration runs at start in its own
+  transaction. An older binary refuses a newer database (as it did before). A down migration would be code that is
+  rarely run and never tested against real data; a backup taken before the upgrade is the simpler way back.
+- **Only the latest minor version is supported.** One maintainer cannot keep several branches patched; minor
+  releases do not break setups, so moving up is the fix.
+
+## D57 Postwerk takes as little responsibility as it can
+
+Every duty Postwerk takes on is one more thing that must work for every operator, forever. Most duties around mail
+already have a better home: the provider knows what happened after hand-off, the monitoring tool knows who to page,
+the platform knows how to back up a volume.
+
+- **Postwerk stores, forwards and records.** It reports facts with levels and leaves the rest to the tools around it.
+- **Named in the docs.** [scope.md](scope.md#what-stays-with-you) lists what stays with the operator: alert routing,
+  delivery status and bounce suppression at the provider, backups, DNS and DKIM, provider contracts and data
+  processing agreements, certificates, network access, secrets.
+- **New features are checked against it.** A suggestion that moves one of these duties into Postwerk needs a reason
+  why the tool that has it today cannot do it.
