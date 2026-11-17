@@ -196,8 +196,10 @@ api:
 # never addresses or content.
 sentry:
   enabled: false
-  # error (recommended) or warn; warn adds retries, unreachable targets and
-  # failed UI logins.
+  # error (recommended) or warn. warn adds retries (also of a target that
+  # cannot be reached before target.down), refused recipients, failures at
+  # optional targets, failed UI and API logins and refused SMTP logins and
+  # commands.
   minLevel: error
   # Accept an http:// DSN, for a GlitchTip inside the cluster on a network
   # that encrypts traffic between nodes. Never for a DSN on the internet.

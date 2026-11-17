@@ -30,8 +30,9 @@ Security notes:
   connection, without a restart. It compares the content, so a Kubernetes Secret update (a symlink swap) is picked
   up. A new pair must parse, the key must match and the certificate must not have expired; otherwise Postwerk keeps
   serving the old one and writes `tls.reload_failed` (once per content). Each reload writes `tls.reloaded`. When the
-  served certificate has less than 14 days left, `tls.expiring` is written once a day. At start an invalid pair stops
-  Postwerk as before.
+  served certificate has less than 14 days left, `tls.expiring` is written once a day: `warn`, and `error` below 7
+  days and once expired (written at once when it turns into an error), so the default Sentry filter sees it a week
+  ahead. At start an invalid pair stops Postwerk as before.
 - Either set both TLS files (then `AUTH` is only offered after `STARTTLS`), or set
   `POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true` explicitly. Setting neither is a configuration error, and so is setting
   both (ambiguous). Cleartext `AUTH` sends sender passwords readable to anyone on the network path: use it only on a local

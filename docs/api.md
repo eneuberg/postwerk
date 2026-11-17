@@ -241,11 +241,15 @@ Both answer `200` with the positions changed and the delivery as in the mail's d
     "target": "mailjet", "status": "handed_off", "attempts": 1, "last_code": 250, "last_text": "2.0.0 OK",
     "recipients": [
       {"position": 0, "status": "handed_off", "last_code": 250, "last_text": "2.0.0 OK"},
-      {"position": 1, "status": "handed_off", "resolution": "confirmed"}
+      {"position": 1, "status": "handed_off", "resolution": "confirmed", "last_code": 550,
+       "last_text": "5.1.1 <redacted>: mailbox unavailable"}
     ]
   }
 }
 ```
+
+A closed recipient keeps the reply of its last attempt (`last_code`, `last_text`); the resolution says what the admin
+decided.
 
 | Status | `error` | When |
 |---|---|---|

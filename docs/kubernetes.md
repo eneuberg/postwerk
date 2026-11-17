@@ -480,7 +480,7 @@ issue, however many mails fail. Addresses and content are never sent
    instance: prod
    sentry:
      enabled: true
-     minLevel: error           # or warn, for retries and unreachable targets too
+     minLevel: error           # or warn, for retries and refused senders too
    networkPolicy:
      egress:
        sentry:
