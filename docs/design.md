@@ -28,6 +28,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Component | Responsibility | Status | Library |
 |---|---|---|---|
 | Ingress | SMTP server, `AUTH PLAIN` per sender, size and recipient limits, STARTTLS | built | `github.com/emersion/go-smtp`, `github.com/emersion/go-sasl` |
+| Senders | the sending applications, their keys and policies, from the senders file and the database; login checks, rate limits, last use (section 13, "Sender keys") | built (UI pages and API endpoints planned) | standard library |
 | Store | SQLite in WAL mode, one connection, migrations embedded | built | `modernc.org/sqlite` (pure Go) |
 | Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start, target down and probes after a rejected login or an unreachable target | built | `github.com/emersion/go-smtp` (client) |
 | Retention | removes raw messages, pseudonymizes addresses, expires records and events | built | standard library |
@@ -307,7 +308,7 @@ Kinds written today:
 
 | Kind | Level | When |
 |---|---|---|
-| `mail.accepted` | info | stored, `250` sent |
+| `mail.accepted` | info | stored, `250` sent; text `source=<file\|db> key=<id> client=<address>` (or `auth=password`) |
 | `delivery.attempt` | info | a worker starts sending to a target (one per attempt) |
 | `delivery.retry` | warn | temporary failure, next attempt scheduled |
 | `delivery.handed_off` | info | the target replied `250` |
@@ -326,7 +327,12 @@ Kinds written today:
 | `delivery.closed` | info | an admin closed this recipient; `actor`, text `resolution=… was=… via=ui\|api` and the note, redacted |
 | `delivery.resend` | info | an admin queued this recipient again; `actor`, text `was=… via=…` |
 | `ingress.auth_failed` | warn | failed `AUTH` attempts, counted: at most one event per sender and minute with `failures=<n>`; `sender` only if the name is in the senders file. Never the password |
-| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients` or `line_too_long`, with `rejected=<n>`; at most one event per sender, reason and minute. Never an address. A `SIZE=` over the limit at `MAIL` is refused by the SMTP library and not counted (D51) |
+| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients`, `line_too_long` or `from_not_allowed` (`550 5.7.1`, the sender's policy), with `rejected=<n>`; at most one event per sender, reason and minute. Never an address. A `SIZE=` over the limit at `MAIL` is refused by the SMTP library and not counted (D51) |
+| `ingress.rate_limited` | warn | commands of a logged-in sender refused by its rate limit (`451 4.7.1`): `limit=max_per_minute` or `max_rcpt_per_hour`, with `limited=<n>`; at most one event per sender, limit and minute |
+| `sender.created`, `sender.rotated`, `sender.revoked`, `sender.policy_changed` | info | a sender in the database was created, got a second key, had a key revoked or its policy changed; `actor` and `sender`, text `key=<id>` or the policy as counts (`from_patterns=2 max_per_minute=60 max_rcpt_per_hour=0`), never a pattern or a key |
+| `sender.volume_high` | error | a sender sent far more than usual in the last hour (section 13, "Sender keys"); `sender`, text `mails_last_hour=… hourly_average=… factor=…` or `max=…`; at most once per sender and hour |
+| `senders.reloaded` | info | a changed senders file is in use; text counts senders, keys and passwords |
+| `senders.reload_failed` | error | a changed senders file was not used (invalid, or a name also in the database); the previous one stays; once per content |
 | `queue.stale` | error (warn if optional) | the oldest mail queued for a target has waited longer than `POSTWERK_QUEUE_STALE_AFTER` (15 min); once per change (section 9.1) |
 | `queue.recovered` | info | no mail for that target waits longer than that any more |
 | `disk.low` | error | the data volume has less free space than `POSTWERK_MIN_FREE_BYTES` (64 MiB); new mail gets `452` and `/readyz` fails |
@@ -465,7 +471,9 @@ serves the `check` policy in section 6.
 
 ## 13. Security
 
-- Ingress requires `AUTH PLAIN` before `MAIL`; sender names and PBKDF2-SHA256 password hashes come from a senders file.
+- Ingress requires `AUTH PLAIN` before `MAIL`: the user name is the sender's name, the password one of its keys
+  (SHA-256 of the secret stored) or a password (PBKDF2-SHA256), from the senders file or the database ("Sender keys"
+  below).
   A connection is closed after 3 failed attempts, and after 30 s without a login. Every failed check costs the same
   (the strongest hash in the file), and at most one check per CPU runs at once (`454` when all are busy for 5 s).
   There is no blocking per IP address: in a cluster, pod addresses change and many senders share a node's address.
@@ -489,13 +497,35 @@ serves the `check` policy in section 6.
 
 More in [privacy-and-security.md](privacy-and-security.md).
 
+### Sender keys
+
+One sender per application, so a leaked credential can be traced to it and revoked alone (D62–D67).
+
+- **Keys.** `pwk_<id>_<secret>`: a 12-character id that names the key everywhere (mail records, events, the UI) and
+  256 random bits that are shown once and stored only as their SHA-256. An application logs in with its sender name
+  and the whole key. A sender has at most two active credentials, so it can move to a new key without downtime;
+  revoking one leaves the other. Keys from the database may expire.
+- **Where they live.** In the senders file (declared, for GitOps; re-read every 30 s), in the database (made and
+  revoked in the UI or through the API, *planned*), or both (`POSTWERK_SENDER_KEYS`). A name is in one place only.
+  1.0 password lines keep working.
+- **Policy per sender.** Allowed envelope senders (`550 5.7.1` otherwise), messages per minute and recipients per
+  hour (`451 4.7.1` otherwise, so the application retries). Without a policy a sender may do anything, as in 1.0.
+- **Audit per mail.** The key id and its source, the client address, TLS version and cipher, the `EHLO` name and the
+  `AUTH` mechanism are stored with the mail and shown with it; `mail.accepted` carries key and client.
+- **Signals.** Refusals are counted as `ingress.auth_failed`, `ingress.rejected` and `ingress.rate_limited`;
+  `sender.volume_high` (error) when a sender's last hour is more than 10 times its average of the week before (and
+  at least 100 mails), or above an absolute maximum if one is set. The key id in the mail records then says which key
+  to revoke.
+- **Revocation is immediate.** A revoked, expired or removed key fails the next login and ends open sessions at
+  their next `MAIL`.
+
 ## 14. Configuration
 
 Environment variables plus secret files and key files. Targets are named in `POSTWERK_TARGETS`; each name gets its own
 variables. A short example with a provider and a temporary capture copy:
 
 ```
-POSTWERK_SENDERS_FILE=/run/secrets/senders
+POSTWERK_SENDERS_FILE=/run/secrets/senders     # keys from 'postwerk gen-sender NAME', optional policy lines
 POSTWERK_SMTP_TLS_CERT_FILE=/run/secrets/tls.crt
 POSTWERK_SMTP_TLS_KEY_FILE=/run/secrets/tls.key
 

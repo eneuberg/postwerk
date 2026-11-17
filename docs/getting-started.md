@@ -52,7 +52,11 @@ Details: [ui.md](ui.md).
 ## Create senders and keys
 
 ```sh
-# Hash a password for the senders file (one name:hash line per application).
+# A key for a sending application: prints the key (its SMTP password; the user name is the
+# sender's name) and the line for the senders file. One sender per application.
+docker run --rm postwerk:dev gen-sender my-app
+
+# Or, as in 1.0, hash a password for the senders file (one name:hash line).
 printf '%s' 'your-password' | docker run --rm -i postwerk:dev hash-password
 
 # Create a new key for a key file (encryption at rest, address hashing).

@@ -42,6 +42,9 @@ to an identifiable person, directly or through other data the operator holds. Pe
 | `ref` | `X-Postwerk-Ref`, chosen by the sender | Depends on the sender. A value with `@` is not stored; a user id here is still personal | no | record retention |
 | `size` | bytes | no | no | record retention |
 | `raw` | the full message: headers (To, Cc, From, Subject), body, attachments, reset links, one-time codes; encrypted | **yes** | **yes** | hand-off; 72 h after a failure; 7 d at most |
+| `key_id`, `key_source` | the sender key the mail came with (its public id, never the key) and where it is kept (`file`, `db`); empty for a password | no | no | record retention |
+| `client_ip` | the address the SMTP connection came from, without the port: a pod, node or host of the sending application | no: infrastructure of the operator's own applications, not of the recipient or any end user. It can become personal where an application runs on a person's own machine; then treat it like the sender name | no | record retention |
+| `tls_version`, `tls_cipher`, `ehlo`, `auth_mech` | how the connection was made; `ehlo` is the name the client gave, redacted and at most 255 bytes | no | no | record retention |
 
 **`recipients`**
 
@@ -66,6 +69,18 @@ to an identifiable person, directly or through other data the operator holds. Pe
 | `seq`, `time`, `mail_id`, `target`, `recipient`, `kind`, `level`, `attempt`, `code` | no, alone | `recipient` is the position in the envelope (0, 1, …), never the address. Together with the `recipients` table it points to a person until pseudonymization or deletion of the record. |
 | `text` | no, after redaction | Same redaction as `last_text`. |
 | `sender` | no, unless a login is named after a person | |
+
+**`senders`, `sender_keys`, `sender_usage`** (senders managed in the database, D66)
+
+| Column | Personal | Note |
+|---|---|---|
+| sender name, policy (envelope sender patterns, limits) | no, unless a name or pattern names a person | patterns are usually `*@example.com` or a system address |
+| key id, SHA-256 of the key's secret part, created/expiry/revoked times | no | never the key; a digest does not lead back to a 256-bit random secret. Revoked keys stay, so the audit trail keeps their ids |
+| `created_by`, `updated_by`, `revoked_by` | yes, if an account is named after a person | the UI account or API token that made the change, as in the `actor` of events |
+| `sender_usage.last_used_at` | no | one row per credential; kept while the database exists, small |
+
+These rows describe the operator's applications, not mail; they have no retention period and are removed when the
+operator removes the sender (*planned*: deleting a sender) or the database.
 
 Every free text that is stored or exported goes through one redaction function: anything that looks like an address
 becomes `<redacted>`, control characters are removed, and the length is capped at 300 bytes. The reply code and the
@@ -100,6 +115,8 @@ the test suite checks it with an ASCII and a UTF-8 canary address (section 8.2, 
   can encode it in an opaque `ref` (for example `pwreset-8f3a2c`).
 - Message bodies in events, logs or sink payloads.
 - Sender passwords in plaintext. The senders file holds PBKDF2-SHA256 hashes (section 6.3).
+- Sender keys. The file and the database hold the SHA-256 of a key's secret part; the key is shown once when it is
+  made (`postwerk gen-sender`, the UI or the API) and never again. Events and logs name the key id only.
 - Key material in the store. Keys live in key files (section 6.2).
 
 ### 2.4 What goes to Sentry
@@ -134,6 +151,7 @@ address of the Postwerk pod (or of the cluster's egress gateway). Its retention 
 | `last_text`, event `text` | each attempt | with the row or event; addresses are redacted before writing |
 | `mails`, `recipients`, `deliveries` rows | at acceptance | after 90 days |
 | `events` | each state change | after 90 days |
+| audit of a mail (`key_id`, `client_ip`, TLS, `ehlo`) and the `mail.accepted` text with key and client address | at acceptance | with the mail record (90 days) and the event (90 days) |
 | sink copies | on export | by the sink's own retention; the operator sets it |
 | backups | by the operator | by the operator; no longer than the record retention |
 
@@ -281,7 +299,7 @@ establishment, exercise or defence of legal claims. Whether a delivery record mu
 | Provider | **yes** | yes | yes | processor contract (section 7), the provider's retention settings |
 | Anyone who can open the capture tool | **yes**, including reset links and one-time codes | yes | yes | not in production by default; if needed: mails with credentials skipped, UI authentication, short retention ([README](../README.md#mailpit-recommended-for-development-and-testing-not-for-production)) |
 | Log and monitoring readers, error-tracker users | no | no (redacted) | ids, sender names, codes, times | redaction and leak test (built); the Sentry sink sends only fields of the event record, no SDK defaults (change 12, built) |
-| Compromised sender credential | only mails it sends itself | no | its own replies only | per-sender limits, allowed envelope senders ([gap 13](scope.md#7-gaps-between-the-ideal-and-the-current-design)), recipient allow-list; it can send spam or phishing through the provider, not read stored mail |
+| Compromised sender credential | only mails it sends itself | no | its own replies only | one key per application, so the key id in each mail record says which key sent it and from which client address; revoking it ends it at once, the application's other key stays (D62, D65); allowed envelope senders and rate limits per sender (D63, D64), `sender.volume_high` when it sends far more than usual (D67), recipient allow-list; it can send spam or phishing through the provider, not read stored mail |
 
 ### 6.2 Encryption of the raw message at rest
 
@@ -333,6 +351,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   not logged in within 30 s is closed. There is no per-IP blocking (decision D26). Failed logins are counted as
   `ingress.auth_failed`, one event per sender and minute; the login name is kept only if it is in the senders file,
   so a password typed into the name field never reaches an event (D51).
+- **Sender keys.** `postwerk gen-sender` and managed senders make random keys (256 bits) stored as SHA-256 of the
+  secret part (D62); a key works only for its own sender, can expire, and a revoked key stops at the next `MAIL` of
+  an open session. Prefer keys to passwords: one per application, traceable in every mail record.
 - **Sender passwords.** The senders file holds PBKDF2-SHA256 hashes (`postwerk hash-password`, 600,000 iterations;
   fewer than 100,000 are refused). Only `AUTH PLAIN` is offered; it works with hashes. Mechanisms that need the
   plaintext on the server (such as `CRAM-MD5`) are not offered. A connection is closed after 3 failed attempts. Target

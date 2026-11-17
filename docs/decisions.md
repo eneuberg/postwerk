@@ -920,6 +920,109 @@ delivery workers on one queue: a mail sent twice, or state that one process over
   systems without it Postwerk logs a warning and does not lock; on a network file system it may not reach other
   machines. The database belongs on a local disk (D6), and the chart has one replica.
 
+## D62 Sender keys: `pwk_<id>_<secret>`, the user name stays the sender's name
+
+An application's SMTP login is in effect an API key: a machine stores it once and sends it with every connection.
+Passwords hashed with PBKDF2 (D15) were built for secrets people choose; they make a leaked file expensive to guess
+from, but cost a CPU core per check and say nothing about which copy of a credential was used.
+
+- **A key per credential, with a public id.** `postwerk gen-sender NAME` (and the managed senders, D66) make
+  `pwk_<id>_<secret>`: 12 characters of id (60 random bits) and 52 of secret (256 random bits), lower-case base32,
+  so a key survives every config format and URL. The id names the key in mail records, events and the UI; the prefix
+  lets secret scanners and people recognize a leaked key.
+- **SHA-256 of the secret part, as for API tokens (D41).** A 256-bit random value cannot be guessed, so a slow hash
+  adds nothing; one SHA-256 and one constant-time comparison, against a random dummy for an unknown id, is the whole
+  check. It needs no check slot, so a burst of key logins never waits behind PBKDF2. The file line is
+  `name:pwk-sha256$<id>$<digest>`.
+- **User name: the sender's name; password: the whole key.** Clients such as GoTrue, nodemailer or Django have a
+  user and a password field and send both; the name keeps every event, log line and mail record readable, and a key
+  only works for its own sender. Accepting the key id as user name too would give two spellings of one login for no
+  client that needs it.
+- **Passwords stay.** Every 1.0 line keeps working with the same equal-cost check (D26). A password that has the
+  exact form of a key is checked as a key only; a password chosen by a person or made by `hash-password` does not
+  have that form, and checking both ways would put the PBKDF2 cost back on every wrong key.
+- **At most two credentials per sender.** One for today, one for the rotation: add the new key, switch the
+  application, revoke the old one. More would hide keys nobody uses.
+- **Checked again at every `MAIL`.** The login is looked up again (in memory) before each mail, so a revoked,
+  expired or removed key cannot go on sending over a connection that stays open; the client gets `530` and has to
+  log in again.
+
+## D63 A policy per sender: allowed envelope senders and two limits
+
+A leaked key can send whatever the provider accepts for the account: phishing in the name of the company is the
+damage that matters, volume the one that shows. Postwerk sees both before anything is stored.
+
+- **Per sender, not per key.** Both keys of a rotation are the same application and must behave the same; a
+  rotation must never change what the application may do by accident.
+- **Three settings.** `from=` patterns for `MAIL FROM` (lower case, `path.Match`, `<>` for the null sender, with the
+  case-folding rule of D60), `max_per_minute` and `max_rcpt_per_hour`. Zero or absent means no restriction, so a 1.0
+  setup behaves as before; the docs ask for `from=` in production.
+- **One value object.** `senders.Policy` is checked once (`NewPolicy`, `ParsePolicy`) and immutable; the file, the
+  database, ingress and the UI all hold the same type. Its text form is the file syntax.
+- **A policy line in the senders file.** `name:policy from=… max_per_minute=…` keeps one file per deployment for
+  GitOps; a separate policy file would be one more Secret and one more variable that can disagree with the first. A
+  1.0 line has no policy and keeps working.
+- **`550 5.7.1` at `MAIL`.** Permanent, because retrying cannot help; counted as `ingress.rejected
+  reason=from_not_allowed` (D51), the patterns never in an event (they look like addresses).
+
+## D64 Rate limits in memory, `451 4.7.1`, counted at `MAIL` and `RCPT`
+
+- **Token buckets per sender** (`internal/senders/limit`): N per minute or hour, a burst of N allowed, idle buckets
+  dropped. In memory only: a restart lets a sender send one more burst, which is acceptable for a limit meant to stop
+  a leaked key from sending at full speed for hours, and it needs no table, no write per mail.
+- **Counted when the command is accepted.** A message at `MAIL`, a recipient at `RCPT`. A transaction that fails
+  later still counts; counting at the commit instead would let parallel sessions overshoot by their number.
+- **Temporary reply.** `451 4.7.1`: a legitimate burst is delayed by the application's own retry, never lost.
+- **Folded events.** `ingress.rate_limited` (warn), one per sender, limit and minute with the count (D51's pattern).
+
+## D65 Every mail records the credential and the connection it came from
+
+To trace spam back to a key, the mail record has to say which key sent it and from where.
+
+- **Stored per mail:** key id and source (`file` or `db`; no key id for a password), client address without the
+  port, TLS version and cipher, the `EHLO` name (redacted, at most 255 bytes) and the `AUTH` mechanism. They are taken
+  at `MAIL`, on the session's command goroutine.
+- **In `mail.accepted`.** Its text is `source=<file|db> key=<id> client=<address>` (or `auth=password`), so the
+  export and the error tracker show it without a database query. Free text, so not part of the event contract
+  (versioning.md).
+- **Privacy.** The client address is that of a pod or host of the sending application, not of a person; it is
+  removed with the mail record (record retention) and the event (event retention), like the rest.
+
+## D66 Senders from the file, the database or both, behind small interfaces
+
+Operators asked for keys made in the UI and by automation, and for keys declared in Git. Both are reasonable, and one
+deployment may want both.
+
+- **`POSTWERK_SENDER_KEYS=file|db|both`, default `file`.** Without the variable nothing changes: the file is required
+  and read as in 1.0. `db` refuses a senders file, so nobody wonders which one counts; `both` allows an empty file.
+- **A name and a key id live in one place.** The registry refuses a clash at start, a file reload that would bring
+  one, and a database sender with a file sender's name. One lock covers the check and the change, so two changes
+  cannot race each other into a clash. "The file wins" (as for UI accounts, D37) would silently disable a key someone
+  just made.
+- **The file reloads by content** (`internal/filewatch`, the rules of `tlsreload`, D38): every 30 s, a broken or
+  clashing file is not used and is reported once as `senders.reload_failed` (error).
+- **Interfaces at the consumer side.** `senders.Source` (look up and list) and `senders.Store` (create, rotate,
+  revoke, set the policy) are separate; `FileSource` implements the first, `DBSource` both; ingress sees only an
+  `Authenticator` and a `RateLimiter` interface, query only a `Source`. The UI and the API will use `Store` and
+  `query` without knowing where a sender lives. Nothing in `internal/senders` imports the UI, the API or ingress.
+- **The database is read once and after each own change.** One process writes the database (D61), so the in-memory
+  copy never falls behind and a login never reads SQLite.
+- **"Last used" in batches.** Every login is noted in memory and written once a minute (and at shutdown) to
+  `sender_usage`: one row update per credential and minute, not one per mail.
+
+## D67 An unusual volume is a signal of its own
+
+Rate limits stop the worst; a leaked key used slowly stays under them. What gives it away is a change against the
+sender's own normal.
+
+- **`sender.volume_high` (error)** when the mails of the last hour are more than `POSTWERK_SENDER_VOLUME_FACTOR`
+  (10) times the sender's hourly average over the 7 days before, and at least `POSTWERK_SENDER_VOLUME_MIN` (100);
+  or more than `POSTWERK_SENDER_VOLUME_MAX` if set. At most once per sender and hour, also across a restart.
+- **Counted in the store**, every minute, by the signal's own loop (`internal/watch`, like `queue.stale`): no hook in
+  ingress, no state to lose, and the averages are read again once an hour.
+- **An error, not a refusal.** A newsletter or a migration can be legitimate; a person decides, with the key id in
+  the mail records to revoke the right key.
+
 ## D70 The UI looks like a relay interlocking's panel; colour is kept for state
 
 The first UI used a teal accent on warm grey, rounded pills and system fonts: tidy, but it looked like any generated

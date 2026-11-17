@@ -98,9 +98,12 @@ Do not keep the files afterwards, and never commit them.
 ```sh
 IMG=ghcr.io/eneuberg/postwerk:$VERSION   # verified as in section 2, or your own build
 
-# One line per sending application: name:hash. The password goes in on stdin.
-printf '%s' "$APP_PASSWORD" | docker run --rm -i "$IMG" hash-password   # prints pbkdf2-sha256$600000$…
-echo "auth-service:pbkdf2-sha256\$600000\$…" > senders
+# One sender per application. gen-sender prints the key (the application's SMTP password,
+# user name "auth-service") and then the line for the senders file.
+docker run --rm "$IMG" gen-sender auth-service > auth-service.out
+sed -n 2p auth-service.out > senders            # the line; the key (line 1) goes to the application
+echo "auth-service:policy from=*@example.com max_per_minute=60" >> senders   # optional, see configuration.md
+# Passwords from 1.0 still work: printf '%s' "$APP_PASSWORD" | docker run --rm -i "$IMG" hash-password
 
 # Two different keys: one encrypts stored messages, one hashes addresses.
 docker run --rm "$IMG" gen-key > store-key
@@ -207,6 +210,8 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `queue.staleAfter`, `queue.staleRepeat` | `15m` (**recommended**), `"0"` | `POSTWERK_QUEUE_STALE_AFTER`, `POSTWERK_QUEUE_STALE_REPEAT`: `queue.stale` when a target's oldest queued mail is older; repeated while it lasts only if set. |
 | `shutdownTimeout`, `terminationGracePeriodSeconds` | `100s`, `120` | The grace period must stay longer than the shutdown deadline. |
 | `dataLockWait` | `150s` | `POSTWERK_DATA_LOCK_WAIT`: how long a new pod waits for an old one to let go of the database (section 1). Keep it longer than the grace period. |
+| `senderKeys` | `file` | `POSTWERK_SENDER_KEYS`: `file` (the senders Secret), `db` (senders managed in the database; no senders Secret is mounted) or `both`. |
+| `senderVolume.factor`, `.min`, `.max` | `10`, `100`, `0` | `POSTWERK_SENDER_VOLUME_*`: when `sender.volume_high` is written ([configuration.md](configuration.md#senders)). |
 | `storeEncryption` | `on` (**recommended**) | `POSTWERK_STORE_ENCRYPTION`; `off` also drops the store key mount. |
 | `retention.rawKeepAfterHandoff` | `0` (**recommended**) | `POSTWERK_RAW_KEEP_AFTER_HANDOFF`. |
 | `retention.rawKeepAfterFailure` | `72h` (**recommended**) | `POSTWERK_RAW_KEEP_AFTER_FAILURE`. |

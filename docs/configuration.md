@@ -49,12 +49,71 @@ Security notes:
 
 ## Senders
 
+A sender is one sending application. It logs in with SMTP `AUTH PLAIN`: the user name is the sender's name, the
+password one of its keys. Give every application its own sender, so a leaked key can be traced to it and revoked
+alone ([design.md](design.md#sender-keys)).
+
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
-| `POSTWERK_SENDERS_FILE` | required | path | Applications allowed to send. One line per sender: `name:pbkdf2-sha256$<iterations>$<salt>$<key>`. Empty lines and `#` lines are ignored. Names: `[a-z0-9][a-z0-9._-]{0,63}`. |
+| `POSTWERK_SENDER_KEYS` | `file` | `file`, `db`, `both` | Where senders are kept. `file`: the senders file only, as in 1.0. `db`: in the database only, created through the UI or the API; `POSTWERK_SENDERS_FILE` must not be set. `both`: the file and the database; a name or key id may be in one of them only. |
+| `POSTWERK_SENDERS_FILE` | required with `file` and `both` | path | The senders file (below). Re-read every 30 s; a changed file is used only if it is valid. With `file` it must define at least one sender, with `both` it may be empty. Secret file. |
+| `POSTWERK_SENDER_VOLUME_FACTOR` | `10` | `0` to `1000` | `sender.volume_high` (error) when a sender's mails in the last hour are more than this many times its hourly average of the 7 days before. `0` turns this rule off. |
+| `POSTWERK_SENDER_VOLUME_MIN` | `100` | `1` to `10000000` | The factor rule needs at least this many mails in the hour, so a sender with little history does not alarm at its first busy hour. |
+| `POSTWERK_SENDER_VOLUME_MAX` | `0` (off) | `0` to `10000000` | `sender.volume_high` when a sender sends more than this many mails in one hour, whatever its history. |
 
-Create a line with `printf '%s' 'password' | postwerk hash-password` (reads the password from stdin, prints the hash).
-The file holds hashes only, but it is still a secret file: a copy allows offline guessing.
+Without `POSTWERK_SENDER_KEYS`, Postwerk behaves as 1.0 did: `POSTWERK_SENDERS_FILE` is required, and every 1.0 line
+keeps working unchanged.
+
+### The senders file
+
+One line per credential, plus an optional policy line per sender. Empty lines and `#` lines are ignored. Names:
+`[a-z0-9][a-z0-9._-]{0,63}`.
+
+```
+# a key (postwerk gen-sender shop); the application logs in as "shop" with the key as password
+shop:pwk-sha256$k3x7q2m4abcd$<base64 SHA-256 of the key's secret part>
+# a second key of the same sender during a rotation (at most two credentials per sender)
+shop:pwk-sha256$p9r2t5w6efgh$<…>
+# a password, as every 1.0 line (postwerk hash-password)
+legacy-app:pbkdf2-sha256$600000$<salt>$<key>
+# optional: what the sender may do (one line per sender, any order of the keys)
+shop:policy from=*@shop.example.com,noreply@example.com max_per_minute=60 max_rcpt_per_hour=2000
+```
+
+- **Keys** are made with `postwerk gen-sender NAME`: the first line it prints is the key (`pwk_<id>_<secret>`, the
+  application's SMTP password, shown once), the second the line for this file. The file holds only the SHA-256 of
+  the key's secret part. The id (12 characters) names the key in mail records, events and the UI; it is not secret.
+- **Passwords** (`pbkdf2-sha256$…`, `printf '%s' 'password' | postwerk hash-password`) keep working. A password
+  that has the form of a key is checked as a key only.
+- **Rotation without downtime:** add the new key's line next to the old one, switch the application to the new key,
+  then remove the old line. A sender may have two credentials at once (two keys, or a password and a key).
+- **Policy** (all optional; without a policy line a sender may do anything, as in 1.0):
+
+  | Key | Meaning |
+  |---|---|
+  | `from=` | Comma-separated envelope sender (`MAIL FROM`) patterns, compared in lower case with shell-style `*`, `?` and `[…]`, for example `*@shop.example.com`. `<>` allows the null sender. Another sender gets `550 5.7.1` at `MAIL` and counts as `ingress.rejected reason=from_not_allowed`. At most 32 patterns. |
+  | `max_per_minute=` | Messages per minute, counted at `MAIL`; over it `451 4.7.1` (the application retries). `0`: no limit. |
+  | `max_rcpt_per_hour=` | Recipients per hour, counted at `RCPT`; over it `451 4.7.1`. `0`: no limit. |
+
+  Set `from=` for every sender in production: without it, a leaked key can send in the name of any address the
+  provider accepts for your account. The limits are counted in memory per sender (both keys share them) and start
+  full after a restart.
+- **Reload.** The file is re-read every 30 s and compared by content, so a Kubernetes Secret update reaches a running
+  Postwerk without a restart. A valid file is used from the next login and writes `senders.reloaded`; an invalid one
+  (or one with a name that is also in the database) is not used, the previous one stays, and
+  `senders.reload_failed` (error) is written once per content. A removed or changed credential ends the sessions
+  that logged in with it at their next `MAIL`.
+
+The file holds hashes only, but it is still a secret file: a copy allows offline guessing of passwords (not of keys).
+
+### Senders in the database
+
+With `db` or `both`, senders are created in the UI and through the API with an `admin` role (*planned*: the pages
+and endpoints are being built on the sender module; until they are released, keep senders in the file). A new sender
+gets its first key at once; a second key can be added for a rotation, and each key can be revoked on its own,
+effective at once. Each key may have an expiry. Every change is an event with the actor (`sender.created`,
+`sender.rotated`, `sender.revoked`, `sender.policy_changed`). Keys are stored as the SHA-256 of their secret part,
+never the key; the key is shown once when it is made. The policy is the same as in the file.
 
 ## Admin listener and UI
 
@@ -385,6 +444,7 @@ non-empty value stops the start.
 | Command | What it does |
 |---|---|
 | `postwerk` or `postwerk serve` | Run the relay. |
+| `postwerk gen-sender <name>` | Print a new sender key (first line, the application's SMTP password) and its line for `POSTWERK_SENDERS_FILE` (second line). |
 | `postwerk hash-password` | Read one password from stdin, print the value for the senders file. |
 | `postwerk gen-key` | Print a new key line for a store or hash key file. |
 | `postwerk gen-token <name>` | Print a new UI token and its line for `POSTWERK_UI_TOKENS_FILE` (always role `admin`; `gen-token <name> admin` works too). |
@@ -395,6 +455,8 @@ non-empty value stops the start.
 
 - [ ] **TLS on ingress** (`POSTWERK_SMTP_TLS_CERT_FILE`, `POSTWERK_SMTP_TLS_KEY_FILE`), or a private network that
       encrypts traffic between nodes. `POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true` only with a reason.
+- [ ] **One sender per application**, each with a key (`postwerk gen-sender`) and a policy line with `from=` and
+      limits that fit the application; no shared credentials.
 - [ ] **Targets over TLS** (`smtps://` or `smtp://`); no `smtp+plain://` towards a provider.
 - [ ] **Key files as mounted secrets**: a store key and a hash key, made with `postwerk gen-key`, different from each
       other, never the example keys, readable by the Postwerk user only. No key in an environment variable, image or

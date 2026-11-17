@@ -321,14 +321,15 @@ not change the design until they are accepted there.
 
 12. **Secret rotation needs a restart.** Fixing a `535` means new credentials, and a restart closes the ingress.
     *Suggestion:* re-read secret files when they change (mounted secrets in Kubernetes update in place).
-    *Status:* in part: the STARTTLS and API certificates are re-read every minute (D38). Senders, target credentials,
-    keys and tokens are still read once at start.
+    *Status:* in part: the STARTTLS and API certificates are re-read every minute (D38), the senders file every 30 s
+    (D66). Target credentials, keys and tokens are still read once at start.
 
 13. **Senders can use any envelope sender.** A compromised application could send mail with another application's
     address.
     *Suggestion:* optional per-sender list of allowed envelope-from addresses or domains. This is an envelope check and
     stays content-blind. The provider's own domain checks remain the second line.
-    *Status:* open.
+    *Status:* built in 1.1: `from=` in each sender's policy, `550 5.7.1` otherwise, together with rate limits per
+    sender and one key per application (D62–D64).
 
 14. **Bounces and envelope sender are not described.** The design does not say that Postwerk sends no bounce mails
     (DSN) to senders, or which envelope sender it passes to the target.

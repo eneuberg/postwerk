@@ -25,7 +25,7 @@ setup:
 | Environment variables | every `POSTWERK_*` name in [configuration.md](configuration.md), its meaning and its allowed values | new variables; new allowed values |
 | Defaults | the default of every variable | a changed default, always listed under **Changed** in the changelog |
 | Secret files | the formats of the senders file, key files, UI and API tokens files, target credentials, the DSN file and the TLS files | new formats next to the old ones; old lines keep working |
-| Commands | `serve`, `hash-password`, `gen-key`, `gen-token`, `gen-api-token`, `version`, their arguments and output format | new commands and options |
+| Commands | `serve`, `hash-password`, `gen-sender`, `gen-key`, `gen-token`, `gen-api-token`, `version`, their arguments and output format | new commands and options |
 | SMTP behaviour | ingress: `AUTH`, the offered extensions, reply codes and enhanced codes, the mail id in `250 2.0.0 queued as pw_…`, the `X-Postwerk-*` headers it reads and removes; towards targets: the headers it adds and the TLS rules | new extensions; stricter checks only where a mail could not be delivered anyway |
 | Query API | everything under `/v1/` in [api.md](api.md): paths, methods, roles, request and response fields, status codes | new endpoints; new response fields (clients must ignore fields they do not know) |
 | Events | every event kind and its level, the JSON fields of a stdout line, and the Sentry tags and grouping | new kinds and new fields (consumers must ignore what they do not know) |

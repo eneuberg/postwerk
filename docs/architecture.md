@@ -11,18 +11,21 @@ internal/config       environment + secret files → validated Config (O1); refe
 internal/id           mail ids: "pw_" + 26 chars, time-ordered, crypto random
 internal/message      header handling: read Ref/Skip/Message-ID, strip X-Postwerk-*, prepend own headers (I8, D10)
 internal/redact       remove mail addresses from free text such as SMTP replies (S5)
-internal/auth         sender password hashes, UI tokens (name:admin:hash), UI password rules and the equal-cost checker (I2, I12, U4, U19)
+internal/auth         PBKDF2 password hashes (senders' password lines), UI tokens (name:admin:hash), UI password rules and the equal-cost checker (I2, I12, U4, U19)
+internal/senders      the sending applications: keys (pwk_…), policies, senders file and database sources, registry, Authenticator, last use (D62–D66)
+internal/senders/limit  per-key token buckets in memory, the senders' rate limits (D64)
+internal/filewatch    re-reads files by content at an interval and hands changes to a loader (the senders file; tlsreload's rules)
 internal/keys         key file format (<key-id>:<base64>), active key + old keys, gen-key (E5)
 internal/seal         AES-256-GCM sealing of the stored message, keyed by the key id in each blob (E1–E4)
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
 internal/store        SQLite: data lock, open, migrate, all reads and writes, retention steps; the only package that speaks SQL (S1–S12, D61)
-internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I1–I9)
+internal/ingress      SMTP server session: AUTH through senders.Authenticator, policy and rate limits, audit, limits, seal, store-then-250 (I1–I9, I20–I26)
 internal/tlsreload    TLS certificate from files, re-read every minute, validated before it is served (I16)
 internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
 internal/retention    runs the store's retention at start and every 10 minutes, logs counts (S6)
 internal/report       event cursor loop per sink, the stdout and Sentry-protocol sinks (A2, A3, A6–A9)
 internal/httpapi      health endpoints on the health listener (H1)
-internal/watch        Postwerk's own signals: free space of the data volume, age of each target's queue (H10, A10, A11)
+internal/watch        Postwerk's own signals: free space of the data volume, age of each target's queue, unusual sender volume (H10, A10, A11, D67)
 internal/fold         counts repeated occurrences, one record per key and window (the API's and ingress's refusal events)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
 internal/resolve      the admin actions on a delivery for the UI and the JSON API: close and resend, their input and availability (H11–H13)
@@ -34,7 +37,7 @@ internal/testutil     helpers for tests only (self-signed certificates, polling,
 Dependency rule: `store` depends on nothing internal except `redact`, so every free text is redacted where it is
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
-packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
+packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `senders` depends on `store` (its rows), `auth` (PBKDF2), `filewatch` and `senders/limit`; `ingress` uses it through two interfaces it defines itself (`Authenticator`, `RateLimiter`), and `query` through `senders.Source`. `senders` imports no UI, API or ingress package. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
 `addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `resolve` writes
 through `store` and reads `query`'s delivery detail; `ui` depends on `query`, `resolve`, `auth` and the store's types,
 never on `ingress` or `delivery` (a resend wakes the workers through a function `cmd/postwerk` passes in); so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
@@ -87,17 +90,20 @@ never a stale lock. Where `flock` is not built (`lock_other.go`, Windows and oth
 Open does not wait and `cmd/postwerk` logs a warning. `cmd/postwerk` opens the health listener before the store:
 `/healthz` answers during the wait, and `/readyz` fails until the store, the workers and the other listeners run.
 
-Tables (version 7):
+Tables (version 9):
 
 | Table | Holds | Notes |
 |---|---|---|
-| `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at`, the declared MAIL parameters `body`, `smtputf8`, `declared_size` | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
+| `mails` | id, received time, sender login, envelope from, Message-ID, ref, size (of the plaintext), raw message as a sealed blob, `raw_purged_at`, `pseudonymized_at`, the declared MAIL parameters `body`, `smtputf8`, `declared_size`, and the audit `key_id`, `key_source`, `client_ip`, `tls_version`, `tls_cipher`, `ehlo`, `auth_mech` (D65) | raw is set to NULL by retention (S7); envelope from becomes a keyed hash (S8) |
 | `recipients` | mail id, position, address | separate so addresses can be pseudonymized or erased without touching anything else; an address becomes `<key-id>:<hex>` (S8) |
 | `deliveries` | mail id, target, attempts, next attempt, `data_sent_at`, last code and redacted text of the attempt, updated time | what one SMTP transaction shares; primary key (mail id, target); next attempt is set while a recipient is queued; partial index on (target, next attempt) |
 | `delivery_recipients` | mail id, target, position, **status**, last code and redacted text, updated time, `resolution` | the unit of tracking: one row per (mail, target, recipient); its status is the single source of truth; `resolution` (`confirmed`, `given_up` or NULL) is set when an admin closed it |
 | `events` | seq, time, mail id, target, recipient position, kind, level, attempt, code, redacted text, sender login, actor (account name of a UI event) | append-only by trigger; no addresses; `seq` is `AUTOINCREMENT`, so it is never reused |
 | `cursors` | sink name, last seq | one row per sink |
 | `ui_accounts` | name, PBKDF2 hash, created and updated time and by whom | UI accounts managed in the panel (U17); never a password |
+| `senders` | name, policy (`allowed_from` patterns comma-separated, `max_per_minute`, `max_rcpt_per_hour`), created and updated time and by whom | senders managed in the database (D66); file senders are not here |
+| `sender_keys` | key id, sender, SHA-256 of the secret part, created (time, by), `expires_at`, `revoked_at`, `revoked_by` | never the key; revoked keys stay, so an id is never reused |
+| `sender_usage` | source, sender, key id (empty for a password), `last_used_at` | written once a minute from memory (D66) |
 | `event_retention` | one row: `cutoff` (Unix ms) | events older than the cutoff may be deleted; triggers refuse lowering it, deleting the row or inserting another (S10) |
 
 Migrations: `0001_init.sql` creates the tables above except `event_retention`, with a trigger that refuses every update
@@ -112,7 +118,9 @@ delivery's status for every recipient, drops `deliveries.status` (and the unused
 be kept per recipient) and adds `events.recipient`. `0005_ui.sql` adds partial indexes on `mails.ref` and
 `mails.message_id` for lookups, and `events.actor`. `0006_ui_accounts.sql` adds `ui_accounts`. `0007_resolution.sql`
 adds `delivery_recipients.resolution` with a check that it matches the status (`confirmed` only with `handed_off`,
-`given_up` only with `failed`).
+`given_up` only with `failed`). `0008_sender_keys.sql` adds `senders`, `sender_keys` and `sender_usage`.
+`0009_mail_audit.sql` adds the audit columns of `mails` (NULL for older rows) and indexes on `(sender, received_at)`
+and `key_id`.
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -163,7 +171,7 @@ mail id either.
 
 | Kind | Level | Written when |
 |---|---|---|
-| `mail.accepted` | info | a mail is stored |
+| `mail.accepted` | info | a mail is stored; text `source=<file\|db> key=<id> client=<address>`, or `auth=password` instead of the key |
 | `delivery.attempt` | info | a worker claims a delivery (one per attempt, no recipient) |
 | `delivery.retry` | warn | a temporary failure for this recipient (`4xx` at `RCPT` or for the attempt, `535`, the target unreachable); queued again |
 | `delivery.handed_off` | info | the target answered `250` after the message; one per recipient of the attempt |
@@ -195,7 +203,12 @@ mail id either.
 | `api.view` | info | a mail's detail was returned through the API; `actor` is the token name, `mail_id` the mail; no text |
 | `api.auth_failed` | warn | missing, malformed or wrong API tokens, counted: at most one per actor and minute, text `failures=<n>`; `actor` only if the name is in the tokens file |
 | `ingress.auth_failed` | warn | failed SMTP `AUTH` attempts (wrong password, unknown name, malformed `PLAIN`), counted: at most one per sender and minute, text `failures=<n>`; `sender` only if the name is in the senders file, otherwise empty |
-| `ingress.rejected` | warn | refused commands of a logged-in sender, counted per sender, reason and minute: text `reason=<r> rejected=<n>`, `r` one of `too_large` (`552`), `bad_address` (`553 5.1.3`), `needs_smtputf8` (`553 5.6.7`), `too_many_recipients` (`452 4.5.3`), `line_too_long` (`500`). A `SIZE=` above the limit at `MAIL` is answered by the SMTP library itself and not counted |
+| `ingress.rejected` | warn | refused commands of a logged-in sender, counted per sender, reason and minute: text `reason=<r> rejected=<n>`, `r` one of `too_large` (`552`), `bad_address` (`553 5.1.3`), `needs_smtputf8` (`553 5.6.7`), `too_many_recipients` (`452 4.5.3`), `line_too_long` (`500`), `from_not_allowed` (`550 5.7.1`, the sender's policy). A `SIZE=` above the limit at `MAIL` is answered by the SMTP library itself and not counted |
+| `ingress.rate_limited` | warn | commands of a logged-in sender refused by its policy's rate limit (`451 4.7.1`), counted per sender, limit and minute: text `limit=<max_per_minute\|max_rcpt_per_hour> limited=<n>` |
+| `sender.created`, `sender.rotated`, `sender.revoked`, `sender.policy_changed` | info | a managed sender changed; `actor`, `sender`; text `key=<id>`, or for a policy `from_patterns=<n> max_per_minute=<n> max_rcpt_per_hour=<n>` |
+| `sender.volume_high` | error | a sender's mails in the last hour are far above its own average or above the maximum (D67); `sender`, text `mails_last_hour=<n> hourly_average=<x> factor=<f>\|max=<m>` |
+| `senders.reloaded` | info | a changed senders file is in use; text counts |
+| `senders.reload_failed` | error | a changed senders file was refused, the previous one stays; text the line numbers and problems, never a line |
 | `queue.stale` | error (warn: optional) | the oldest mail with a recipient `queued` or `sending` at this target is older than `POSTWERK_QUEUE_STALE_AFTER`; `target` set, text `queued=<mails> oldest=<age> after=<limit>`. Once per change, again after `POSTWERK_QUEUE_STALE_REPEAT` if set |
 | `queue.recovered` | info | no mail at this target is older than that any more; same text |
 | `disk.low` | error | free space of the data volume below `POSTWERK_MIN_FREE_BYTES`; text `free=… total=… reserve=…` |
@@ -382,6 +395,65 @@ CSRF token. Sessions are a map in memory. Templates (`html/template`) and the st
 JavaScript. Login checks run through `auth.Tokens`, at most `GOMAXPROCS` at once. A login or search is allowed only
 after its event is written, so nothing happens in the UI that the audit log misses. Details: [ui.md](ui.md).
 
+## Senders
+
+`internal/senders` holds the sending applications (D62–D67). The interfaces are small and live where they are used:
+
+```
+                  read side                       write side
+                  senders.Source                  senders.Store
+                  ByKeyID, ByName, List           Create, Rotate, Revoke, SetPolicy
+                     ▲        ▲        ▲               ▲
+                     │        │        │               │
+          FileSource │        │ DBSource ──────────────┘   (both over store.Store: rows + events in one tx)
+   (POSTWERK_SENDERS_FILE,    │  (tables senders, sender_keys; in memory, re-read after each own change)
+    filewatch, every 30 s)    │
+                     └──── Registry ────┘   composes the enabled sources (POSTWERK_SENDER_KEYS);
+                              │             one guard lock: no name or key id in two sources
+                              ▼
+                       Authenticator ── Usage (UsageRecorder) ── store.TouchSenderUsage, once a minute
+                              │
+         ingress.Authenticator (Authenticate, Refresh, Known)      ingress.RateLimiter ◀── senders/limit.Limiter
+                              ▼                                              ▼
+                           ingress: AUTH → Principal{Sender, Source, Method, KeyID, Policy}
+                                    MAIL → Refresh, Policy.AllowsFrom (550), MessageRate (451), audit
+                                    RCPT → RecipientRate (451)
+
+   query.Options.Senders = the Registry (a senders.Source) ─▶ query.Service.Senders / Sender
+   watch.Volume ─▶ store.MailsPerSender, LastBySender ─▶ sender.volume_high
+```
+
+- **Value objects.** `Policy` (envelope sender patterns and two limits; `NewPolicy`, `ParsePolicy`, `String`,
+  `AllowsFrom`, `MessageRate`, `RecipientRate`) is checked once and immutable. `KeyInfo`, `Sender`, `Credential`
+  and `Principal` are plain values; nothing hands out a digest or a key.
+- **Snapshots.** Each source keeps an immutable set behind an atomic pointer and swaps it as a whole: a reload or a
+  database change is seen completely or not at all. Changes run under the registry's guard lock together with the
+  clash check.
+- **Keys** (`key.go`): `NewKey`, `ParseKey` (never fails on any input; fuzzed), `DigestOf`, `KeyLine` (the file line
+  that `postwerk gen-sender` prints).
+- **Checks.** A key: SHA-256 and a constant-time comparison with the stored digest or a random dummy, then the
+  name, the expiry and revocation. A password: `auth.Senders` with its equal cost and cache, at most `GOMAXPROCS`
+  at once, `ErrBusy` after 5 s (ingress answers `454`). `Refresh` repeats the lookup at every `MAIL`.
+
+**For the UI and the API** (wired in `cmd/postwerk`, `senderSources`): the write side is the `*senders.DBSource`,
+`nil` when `POSTWERK_SENDER_KEYS=file`:
+
+| Call | Does | Errors |
+|---|---|---|
+| `Store.Create(ctx, CreateRequest{Name, Policy, ExpiresAt, Actor})` | new sender and its first key; returns `Issued{Sender, KeyID, Key, ExpiresAt}`, the key shown once | `ErrInvalidName`, `ErrNameTaken`, `ErrExpiry`, `ErrInvalidActor` |
+| `Store.Rotate(ctx, name, expiresAt, actor)` | a second key | `ErrNoSender`, `ErrTooManyKeys` |
+| `Store.Revoke(ctx, keyID, actor)` | ends one key at once | `ErrNoKey`, `ErrRevoked` |
+| `Store.SetPolicy(ctx, name, policy, actor)` | replaces the policy | `ErrNoSender` |
+| `senders.ParsePolicy(text)`, `senders.NewPolicy(from, perMinute, rcptsPerHour)` | a policy from a form or JSON | wraps `ErrInvalidPolicy`, text safe to show |
+| `Registry.List()`, `ByName(name)` | every sender of every source, with `Source` (`file`/`db`) | |
+| `query.Service.Senders(ctx)`, `Sender(ctx, name)` | `SenderOverview`: source, policy, keys with `Active` and `LastUsed`, last use, and the last 24 h (`store.SenderActivity`: mails, failed recipients, refused logins, refused commands, rate-limit refusals); senders gone from every source but active in the window come with `Removed` | `query.ErrNoSender` |
+| `query.ListFilter{Sender, KeyID}` | the mail list of one sender or key | `query.ErrInvalid` |
+| `query.MailDetail.Audit` | key id and source, client address, TLS, EHLO, AUTH mechanism of one mail | |
+
+Every `Store` change writes its event with the actor in the same transaction; the caller writes nothing else.
+File senders cannot be changed through `Store`; show them as read-only, with the file line as the way to change
+them.
+
 ## Signals
 
 `internal/watch` holds the checks that are about Postwerk itself, not about one mail (design.md section 9.1). Each
@@ -404,6 +476,9 @@ starts from the newest of its events in the event log (`store.LastOf`), so a res
   a write succeeds (`Store.Writable`). Meanwhile `/readyz` fails, and the disk check writes one page (`Store.Probe`,
   `user_version` set to itself) every round until it goes through. This needs no event: when the store cannot be
   written, no event can be.
+- **Sender volume.** Every minute, `store.MailsPerSender` over the last hour against each sender's hourly average of
+  the 7 days before (read again once an hour); `sender.volume_high` at most once per sender and hour, picked up after
+  a restart through `store.LastBySender` (D67).
 - **Queue.** Every minute, `store.Queues` (mails with a recipient `queued` or `sending`, per target, and the oldest
   received time; it uses the index on `delivery_recipients.status`).
 
@@ -456,5 +531,11 @@ starts from the newest of its events in the event log (`store.LastOf`), so a res
   envelope it received for the canary addresses and the message content. `internal/report` tests the Sentry sink on
   its own: envelope and event fields, level filter, rate limits, backoff, timeout, redirects, and catching up after
   an outage.
+- Sender keys: table tests per component (key format, policy, file syntax, registry clashes, authenticator, the
+  database source), fuzz tests for key parsing, file key lines and policies, race tests for the registry under file
+  reloads and database changes and for the rate limiter. Ingress tests cover `550 5.7.1`, `451 4.7.1`, their folded
+  events and a removed key ending its session; `cmd/postwerk` runs the whole program with `POSTWERK_SENDER_KEYS=both`:
+  a file key, a password, a rotated database sender, a revoked key (`535`), the policy refusals and the audit of every
+  stored mail, with no key on stdout.
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.
