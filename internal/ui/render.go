@@ -108,6 +108,16 @@ var funcs = template.FuncMap{
 	"deref":       func(p *int) int { return *p },
 	"levelClass":  func(l store.Level) string { return "lv-" + string(l) },
 	"resolution":  func(r store.Resolution) string { return strings.ReplaceAll(string(r), "_", " ") },
+	"board":       newBoard,
+	"mix":         newMix,
+	"day":         dayOf,
+	"clock":       clockOf,
+	"plural": func(n int, one, many string) string {
+		if n == 1 {
+			return one
+		}
+		return many
+	},
 	"actions": func(d query.DeliveryDetail, a deliveryActions, maxNote int, csrf, mailID string, i int) actionsData {
 		return actionsData{Delivery: d, Actions: a, MaxNote: maxNote, CSRF: csrf, MailID: mailID, Index: i}
 	},

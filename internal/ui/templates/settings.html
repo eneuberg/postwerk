@@ -4,7 +4,7 @@
   <h1>Settings</h1>
 </div>
 
-<section class="card narrow" aria-labelledby="me-h">
+<section class="card me" aria-labelledby="me-h">
   <h2 id="me-h">Your account</h2>
   {{if $me.FromFile}}
   <p>You are logged in as <strong>{{$me.Name}}</strong> <span class="tag tag-file">tokens file</span></p>
@@ -20,6 +20,7 @@
     <h2 id="accounts-h">Accounts</h2>
     <p class="muted">Every account sees all pages and addresses in full, and may manage accounts.</p>
   </div>
+  <div class="settings-grid">
   <div class="card">
     <div class="table-wrap">
     <table class="accounts">
@@ -40,7 +41,7 @@
     </div>
   </div>
 
-  <div class="card narrow">
+  <div class="card">
     <h3 id="create-h">New account</h3>
     {{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
     <form method="post" action="/settings/accounts" autocomplete="off" aria-labelledby="create-h">
@@ -56,6 +57,7 @@
       <input id="current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
       <div class="form-actions"><button type="submit">Create account</button></div>
     </form>
+  </div>
   </div>
 </section>
 {{end}}

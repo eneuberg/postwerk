@@ -10,10 +10,11 @@
 <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="top-inner">
     <a class="brand" href="/"><img src="/static/logo.svg" alt="" width="28" height="28"><span>Postwerk</span></a>
-    {{with .Instance}}<span class="instance" title="POSTWERK_INSTANCE">{{.}}</span>{{end}}
+    {{with .Instance}}<span class="instance" title="This instance (POSTWERK_INSTANCE)">{{.}}</span>{{end}}
     {{if .User}}
     <nav aria-label="Main">
       <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
@@ -21,14 +22,14 @@
       <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
     </nav>
     <form class="who" method="post" action="/logout">
-      <span><a class="who-name" href="/settings/accounts/{{.User}}" title="Your account">{{.User}}</a>{{if .FileUser}} <span class="role" title="This account is in the tokens file">file</span>{{end}}</span>
+      <span class="who-id"><a class="who-name" href="/settings/accounts/{{.User}}" title="Your account">{{.User}}</a>{{if .FileUser}} <span class="role" title="This account is in the tokens file">file</span>{{end}}</span>
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="link">Log out</button>
     </form>
     {{end}}
   </div>
 </header>
-<main>
+<main id="main">
 {{with .Flash}}<p class="notice notice-ok" role="status">{{.}}</p>{{end}}
 {{template "content" .}}
 </main>
@@ -43,19 +44,19 @@
   <tbody>
   {{range .}}
   <tr>
-    <td class="nowrap">{{when .ReceivedAt}}</td>
-    <td><a class="mono" href="/mails/{{.ID}}">{{.ID}}</a></td>
-    <td>{{.Sender}}</td>
-    <td class="r num">{{.Recipients}}</td>
-    <td><span class="st {{statusClass .Status}}">{{status .Status}}</span></td>
-    <td><div class="targets-cell">{{range .Targets}}<span class="tgt">{{.Target}} <span class="st st-sm {{statusClass .Status}}">{{status .Status}}</span></span>{{end}}</div></td>
+    <td class="c-recv nowrap num"><span class="day">{{day .ReceivedAt}}</span> {{clock .ReceivedAt}}</td>
+    <td class="c-id"><a class="mono" href="/mails/{{.ID}}">{{.ID}}</a></td>
+    <td class="c-sender">{{.Sender}}</td>
+    <td class="c-rcpt r num" data-unit="{{plural .Recipients "recipient" "recipients"}}">{{.Recipients}}</td>
+    <td class="c-st"><span class="st {{statusClass .Status}}">{{status .Status}}</span></td>
+    <td class="c-tgt"><ul class="targets-cell">{{range .Targets}}<li class="tgt"><span class="tgt-name">{{.Target}}</span> <span class="st st-sm {{statusClass .Status}}">{{status .Status}}</span></li>{{end}}</ul></td>
   </tr>
   {{end}}
   </tbody>
 </table>
 </div>
 {{else}}
-<p class="empty">Nothing here.</p>
+<p class="empty">No mails.</p>
 {{end}}
 {{end}}
 

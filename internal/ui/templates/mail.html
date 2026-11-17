@@ -2,45 +2,41 @@
 {{$m := .Data.Mail}}
 {{$v := .Data}}
 {{$csrf := .CSRF}}
-<div class="page-head">
+<div class="mail-head">
   <h1>Mail <span class="mono id">{{$m.ID}}</span></h1>
-  <span class="st {{statusClass $m.Status}}">{{status $m.Status}}</span>
+  <span class="st st-lg {{statusClass $m.Status}}">{{status $m.Status}}</span>
 </div>
+<dl class="mail-sum">
+  <div><dt>Received</dt><dd class="num">{{when $m.ReceivedAt}}</dd></div>
+  <div><dt>Sender (application)</dt><dd>{{$m.Sender}}</dd></div>
+  <div><dt>Recipients</dt><dd class="num">{{len $m.Recipients}}</dd></div>
+  <div><dt>Size</dt><dd class="num">{{size $m.Size}}</dd></div>
+</dl>
 
-<section class="card">
-  <h2>Record</h2>
-  <dl class="facts">
-    <div><dt>Received</dt><dd>{{when $m.ReceivedAt}}</dd></div>
-    <div><dt>Sender (application)</dt><dd>{{$m.Sender}}</dd></div>
-    <div><dt>Size</dt><dd>{{size $m.Size}}</dd></div>
-    <div><dt>Message</dt><dd>{{if $m.Stored}}stored, encrypted{{else if not $m.RawPurgedAt.IsZero}}removed {{when $m.RawPurgedAt}}{{else}}not stored{{end}}</dd></div>
-    <div class="wide"><dt>Message-ID</dt><dd>{{with $m.MessageID}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
-    <div class="wide"><dt>X-Postwerk-Ref</dt><dd>{{with $m.Ref}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
-    <div class="wide"><dt>Envelope sender</dt><dd>{{template "addr" $m.EnvelopeFrom}}</dd></div>
-    <div><dt>Addresses</dt><dd>{{if $m.PseudonymizedAt.IsZero}}plain{{else}}pseudonymized {{when $m.PseudonymizedAt}}{{end}}</dd></div>
-    <div><dt>BODY</dt><dd>{{with $m.Params.Body}}{{.}}{{else}}<span class="muted">not given</span>{{end}}</dd></div>
-    <div><dt>SMTPUTF8</dt><dd>{{if $m.Params.SMTPUTF8}}yes{{else}}no{{end}}</dd></div>
-    <div><dt>SIZE declared</dt><dd>{{if $m.Params.DeclaredSize}}{{$m.Params.DeclaredSize}} bytes{{else}}<span class="muted">not given</span>{{end}}</dd></div>
-  </dl>
-  <h3>Recipients</h3>
-  <ol class="rcpts" start="0">
-    {{range $m.Recipients}}<li>{{template "addr" .}}</li>{{end}}
+<nav class="route" aria-label="Deliveries, one per target">
+  <span class="route-origin" aria-hidden="true"></span>
+  <ol>
+  {{range $m.Deliveries}}
+    <li><a class="route-target" href="#target-{{.Target}}">{{.Target}}</a> <span class="st {{statusClass .Status}}">{{status .Status}}</span> <span class="muted route-note">{{len .Recipients}} {{plural (len .Recipients) "recipient" "recipients"}}, {{.Attempts}} {{plural .Attempts "attempt" "attempts"}}</span></li>
+  {{end}}
   </ol>
-</section>
+</nav>
 
+<div class="mail-grid">
+<div class="mail-main">
 {{range $i, $d := $m.Deliveries}}
 {{$a := index $v.Actions $i}}
-<section class="card delivery" id="target-{{.Target}}">
+<section class="card delivery" id="target-{{.Target}}" aria-labelledby="target-h-{{$i}}">
   <header class="delivery-head">
-    <h2>{{.Target}}</h2>
-    <span class="st {{statusClass .Status}}">{{status .Status}}</span>
+    <h2 id="target-h-{{$i}}">{{.Target}}</h2>
+    <span class="st st-lg {{statusClass .Status}}">{{status .Status}}</span>
     {{if $a.Confirmed}}<span class="tag tag-closed">closed: confirmed{{if gt (len .Recipients) 1}} ({{$a.Confirmed}}){{end}}</span>{{end}}
     {{if $a.GivenUp}}<span class="tag tag-closed">closed: given up{{if gt (len .Recipients) 1}} ({{$a.GivenUp}}){{end}}</span>{{end}}
   </header>
-  <dl class="facts">
+  <dl class="facts facts-row">
     <div><dt>Attempts</dt><dd class="num">{{.Attempts}}</dd></div>
-    <div><dt>Next attempt</dt><dd>{{when .NextAttempt}}</dd></div>
-    <div><dt>Message sent at</dt><dd>{{when .DataSent}}</dd></div>
+    <div><dt>Next attempt</dt><dd class="num">{{when .NextAttempt}}</dd></div>
+    <div><dt>Message sent at</dt><dd class="num">{{when .DataSent}}</dd></div>
     <div class="wide"><dt>Last reply</dt><dd>{{if .LastCode}}<span class="mono">{{.LastCode}}</span> {{end}}{{with .LastText}}<span class="break">{{.}}</span>{{else}}{{if not .LastCode}}<span class="muted">none</span>{{end}}{{end}}</dd></div>
   </dl>
   <div class="table-wrap">
@@ -49,10 +45,10 @@
     <tbody>
     {{range .Recipients}}
     <tr>
-      <td class="r num">{{.Position}}</td>
-      <td>{{template "addr" .Address}}</td>
-      <td><span class="st {{statusClass .Status}}">{{status .Status}}</span>{{with .Resolution}} <span class="muted small-inline">closed: {{resolution .}}</span>{{end}}</td>
-      <td>{{if .LastCode}}<span class="mono">{{.LastCode}}</span> {{end}}<span class="break">{{.LastText}}</span></td>
+      <td class="c-pos r num">{{.Position}}</td>
+      <td class="c-addr">{{template "addr" .Address}}</td>
+      <td class="c-st nowrap"><span class="st {{statusClass .Status}}">{{status .Status}}</span>{{with .Resolution}} <span class="muted small-inline">closed: {{resolution .}}</span>{{end}}</td>
+      <td class="c-reply">{{if .LastCode}}<span class="mono">{{.LastCode}}</span> {{end}}<span class="break">{{.LastText}}</span></td>
     </tr>
     {{end}}
     </tbody>
@@ -62,27 +58,49 @@
 </section>
 {{end}}
 
-<section class="card">
-  <h2>Events</h2>
-  {{if $m.EventsTruncated}}<p class="muted">Showing the first {{len $m.Events}} events.</p>{{end}}
-  <div class="table-wrap">
-  <table class="events">
-    <thead><tr><th scope="col">Time</th><th scope="col">Event</th><th scope="col">Target</th><th scope="col" class="r">Pos.</th><th scope="col" class="r">Attempt</th><th scope="col">Reply</th></tr></thead>
-    <tbody>
-    {{range $m.Events}}
-    <tr class="{{levelClass .Level}}">
-      <td class="nowrap">{{when .Time}}</td>
-      <td class="nowrap"><span class="lv" title="level {{.Level}}">{{.Level}}</span> <span class="mono">{{.Kind}}</span>{{with .Actor}} <span class="muted">by {{.}}</span>{{end}}</td>
-      <td>{{.Target}}</td>
-      <td class="r num">{{if .Recipient}}{{deref .Recipient}}{{end}}</td>
-      <td class="r num">{{if .Attempt}}{{.Attempt}}{{end}}</td>
-      <td>{{if .Code}}<span class="mono">{{.Code}}</span> {{end}}<span class="break">{{.Text}}</span></td>
-    </tr>
-    {{end}}
-    </tbody>
-  </table>
+<section class="card" aria-labelledby="events-h">
+  <div class="card-head">
+    <h2 id="events-h">Events</h2>
+    <p class="muted">{{if $m.EventsTruncated}}The first {{len $m.Events}} events, in the order they were recorded.{{else}}In the order they were recorded. Times in UTC.{{end}}</p>
   </div>
+  {{$day := ""}}
+  <ol class="timeline">
+    {{range $m.Events}}
+    {{if ne (day .Time) $day}}{{$day = day .Time}}<li class="tl-day"><span>{{$day}}</span></li>{{end}}
+    <li class="ev {{levelClass .Level}}">
+      <span class="ev-time num">{{clock .Time}}</span>
+      <span class="ev-mark" aria-hidden="true"></span>
+      <div class="ev-body">
+        <p class="ev-what"><span class="lv">{{.Level}}</span> <span class="mono">{{.Kind}}</span>{{with .Actor}} <span class="muted">by {{.}}</span>{{end}}</p>
+        {{if or .Target .Recipient .Attempt}}<p class="ev-where">{{with .Target}}at {{.}}{{end}}{{if .Recipient}}{{if .Target}}, {{end}}recipient {{deref .Recipient}}{{end}}{{if .Attempt}}{{if or .Target .Recipient}}, {{end}}attempt {{.Attempt}}{{end}}</p>{{end}}
+        {{if or .Code .Text}}<p class="ev-text">{{if .Code}}<span class="mono">{{.Code}}</span> {{end}}<span class="break">{{.Text}}</span></p>{{end}}
+      </div>
+    </li>
+    {{end}}
+  </ol>
 </section>
+</div>
+
+<aside class="mail-aside" aria-labelledby="record-h">
+<section class="card record">
+  <h2 id="record-h">Record</h2>
+  <dl class="facts facts-list">
+    <div><dt>Message</dt><dd>{{if $m.Stored}}stored, encrypted{{else if not $m.RawPurgedAt.IsZero}}removed {{when $m.RawPurgedAt}}{{else}}not stored{{end}}</dd></div>
+    <div><dt>Message-ID</dt><dd>{{with $m.MessageID}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
+    <div><dt>X-Postwerk-Ref</dt><dd>{{with $m.Ref}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
+    <div><dt>Envelope sender</dt><dd class="break">{{template "addr" $m.EnvelopeFrom}}</dd></div>
+    <div><dt>Addresses</dt><dd>{{if $m.PseudonymizedAt.IsZero}}plain{{else}}pseudonymized {{when $m.PseudonymizedAt}}{{end}}</dd></div>
+    <div><dt>BODY</dt><dd>{{with $m.Params.Body}}{{.}}{{else}}<span class="muted">not given</span>{{end}}</dd></div>
+    <div><dt>SMTPUTF8</dt><dd>{{if $m.Params.SMTPUTF8}}yes{{else}}no{{end}}</dd></div>
+    <div><dt>SIZE declared</dt><dd>{{if $m.Params.DeclaredSize}}{{$m.Params.DeclaredSize}} bytes{{else}}<span class="muted">not given</span>{{end}}</dd></div>
+  </dl>
+  <h3>Recipients</h3>
+  <ol class="rcpts" start="0">
+    {{range $m.Recipients}}<li class="break">{{template "addr" .}}</li>{{end}}
+  </ol>
+</section>
+</aside>
+</div>
 {{end}}
 
 {{define "actions"}}

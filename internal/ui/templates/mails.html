@@ -15,15 +15,15 @@
     </div>
     <div class="search-q">
       <label for="q">Search for</label>
-      <input id="q" name="q" type="search" maxlength="998" autocomplete="off" spellcheck="false" autocapitalize="none" required>
+      <input id="q" name="q" type="search" maxlength="998" autocomplete="off" spellcheck="false" autocapitalize="none" required aria-describedby="search-note">
     </div>
     <div class="search-go"><button type="submit">Search</button></div>
   </div>
-  <p class="muted small">The search is sent in the request body, so an address never lands in a URL, the browser history or a log. Every search is recorded with your name, never with what you searched for. Addresses are found after pseudonymization too.</p>
+  <p id="search-note" class="muted small">The search is sent in the request body, so an address never lands in a URL, the browser history or a log. Every search is recorded with your name, never with what you searched for. Addresses are found after pseudonymization too.</p>
 </form>
 {{if $s.Done}}
 <section class="card" aria-labelledby="results-h">
-  <div class="results-head">
+  <div class="card-head results-head">
     <h2 id="results-h">Results for your search</h2>
     <a href="/mails">← Back to all mails</a>
   </div>
@@ -31,41 +31,41 @@
   <p class="notice notice-error" role="alert">{{.}}</p>
   {{else}}
   <p class="muted">{{len $s.Results}} {{if eq (len $s.Results) 1}}mail{{else}}mails{{end}} found{{if ge (len $s.Results) $s.Max}}, showing the newest {{$s.Max}}{{end}}. What you searched for is not shown again.</p>
-  {{template "mailtable" $s.Results}}
+  {{if $s.Results}}{{template "mailtable" $s.Results}}{{else}}<p class="empty">No mail matches. Check the spelling, or search by another field.</p>{{end}}
   {{end}}
 </section>
 {{else}}
-<form class="card filters" method="get" action="/mails" aria-label="Filter mails">
-  <div>
-    <label for="state">State</label>
-    <select id="state" name="state">
-      <option value="">any</option>
-      {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{status .}}</option>{{end}}
-    </select>
-  </div>
-  <div>
-    <label for="target">Target</label>
-    <select id="target" name="target">
-      <option value="">all</option>
-      {{range .Data.Targets}}<option value="{{.}}"{{if eq . $.Data.Target}} selected{{end}}>{{.}}</option>{{end}}
-    </select>
-  </div>
-  <div>
-    <label for="from">Received from</label>
-    <input id="from" name="from" type="date" value="{{.Data.From}}">
-  </div>
-  <div>
-    <label for="to">Received to</label>
-    <input id="to" name="to" type="date" value="{{.Data.To}}">
-  </div>
-  <div class="filter-actions">
-    <button type="submit">Filter</button>
-    {{if .Data.Filtered}}<a href="/mails">Reset</a>{{end}}
-  </div>
-</form>
-{{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
-<section class="card">
-  {{template "mailtable" .Data.List.Rows}}
+<section class="card list" aria-label="Mail list">
+  <form class="filters" method="get" action="/mails" aria-label="Filter mails">
+    <div>
+      <label for="state">State</label>
+      <select id="state" name="state">
+        <option value="">any</option>
+        {{range .Data.States}}<option value="{{.}}"{{if eq (print .) $.Data.State}} selected{{end}}>{{status .}}</option>{{end}}
+      </select>
+    </div>
+    <div>
+      <label for="target">Target</label>
+      <select id="target" name="target">
+        <option value="">all</option>
+        {{range .Data.Targets}}<option value="{{.}}"{{if eq . $.Data.Target}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </div>
+    <div>
+      <label for="from">Received from</label>
+      <input id="from" name="from" type="date" value="{{.Data.From}}">
+    </div>
+    <div>
+      <label for="to">Received to</label>
+      <input id="to" name="to" type="date" value="{{.Data.To}}">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="secondary">Filter</button>
+      {{if .Data.Filtered}}<a href="/mails">Reset</a>{{end}}
+    </div>
+  </form>
+  {{with .Data.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+  {{if .Data.List.Rows}}{{template "mailtable" .Data.List.Rows}}{{else if not .Data.Error}}<p class="empty">{{if .Data.Filtered}}No mail matches this filter. <a href="/mails">Reset the filter</a>.{{else}}No mails yet. Mails appear here once an application sends one to Postwerk.{{end}}</p>{{end}}
   {{if or .Data.PrevURL .Data.NextURL}}
   <nav class="pager" aria-label="Pages">
     {{if .Data.PrevURL}}<a href="{{.Data.PrevURL}}" rel="prev">← Newer</a>{{else}}<span></span>{{end}}

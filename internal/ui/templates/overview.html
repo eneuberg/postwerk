@@ -1,34 +1,69 @@
 {{define "content"}}
+{{$b := board .Data}}
 <div class="page-head">
   <h1>Overview</h1>
   <p class="muted">Last 24 hours, since {{when .Data.Since}}.</p>
 </div>
-<section class="targets" aria-label="Targets">
+
+<ul class="board" aria-label="Summary">
+  <li class="board-part">
+    <span class="lamp lamp-{{$b.TargetsLamp}}" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Targets</p>
+      <p class="board-value">{{if $b.Down}}{{$b.Down}} of {{$b.Targets}} down: {{range $i, $n := $b.DownNames}}{{if $i}}, {{end}}<a href="#line-{{$n}}">{{$n}}</a>{{end}}{{else if $b.Targets}}{{if eq $b.Targets 1}}The target is up{{else}}All {{$b.Targets}} up{{end}}{{else}}None configured{{end}}{{if $b.Unconfigured}}; {{$b.Unconfigured}} not configured{{end}}</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-{{$b.QueueLamp}}" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Queue</p>
+      <p class="board-value">{{if $b.Queued}}<a href="/mails?state=queued">{{$b.Queued}} waiting</a>, the oldest for {{ago $b.Oldest}}{{else}}Empty{{end}}</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-{{$b.RecentLamp}}" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Recipients, 24 h</p>
+      <p class="board-value">{{if or $b.Failed $b.Unknown}}{{if $b.Failed}}<a href="/mails?state=failed">{{$b.Failed}} failed</a>{{end}}{{if and $b.Failed $b.Unknown}}, {{end}}{{if $b.Unknown}}<a href="/mails?state=unknown">{{$b.Unknown}} unknown</a>{{end}} of {{$b.Recipients}}{{else if $b.Recipients}}No problems in {{$b.Recipients}}{{else}}None{{end}}</p>
+    </div>
+  </li>
+</ul>
+
+<section class="lines" aria-labelledby="lines-h">
+  <h2 id="lines-h" class="section-title">Targets</h2>
 {{range .Data.Targets}}
-  <article class="card target">
-    <header class="target-head">
-      <h2><a href="/mails?target={{.Target}}">{{.Target}}</a></h2>
+  {{$t := .}}
+  <article class="line" id="line-{{.Target}}">
+    <header class="line-head">
+      <h3><a href="/mails?target={{.Target}}">{{.Target}}</a></h3>
+      <p class="line-tags">
+      {{with .Health}}{{if .Since.IsZero}}{{else if .Down}}<span class="health health-down" title="Sending is paused; a probe (connect and log in, no mail) runs with a growing pause until it succeeds."><span class="lamp lamp-failed" aria-hidden="true"></span>down ({{.Reason}}) since {{when .Since}}</span>{{else}}<span class="health health-up" title="The worker sends to this target."><span class="lamp lamp-handed_off" aria-hidden="true"></span>up since {{when .Since}}</span>{{end}}{{end}}
       {{if not .Configured}}<span class="tag tag-warn" title="Deliveries for this target are in the store, but it is not configured: nobody works on its queue.">not configured</span>{{end}}
       {{if .Optional}}<span class="tag" title="Failures here are warnings and do not change a mail's state.">optional</span>{{end}}
-      {{with .Health}}{{if .Since.IsZero}}{{else if .Down}}<span class="tag tag-bad" title="Sending is paused; a probe (connect and log in, no mail) runs with a growing pause until it succeeds.">down ({{.Reason}}) since {{when .Since}}</span>{{else}}<span class="tag tag-ok" title="The worker sends to this target.">up since {{when .Since}}</span>{{end}}{{end}}
+      </p>
     </header>
-    <dl class="figures">
-      <div><dt>Queued now</dt><dd>{{if .Queued}}<a href="/mails?target={{.Target}}&amp;state=queued">{{.Queued}}</a>{{else}}0{{end}}</dd></div>
-      <div><dt>Oldest queued</dt><dd>{{if .Queued}}{{ago .OldestQueuedAge}}{{else}}—{{end}}</dd></div>
-      <div><dt>Last 24&nbsp;h</dt><dd>{{.RecentTotal}}</dd></div>
+    <dl class="readouts">
+      <div><dt>Queued now</dt><dd class="num">{{if .Queued}}<a href="/mails?target={{.Target}}&amp;state=queued">{{.Queued}}</a>{{else}}0{{end}}</dd></div>
+      <div><dt>Oldest queued</dt><dd class="num">{{if .Queued}}{{ago .OldestQueuedAge}}{{else}}<span class="muted">—</span>{{end}}</dd></div>
+      <div><dt>Recipients, 24 h</dt><dd class="num">{{.RecentTotal}}</dd></div>
     </dl>
-    <ul class="counts" aria-label="Recipients of the last 24 hours by status" title="Recipients of mails received in the last 24 hours, by status">
-      {{range .Recent}}<li class="{{if not .Count}}zero{{end}}"><span class="st {{statusClass .Status}}">{{status .Status}}</span> <span class="num">{{.Count}}</span></li>{{end}}
-    </ul>
+    <div class="mix">
+      {{with mix .}}<svg class="mix-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true" focusable="false">{{range .}}<rect class="seg seg-{{.Status}}" x="{{printf "%.2f" .X}}" y="0" width="{{printf "%.2f" .W}}" height="8"/>{{end}}</svg>{{else}}<div class="mix-bar mix-empty" aria-hidden="true"></div>{{end}}
+      <ul class="counts" aria-label="Recipients of the last 24 hours at {{.Target}}, by status" title="Recipients of mails received in the last 24 hours, by status">
+        {{range .Recent}}<li class="{{if not .Count}}zero{{end}}"><span class="st {{statusClass .Status}}">{{status .Status}}</span> <span class="num">{{.Count}}</span></li>{{end}}
+      </ul>
+    </div>
   </article>
 {{else}}
-  <p class="muted">No targets.</p>
+  <p class="empty">No targets are configured. Set <span class="mono">POSTWERK_TARGETS</span> (docs/configuration.md).</p>
 {{end}}
 </section>
 
-<section class="card">
-  <h2>Recent problems</h2>
-  <p class="muted">Mails that are failed, unknown or partial, newest first. <a href="/mails?state=failed">All failed</a> · <a href="/mails?state=unknown">all unknown</a> · <a href="/mails?state=partial">all partial</a></p>
-  {{template "mailtable" .Data.Problems}}
+<section class="card" aria-labelledby="problems-h">
+  <div class="card-head">
+    <h2 id="problems-h">Recent problems</h2>
+    <p class="muted">The newest mails that are failed, unknown or partial. Show all <a href="/mails?state=failed">failed</a>, <a href="/mails?state=unknown">unknown</a>, <a href="/mails?state=partial">partial</a>.</p>
+  </div>
+  {{if .Data.Problems}}{{template "mailtable" .Data.Problems}}{{else}}<p class="empty">No mail is failed, unknown or partial.</p>{{end}}
 </section>
 {{end}}
