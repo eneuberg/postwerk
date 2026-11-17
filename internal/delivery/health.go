@@ -71,6 +71,11 @@ type health struct {
 	// failedProbes counts the probes that failed since it began.
 	reported     bool
 	failedProbes int
+	// What a failed store write left to do, retried at each step of the
+	// worker (retryPending): target.down and target.recovered events in
+	// their order, and a resume. In memory only, like the rest.
+	pending   []store.Event
+	resumeDue bool
 }
 
 func (h *health) get() (down bool, since time.Time, reason Reason) {
@@ -119,9 +124,46 @@ func (w *worker) reportDown(ctx context.Context, now time.Time, reason Reason, c
 		return
 	}
 	w.health.reported = true
-	if err := w.opts.Store.Append(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetDown,
-		Level: w.problem(), Code: code, Text: join(string(reason), detail)}); err != nil {
-		w.log.Error("writing target.down failed", "err", err)
+	w.writeEvent(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetDown,
+		Level: w.problem(), Code: code, Text: join(string(reason), detail)})
+}
+
+// writeEvent appends a health event. If the store cannot take it (a full
+// volume, D50), the event waits in memory and retryPending writes it later
+// with its own time; events stay in order.
+func (w *worker) writeEvent(ctx context.Context, e store.Event) {
+	if len(w.health.pending) == 0 {
+		err := w.appendHealth(ctx, e)
+		if err == nil {
+			return
+		}
+		w.log.Error("writing "+e.Kind+" failed; trying again", "err", err)
+	}
+	w.health.pending = append(w.health.pending, e)
+}
+
+func (w *worker) appendHealth(ctx context.Context, e store.Event) error {
+	if w.opts.appendHealth != nil {
+		return w.opts.appendHealth(ctx, e)
+	}
+	return w.opts.Store.Append(ctx, e)
+}
+
+// retryPending writes the events a failed write left behind and runs a
+// resume that failed. It logs only the success: the failure was logged
+// once, and the store's own trouble is reported elsewhere (disk.low,
+// /readyz).
+func (w *worker) retryPending(ctx context.Context) {
+	for len(w.health.pending) > 0 {
+		e := w.health.pending[0]
+		if err := w.appendHealth(ctx, e); err != nil {
+			return
+		}
+		w.health.pending = w.health.pending[1:]
+		w.log.Info("written late: "+e.Kind, "event_time", e.Time)
+	}
+	if w.health.resumeDue {
+		w.resume(ctx, w.opts.Now())
 	}
 }
 
@@ -161,21 +203,24 @@ func (w *worker) whileDown(ctx context.Context) {
 	if !w.health.reported {
 		return // down too briefly for target.down, so no target.recovered either
 	}
-	if err := w.opts.Store.Append(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetRecovered,
-		Level: store.Info, Text: fmt.Sprintf("%s, down for %s", was, down)}); err != nil {
-		w.log.Error("writing target.recovered failed", "err", err)
-	}
+	w.writeEvent(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetRecovered,
+		Level: store.Info, Text: fmt.Sprintf("%s, down for %s", was, down)})
 }
 
 // resume makes every queued delivery of the target due now, so the mails
 // that waited go out at once instead of after their own backoff. It runs
-// when the worker starts and when the target comes back (D45).
+// when the worker starts and when the target comes back (D45). If it
+// fails, the mails keep their backoff and retryPending tries again.
 func (w *worker) resume(ctx context.Context, now time.Time) {
 	n, err := w.opts.Store.MakeDue(ctx, w.target.Name, now)
 	if err != nil {
-		w.log.Error("making queued deliveries due failed; they keep their backoff", "err", err)
+		if !w.health.resumeDue && ctx.Err() == nil {
+			w.log.Error("making queued deliveries due failed; trying again", "err", err)
+		}
+		w.health.resumeDue = true
 		return
 	}
+	w.health.resumeDue = false
 	if n > 0 {
 		w.log.Info("queued deliveries due now", "deliveries", n)
 	}

@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,6 +322,9 @@ type harnessOpts struct {
 	probeInterval time.Duration
 	// downAfterProbes is Options.DownAfterProbes; 0 reports at once.
 	downAfterProbes int
+	// failHealth, while true, fails the writes of target.down and
+	// target.recovered, as a full volume would.
+	failHealth *atomic.Bool
 }
 
 // newSealer returns a Sealer with one new key.
@@ -393,6 +397,14 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 	}
 	if ho.rootCAs != nil {
 		opts.rootCAs = ho.rootCAs.Pool
+	}
+	if ho.failHealth != nil {
+		opts.appendHealth = func(ctx context.Context, e store.Event) error {
+			if ho.failHealth.Load() {
+				return errors.New("database or disk is full")
+			}
+			return st.Append(ctx, e)
+		}
 	}
 	if ho.probeInterval > 0 {
 		opts.ProbeInterval, opts.ProbeMaxInterval = ho.probeInterval, ho.probeInterval

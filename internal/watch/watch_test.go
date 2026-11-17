@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/store"
+	"github.com/eneuberg/postwerk/internal/testutil"
 )
 
 var ctx = context.Background()
@@ -22,11 +23,18 @@ type fakeStore struct {
 	failNext bool
 	writeErr error
 	probes   int
+	// appendErr, if set, fails every Append, as a full volume does.
+	appendErr error
+	appends   int
 }
 
 func (f *fakeStore) Append(_ context.Context, e store.Event) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.appends++
+	if f.appendErr != nil {
+		return f.appendErr
+	}
 	if f.failNext {
 		f.failNext = false
 		return errors.New("disk full")
@@ -206,6 +214,80 @@ func TestDiskStoreNotWritable(t *testing.T) {
 	d.Check(ctx)
 	if st.probes != 1 || d.Ready() != nil {
 		t.Fatalf("probes = %d, ready = %v", st.probes, d.Ready())
+	}
+}
+
+// A volume that is full before disk.low could be written: Run tries the
+// write and the probe again at the next interval, not in a loop, and ingress
+// asking all the time does not speed it up.
+func TestDiskFullDoesNotSpin(t *testing.T) {
+	full := errors.New("database or disk is full")
+	st, fs := &fakeStore{writeErr: full, appendErr: full}, &fakeFS{}
+	fs.free.Store(0)
+	logs := &testutil.SafeBuffer{}
+	d, err := NewDisk(ctx, DiskOptions{Store: st, Dir: "/data", MinFree: 64 * mb, Statfs: fs.statfs,
+		Logger: testutil.Logger(logs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); d.Run(rctx) }()
+	for end := time.Now().Add(300 * time.Millisecond); time.Now().Before(end); {
+		d.Allow(0) // ingress refusing mail
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	st.mu.Lock()
+	appends, probes := st.appends, st.probes
+	st.mu.Unlock()
+	// The first check, and at most one more for the wake-up NewDisk left.
+	if appends < 1 || appends > 2 || probes > 2 {
+		t.Fatalf("%d appends and %d probes in 300 ms; want the next ones only after %s", appends, probes, DiskInterval)
+	}
+	for _, msg := range []string{"writing the disk.low event failed", "the store cannot be written"} {
+		if n := strings.Count(logs.String(), msg); n != 1 {
+			t.Fatalf("%q logged %d times, want once", msg, n)
+		}
+	}
+}
+
+// A lasting failure is logged when it starts and then every
+// failureReminder; the recovery once.
+func TestDiskFailureLogLimited(t *testing.T) {
+	full := errors.New("database or disk is full")
+	st, fs := &fakeStore{writeErr: full, appendErr: full}, &fakeFS{}
+	fs.free.Store(0)
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	logs := &testutil.SafeBuffer{}
+	d, err := NewDisk(ctx, DiskOptions{Store: st, Dir: "/data", MinFree: 64 * mb, Statfs: fs.statfs,
+		Logger: testutil.Logger(logs), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := func(msg string) int { return strings.Count(logs.String(), msg) }
+	for range 30 { // 5 minutes of checks, less one
+		d.Check(ctx)
+		now = now.Add(DiskInterval)
+	}
+	if a, p := count("writing the disk.low event failed"), count("the store cannot be written"); a != 1 || p != 1 {
+		t.Fatalf("logged %d and %d times in 5 minutes, want once each", a, p)
+	}
+	now = now.Add(DiskInterval)
+	d.Check(ctx)
+	if a, p := count("writing the disk.low event failed"), count("the store cannot be written"); a != 2 || p != 2 {
+		t.Fatalf("no reminder after 5 minutes: %d and %d", a, p)
+	}
+	st.mu.Lock()
+	st.writeErr, st.appendErr = nil, nil
+	st.mu.Unlock()
+	d.Check(ctx)
+	if k := st.kinds(); len(k) != 1 || k[0] != "disk.low error" {
+		t.Fatalf("events = %q", k)
+	}
+	if count("the store can be written again") != 1 || count("the disk.low event is written") != 1 {
+		t.Fatalf("recovery not logged once: %s", logs.String())
 	}
 }
 

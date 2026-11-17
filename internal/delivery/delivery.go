@@ -81,6 +81,9 @@ type Options struct {
 
 	// rootCAs replaces the system roots. Only tests set it.
 	rootCAs *x509.CertPool
+	// appendHealth replaces Store.Append for target.down and
+	// target.recovered. Only tests set it, to fail those writes.
+	appendHealth func(context.Context, store.Event) error
 }
 
 // Manager runs one worker per target.
@@ -234,6 +237,7 @@ func (w *worker) run(ctx context.Context) {
 	// mails queued before the start (D45).
 	w.resume(ctx, w.opts.Now())
 	for ctx.Err() == nil {
+		w.retryPending(ctx)
 		if down, _, _ := w.health.get(); down {
 			w.whileDown(ctx)
 			continue

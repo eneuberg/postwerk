@@ -138,3 +138,39 @@ func TestAuthDownIsImmediate(t *testing.T) {
 		t.Fatalf("target.down = %+v", d)
 	}
 }
+
+// target.down and target.recovered that could not be written (a full
+// volume) are written later, in order and with their own times, once the
+// store takes writes again.
+func TestHealthEventsWrittenLate(t *testing.T) {
+	f := newTarget(t, plain, nil, "", "")
+	g := newGate(t, f.addr)
+	var full atomic.Bool
+	full.Store(true)
+	h := startPostwerk(t, []config.Target{gated("late", g)},
+		harnessOpts{downAfterProbes: 1, probeInterval: 100 * time.Millisecond, failHealth: &full})
+
+	id := h.send([]string{canary}, testMsg)
+	testutil.Eventually(t, timeout, "attempt and a probe fail", func() bool { return g.conns.Load() >= 2 })
+	g.open.Store(true)
+	h.waitStatus(id, "late", store.HandedOff)
+	time.Sleep(200 * time.Millisecond) // the worker keeps trying while the store is full
+	if n := len(h.targetEvents("late", store.KindTargetDown)); n != 0 {
+		t.Fatalf("%d target.down written while the store was full", n)
+	}
+	full.Store(false)
+	testutil.Eventually(t, timeout, "both events written late", func() bool {
+		return len(h.targetEvents("late", store.KindTargetRecovered)) == 1
+	})
+	down := h.targetEvents("late", store.KindTargetDown)
+	rec := h.targetEvents("late", store.KindTargetRecovered)
+	if len(down) != 1 || down[0].Seq > rec[0].Seq || down[0].Time.After(rec[0].Time) {
+		t.Fatalf("down = %+v, recovered = %+v", down, rec)
+	}
+	if !rec[0].Time.Before(time.Now().Add(-150 * time.Millisecond)) {
+		t.Fatalf("target.recovered has the time it was written (%v), not when the target came back", rec[0].Time)
+	}
+	if n := strings.Count(h.logs.String(), "failed; trying again"); n != 1 {
+		t.Fatalf("logged the failed writes %d times, want once", n)
+	}
+}

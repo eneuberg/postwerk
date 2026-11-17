@@ -22,8 +22,12 @@ const (
 )
 
 // DiskInterval is how often the free space is checked besides the checks
-// ingress asks for.
+// ingress asks for. A failed event write or store probe is tried again at
+// the next interval, never sooner.
 const DiskInterval = 10 * time.Second
+
+// failureReminder is how often a failure that lasts is logged again.
+const failureReminder = 5 * time.Minute
 
 // ErrNoStatfs: the operating system gives no free-space figure here.
 var ErrNoStatfs = errors.New("free space cannot be read on this operating system")
@@ -68,6 +72,35 @@ type Disk struct {
 	free   uint64
 	total  uint64
 	off    bool
+	// Only Check uses these: the lasting failures it logs, so a full volume
+	// gives one line per failure and a reminder, not one per check.
+	probeFail  failure
+	appendFail failure
+}
+
+// failure rate-limits the log line of a failure that lasts.
+type failure struct {
+	since, logged time.Time // zero while it works
+}
+
+// log writes the line when the failure starts and every failureReminder
+// while it lasts.
+func (f *failure) log(l *slog.Logger, now time.Time, msg string, err error) {
+	if !f.since.IsZero() && now.Sub(f.logged) < failureReminder {
+		return
+	}
+	if f.since.IsZero() {
+		f.since = now
+	}
+	f.logged = now
+	l.Error(msg, "err", err, "failing_since", f.since)
+}
+
+// ok ends a failure and reports whether there was one.
+func (f *failure) ok() bool {
+	was := !f.since.IsZero()
+	*f = failure{}
+	return was
 }
 
 // NewDisk returns a Disk. It reads the state the event log has, so a
@@ -151,12 +184,15 @@ func (d *Disk) measure() (uint64, bool) {
 		d.low = true
 	case d.low && free >= reserve+reserve/4:
 		d.low = false
+	default:
+		return free, d.low
 	}
-	if want := d.state(); want != d.logged {
-		select {
-		case d.wake <- struct{}{}:
-		default:
-		}
+	// The state changed: Run writes the event now, not at the next tick.
+	// Only a change wakes it; a write that failed waits for the tick, so a
+	// full volume cannot turn Run into a loop.
+	select {
+	case d.wake <- struct{}{}:
+	default:
 	}
 	return free, d.low
 }
@@ -196,10 +232,14 @@ func (d *Disk) Check(ctx context.Context) {
 	}
 	if d.opts.Store.Writable() != nil {
 		if err := d.opts.Store.Probe(ctx); err != nil {
-			d.opts.Logger.Error("the store still cannot be written", "err", err)
+			d.probeFail.log(d.opts.Logger, d.opts.Now(), "the store cannot be written", err)
 		} else {
+			d.probeFail.ok()
 			d.opts.Logger.Info("the store can be written again")
 		}
+	} else if d.probeFail.ok() {
+		// Another write went through before the next probe.
+		d.opts.Logger.Info("the store can be written again")
 	}
 	d.measure()
 	d.mu.Lock()
@@ -223,8 +263,12 @@ func (d *Disk) Check(ctx context.Context) {
 	ectx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := d.opts.Store.Append(ectx, store.Event{Time: d.opts.Now(), Kind: want, Level: level, Text: text}); err != nil {
-		d.opts.Logger.Error("writing the "+want+" event failed; trying again", "err", err)
+		d.appendFail.log(d.opts.Logger, d.opts.Now(), "writing the "+want+" event failed; trying again every "+
+			DiskInterval.String(), err)
 		return
+	}
+	if d.appendFail.ok() {
+		d.opts.Logger.Info("the " + want + " event is written")
 	}
 	if level == store.Error {
 		d.opts.Logger.Error(msg, "free_bytes", free, "reserve_bytes", d.opts.MinFree)

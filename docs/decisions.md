@@ -697,6 +697,11 @@ only trace was an error log line, because no event could be written any more.
 - **The store's own word counts too.** A write that fails with `SQLITE_FULL`, `IOERR`, `READONLY` or `CANTOPEN`
   (quotas, a file system remounted read-only) makes `/readyz` fail until a write succeeds; the check probes with a
   one-page write. That case has no event, because none can be written: the log line and the failing probe say it.
+- **No loop while it is full.** If the volume fills before `disk.low` is written, the write and the probe are tried
+  again every 10 s, not at once; only a change of state wakes the check early. The failure is logged when it starts
+  and every 5 minutes while it lasts. `target.down` and `target.recovered` that cannot be written wait in memory and
+  are written later with their own time and in order; a resume that fails is tried again. A restart in between
+  loses them (the target state is in memory anyway, D45).
 - **Other systems.** `statfs` is read on Linux, macOS and FreeBSD. Elsewhere the check logs that it is off, and the
   store's own write errors still make `/readyz` fail.
 
