@@ -389,20 +389,20 @@ what a reader may see: `query.Full` (the UI, and API tokens with role `admin`) r
 tokens with role `read`, the zero value) returns `j•••@e•••.com` and masks the `Message-ID` (`query.MaskMessageID`),
 and a pseudonymized mail returns no address at all. No function returns the stored message.
 
-**Statistics** (D73–D75, `query.Stats`, `store.Stats`). A mail counts in the bucket of its received time with the
-state it has now, by the same rule as the lists (required targets, or the filtered target); a delivery per target
-likewise. Retries, `delivery.rejected`, `delivery.not_allowed` and the folded ingress refusals (`failures=`,
-`rejected=`, `limited=`) count at their event time, and a target's down time runs from `target.down` to
-`target.recovered` (`store.TargetTransitions`). Buckets are aligned to multiples of their width since the Unix epoch,
-so in UTC. The store reads one hour per transaction: it streams the recipients of the hour's mails in the order of
-the index `mails_stats`, so a mail's rows come together, and counts them in Go with `statusCounts.summary`, the rule
-behind `Summarize`. An hour that is over is kept in memory, per width below an hour and per filter, until an event
-with the id of one of its mails arrives: every change of a recipient's status writes such an event in the same
-transaction, so the event log is the cache's change log. Each call first reads the events since the last one
-(`seq` above the last seen; more than 200,000 drop the cache), drops the hours they touch, and drops hours older than
-the shorter retention, because retention deletes records without an event. At most 250,000 counts (about 8 MiB; 90 days take about 160,000) are
-kept; the least recently used hours go first. Latency is kept as a histogram with steps of 100 ms below 2 s up to an
-hour above 10 h, and p50 and p95 are read from it, rounded down.
+**Statistics** (D73–D75, `query.Stats`, `store.Stats`). A mail counts in the bucket of its received time with the state
+it has now, by the same rule as the lists (required targets, or the filtered target); a delivery per target likewise.
+Retries, `delivery.rejected`, `delivery.not_allowed` and the folded ingress refusals (`failures=`, `rejected=`,
+`limited=`) count at their event time, and a target's down time runs from `target.down` to `target.recovered`
+(`store.TargetTransitions`). Buckets are aligned to multiples of their width since the Unix epoch, so in UTC. The store
+reads one hour per transaction: it streams the recipients of the hour's mails in the order of the index `mails_stats`,
+so a mail's rows come together, and counts them in Go with `statusCounts.summary`, the rule behind `Summarize`. An hour
+that is over is kept in memory, per width below an hour and per filter, until an event with the id of one of its mails
+arrives: every change of a recipient's status writes such an event in the same transaction, so the event log is the
+cache's change log. Each call first reads the events since the last one (`seq` above the last seen; more than 200,000
+drop the cache), drops the hours they touch, and drops hours older than the shorter retention, because retention deletes
+records without an event. At most 250,000 counts (about 8 MiB; 90 days take about 160,000) are kept; the least recently
+used hours go first. Latency is kept as a histogram with steps of 100 ms below 2 s up to an hour above 10 h, and p50 and
+p95 are read from it, rounded down.
 
 `internal/ui` is one `http.Handler` on the admin listener (`ui.NewServer` sets the timeouts). An outer layer sets the
 security headers on every response, refuses unknown `Host` headers and bounds the body; Go's

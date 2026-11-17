@@ -182,8 +182,8 @@ both name it. How the UI looks, and why: [design-system.md](design-system.md).
 | Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
 | Logout | `POST /logout` | |
 
-The navigation is Overview, Mails, Statistics, Settings. The old account addresses `GET /accounts` and `GET /accounts/{name}`
-redirect to their pages under `/settings`; the query of a redirected request is dropped.
+The navigation is Overview, Mails, Statistics, Settings. The old account addresses `GET /accounts` and
+`GET /accounts/{name}` redirect to their pages under `/settings`; the query of a redirected request is dropped.
 
 The state filter and every status shown are the derived summaries of architecture.md (`queued`, `sending`,
 `unknown`, `handed_off`, `failed`, `partial`, `skipped`); with a target filter they are the state at that target.

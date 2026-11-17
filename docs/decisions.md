@@ -1067,11 +1067,11 @@ The owner wants to see throughput and outcomes over hours and days, in the UI an
 mail in a bar were possible: when it arrived, or when something happened to it.
 
 - **A mail counts in the bucket it was received in, with the state it has now**, derived by the rule of the lists
-  (requirement D17, decision D24: the required targets; at the target when filtered). The bars then add up to the mails received, every mail is
-  in exactly one bar, and a bar answers "of what came in then, how much arrived?", the question after an incident.
-  The price: the newest bars still change while their mails are delivered, and a mail closed by an admin days later
-  changes an old bar. Counting hand-offs by their own time would show the target's pace better, but a mail retried
-  across midnight would count in two days, and the bars would add up to nothing.
+  (requirement D17, decision D24: the required targets; at the target when filtered). The bars then add up to the mails
+  received, every mail is in exactly one bar, and a bar answers "of what came in then, how much arrived?", the question
+  after an incident. The price: the newest bars still change while their mails are delivered, and a mail closed by an
+  admin days later changes an old bar. Counting hand-offs by their own time would show the target's pace better, but a
+  mail retried across midnight would count in two days, and the bars would add up to nothing.
 - **Events count at their own time**: retries, `delivery.rejected`, `delivery.not_allowed`, the folded ingress
   refusals (with the counts in their text) and the down time of a target from `target.down` to `target.recovered`.
   They are not states of a mail, and a refusal has no mail at all. Rejected and not-allowed recipients are events
@@ -1122,8 +1122,8 @@ at 50,000 mails a day is 1.5 million mails.
 - **Indexes** (`0010_stats.sql`): the covering `mails (received_at, sender, id)` and `events (kind, time)` for the
   counted kinds and the target transitions.
 
-Measured on generated databases of 90 days (`STATS_BENCH_PER_DAY=… go test ./internal/store -run
-TestStatsPerformance`, one container on a laptop):
+Measured on generated databases of 90 days, in one container on a laptop
+(`STATS_BENCH_PER_DAY=… go test ./internal/store -run TestStatsPerformance`):
 
 | Mails a day | Range | Not cached yet | Cached | After a day of changes | Longest transaction |
 |---|---|---|---|---|---|
