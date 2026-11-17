@@ -478,11 +478,62 @@ table.rcpt-table { min-width: 34rem; }
 table.accounts { min-width: 36rem; }
 .danger-zone { border-color: color-mix(in srgb, var(--failed-fg) 40%, var(--line)); }
 
+/* Sender keys: the list on the settings page, a sender's page, a new key */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+textarea, input[type="number"] {
+  width: 100%; padding: .45rem .6rem; font: inherit;
+  border: 1px solid var(--line-strong); border-radius: var(--r-2);
+  background: var(--surface); color: var(--text);
+}
+input[type="number"] { height: 2.5rem; font-variant-numeric: tabular-nums; }
+textarea { font-family: var(--mono); font-size: .875rem; line-height: 1.5; resize: vertical; min-height: 4.5rem; }
+textarea:hover { border-color: var(--text); }
+textarea:focus-visible, input[type="number"]:focus-visible { outline-offset: 0; border-color: var(--text); }
+table.senders { min-width: 52rem; }
+table.senders td { vertical-align: top; }
+table.senders .c-name a { font-weight: 600; }
+.keylist, .activity, .patterns, .steps { margin: 0; padding: 0; list-style: none; }
+.keylist li, .activity li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem var(--sp-2); line-height: 1.6; }
+.keylist .st .mono { font-size: .8125rem; color: var(--text); }
+.patterns li { line-height: 1.6; }
+.steps { display: grid; gap: var(--sp-2); }
+ol.steps { list-style: decimal; padding-left: 1.4rem; }
+ol.steps li::marker { color: var(--muted); }
+.new-sender { margin-bottom: var(--sp-4); }
+.new-sender form, .action form.wide { max-width: 40rem; }
+.policy-fields { border: none; margin: var(--sp-4) 0 0; padding: var(--sp-3) 0 0; border-top: 1px solid var(--line); }
+.policy-fields legend { font: 600 var(--fs-body)/1.3 var(--font); padding: 0; }
+.field-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--sp-4); }
+.readouts-wide { grid-template-columns: repeat(5, auto); gap: var(--sp-3) var(--sp-6); margin-bottom: var(--sp-2); }
+.readouts-wide dt { display: flex; align-items: center; gap: .4rem; }
+.readouts-wide .lamp { width: .7rem; height: .7rem; }
+.readouts .zero dd { color: var(--muted); font-weight: 400; }
+.readouts .zero .lamp { opacity: .55; }
+table.keys { min-width: 46rem; }
+table.keys td { vertical-align: middle; }
+table.keys tr.row-off td { color: var(--muted); }
+table.keys tr.row-off .mono { color: var(--muted); }
+table.keys .c-action { text-align: right; width: 1%; }
+.action-inline { text-align: left; display: inline-block; min-width: 7rem; }
+.action-inline summary { padding: .3rem var(--sp-3); font-size: var(--fs-table); }
+.action-inline[open] { display: block; min-width: 18rem; }
+.action-inline form { padding: var(--sp-2) var(--sp-3) var(--sp-3); }
+.key-card { max-width: 48rem; }
+.key-card label { margin-top: var(--sp-4); }
+textarea.key-field {
+  display: block; min-height: 0; height: auto; resize: none; field-sizing: content;
+  font-size: .9375rem; letter-spacing: .01em; overflow-wrap: anywhere; word-break: break-all;
+  padding: .7rem .75rem; border-width: 1.5px; border-color: var(--text); background: var(--surface-2);
+}
+.key-card .facts { margin-bottom: 0; }
+.done { font-weight: 600; }
+
 @media (max-width: 64rem) {
   .line { grid-template-columns: 1fr 1fr; }
   .line .mix { grid-column: 1 / -1; }
   .mail-grid { grid-template-columns: minmax(0, 1fr); }
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .readouts-wide { grid-template-columns: repeat(3, auto); }
 }
 
 @media (max-width: 40rem) {
@@ -506,6 +557,39 @@ table.accounts { min-width: 36rem; }
   .mail-sum { gap: var(--sp-2) var(--sp-5); }
   .ev { grid-template-columns: 4.2rem .9rem minmax(0, 1fr); }
   .ev::before { left: calc(4.2rem + var(--sp-2) + .45rem - 1px); }
+  .readouts-wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .field-pair { grid-template-columns: minmax(0, 1fr); }
+  textarea.key-field { font-size: .8125rem; }
+}
+
+/* Phones: a sender and a key become a small block each */
+@media (max-width: 40rem) {
+  table.senders, table.keys { min-width: 0; }
+  table.senders thead, table.keys thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  table.senders tr, table.keys tr { display: grid; gap: .25rem var(--sp-3); padding: var(--sp-3) 0; border-bottom: 1px solid var(--line); }
+  table.senders tbody tr:last-child, table.keys tbody tr:last-child { border-bottom: none; }
+  table.senders td, table.keys td { display: block; padding: 0; border: none; }
+  table.senders tr { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name st" "keys keys" "policy policy" "act act" "used used"; }
+  table.senders .c-name { grid-area: name; }
+  table.senders .c-st { grid-area: st; }
+  table.senders .c-keys { grid-area: keys; }
+  table.senders .c-policy { grid-area: policy; }
+  table.senders .c-act { grid-area: act; }
+  table.senders .c-used { grid-area: used; color: var(--muted); font-size: var(--fs-sm); }
+  table.senders .c-used::before { content: "Last login "; }
+  table.keys tr { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "id st" "created created" "exp exp" "used used" "rev rev" "action action"; }
+  table.keys .c-id { grid-area: id; }
+  table.keys .c-st { grid-area: st; }
+  table.keys .c-created { grid-area: created; }
+  table.keys .c-exp { grid-area: exp; }
+  table.keys .c-used { grid-area: used; }
+  table.keys .c-rev { grid-area: rev; }
+  table.keys .c-action { grid-area: action; text-align: left; width: auto; }
+  table.keys .c-created::before { content: "Created "; color: var(--muted); }
+  table.keys .c-exp::before { content: "Valid until "; color: var(--muted); }
+  table.keys .c-used::before { content: "Last login "; color: var(--muted); }
+  table.keys .c-rev::before { content: "Revoked "; color: var(--muted); }
+  .action-inline[open] { min-width: 0; }
 }
 
 /* Phones: a mail list row and a recipient row become a small block each */

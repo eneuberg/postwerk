@@ -28,7 +28,9 @@ type view struct {
 }
 
 func parseTemplates() (map[string]*template.Template, error) {
-	base, err := template.New("layout.html").Funcs(funcs).ParseFS(templateFS, "templates/layout.html")
+	// Files whose name starts with "_" hold parts that every page may use.
+	base, err := template.New("layout.html").Funcs(funcs).Funcs(senderFuncs).
+		ParseFS(templateFS, "templates/layout.html", "templates/_*.html")
 	if err != nil {
 		return nil, fmt.Errorf("ui: parse layout: %w", err)
 	}
@@ -39,7 +41,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 	pages := map[string]*template.Template{}
 	for _, n := range names {
 		name := strings.TrimSuffix(path.Base(n), ".html")
-		if name == "layout" {
+		if name == "layout" || strings.HasPrefix(name, "_") {
 			continue
 		}
 		t, err := template.Must(base.Clone()).ParseFS(templateFS, n)

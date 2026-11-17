@@ -306,7 +306,8 @@ func TestNoContentOnAnyReachablePage(t *testing.T) {
 		seen := map[string]bool{}
 		queue := []string{"/"}
 		for len(queue) > 0 && len(seen) < 400 {
-			p := strings.ReplaceAll(queue[0], "&amp;", "&")
+			// A browser never sends the fragment.
+			p, _, _ := strings.Cut(strings.ReplaceAll(queue[0], "&amp;", "&"), "#")
 			queue = queue[1:]
 			if seen[p] {
 				continue

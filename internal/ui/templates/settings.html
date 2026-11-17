@@ -60,4 +60,58 @@
   </div>
   </div>
 </section>
+
+{{$s := .Data.Senders}}
+<section class="settings-section" id="senders" aria-labelledby="senders-h">
+  <div class="section-head">
+    <h2 id="senders-h">Sender keys</h2>
+    <p class="muted">One sender per application. It logs in to SMTP with its name as the user and one of its keys as the password. Activity: the last 24 hours.</p>
+  </div>
+  <div class="card">
+    {{if $s.Senders}}
+    <div class="table-wrap">
+    <table class="senders">
+      <thead><tr><th scope="col">Sender</th><th scope="col">State</th><th scope="col">Keys</th><th scope="col">Policy</th><th scope="col">Last login</th><th scope="col">Last 24 hours</th></tr></thead>
+      <tbody>
+      {{range $s.Senders}}
+      <tr>
+        <td class="c-name"><a href="/settings/senders/{{.Name}}">{{.Name}}</a> {{template "source" .}}</td>
+        <td class="c-st"><span class="st st-sm {{.State.Class}}">{{.State.Word}}</span></td>
+        <td class="c-keys">{{template "keylist" .}}</td>
+        <td class="c-policy">{{template "policysummary" .}}</td>
+        <td class="c-used nowrap num">{{stamp .LastUsed}}</td>
+        <td class="c-act">{{template "activity" .}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p class="empty">No senders yet. {{if $s.Managed}}Create one below; nobody can send through Postwerk until a sender exists.{{else}}Add one to the senders file with <span class="mono">postwerk gen-sender NAME</span>.{{end}}</p>
+    {{end}}
+  </div>
+
+  {{if $s.Managed}}
+  <details class="action new-sender"{{if $s.Error}} open{{end}}>
+    <summary>New sender…</summary>
+    <form method="post" action="/settings/senders" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      {{with $s.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+      <p>Creates the sender in the database with its first key. The key is shown once, on the next page.</p>
+      <label for="sender-name">Name</label>
+      <input id="sender-name" name="name" type="text" value="{{$s.Form.Name}}" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" pattern="[a-z0-9][a-z0-9._\-]{0,63}" required aria-describedby="sender-name-note">
+      <p id="sender-name-note" class="muted small-inline">The application's SMTP user name, for example <span class="mono">shop</span>. Lower-case letters, digits, '.', '_' and '-'.</p>
+      {{template "policyfields" $s.Form}}
+      <label for="sender-expires">Key valid until <span class="muted">(optional, end of the day, UTC)</span></label>
+      <input id="sender-expires" name="expires" type="date" value="{{$s.Form.Expires}}" min="{{$s.Today}}">
+      <label for="sender-current">Your current password</label>
+      <input id="sender-current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit">Create sender</button></div>
+    </form>
+  </details>
+  {{else}}
+  {{with $s.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{end}}
+  <p class="muted small">Senders are kept in the senders file (<span class="mono">POSTWERK_SENDER_KEYS=file</span>): add a key with <span class="mono">postwerk gen-sender NAME</span> and its line in the file. To create and rotate keys here, set <span class="mono">POSTWERK_SENDER_KEYS</span> to <span class="mono">both</span> or <span class="mono">db</span>.</p>
+  {{end}}
+</section>
 {{end}}

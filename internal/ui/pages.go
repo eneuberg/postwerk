@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/query"
@@ -41,11 +42,12 @@ type mailsView struct {
 	List    query.ListPage
 	States  []store.Status
 	Targets []string
+	Senders []string
 	// The filter as given, for the form.
-	State, Target, From, To string
-	Filtered                bool
-	PrevURL, NextURL        string
-	Error                   string
+	State, Target, Sender, Key, From, To string
+	Filtered                             bool
+	PrevURL, NextURL                     string
+	Error                                string
 }
 
 // mails lists mails with filters and pages (U10). Filters are GET
@@ -54,14 +56,18 @@ func (u *UI) mails(w http.ResponseWriter, r *http.Request, sess session) {
 	q := r.URL.Query()
 	v := mailsView{
 		Search: newSearchView(query.ByAny),
-		States: query.States, Targets: u.opts.Query.Targets(),
-		State: q.Get("state"), Target: q.Get("target"), From: q.Get("from"), To: q.Get("to"),
+		States: query.States, Targets: u.opts.Query.Targets(), Senders: u.opts.Query.SenderNames(),
+		State: q.Get("state"), Target: q.Get("target"), Sender: q.Get("sender"), Key: strings.TrimSpace(q.Get("key")),
+		From: q.Get("from"), To: q.Get("to"),
 	}
-	v.Filtered = v.State != "" || v.Target != "" || v.From != "" || v.To != ""
+	v.Filtered = v.State != "" || v.Target != "" || v.Sender != "" || v.Key != "" || v.From != "" || v.To != ""
 	if v.Target != "" && !slices.Contains(v.Targets, v.Target) {
 		v.Targets = append(v.Targets, v.Target) // a target no longer configured
 	}
-	f := query.ListFilter{State: v.State, Target: v.Target}
+	if v.Sender != "" && !slices.Contains(v.Senders, v.Sender) {
+		v.Senders = append(v.Senders, v.Sender) // a sender in no source any more
+	}
+	f := query.ListFilter{State: v.State, Target: v.Target, Sender: v.Sender, KeyID: v.Key}
 	var bad bool
 	f.From, bad = parseDay(v.From)
 	if !bad {
@@ -89,7 +95,8 @@ func (u *UI) mails(w http.ResponseWriter, r *http.Request, sess session) {
 	v.List = list
 	pageURL := func(n int) string {
 		p := url.Values{}
-		for _, kv := range [][2]string{{"state", v.State}, {"target", v.Target}, {"from", v.From}, {"to", v.To}} {
+		for _, kv := range [][2]string{{"state", v.State}, {"target", v.Target}, {"sender", v.Sender}, {"key", v.Key},
+			{"from", v.From}, {"to", v.To}} {
 			if kv[1] != "" {
 				p.Set(kv[0], kv[1])
 			}
@@ -113,7 +120,7 @@ func (u *UI) mails(w http.ResponseWriter, r *http.Request, sess session) {
 
 // filterProblem names what was wrong, from a fixed set of texts.
 func filterProblem(err error) string {
-	for _, p := range []string{"page", "state", "target", "from is after to"} {
+	for _, p := range []string{"page", "state", "target", "sender", "key", "from is after to"} {
 		if err.Error() == query.ErrInvalid.Error()+": "+p {
 			return p + "."
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,6 +32,8 @@ type mailView struct {
 	// Actions holds one entry per delivery, in the order of Mail.Deliveries.
 	Actions []deliveryActions
 	MaxNote int
+	// SenderKnown: the mail's sender is in a source, so its page exists.
+	SenderKnown bool
 }
 
 type deliveryActions struct {
@@ -67,7 +70,7 @@ func (u *UI) showMail(w http.ResponseWriter, r *http.Request, sess session, id s
 		u.fail(w, r, http.StatusServiceUnavailable, "Opening the mail could not be recorded, so it is not shown. Please try again later.")
 		return
 	}
-	v := mailView{Mail: m, MaxNote: resolve.MaxNote}
+	v := mailView{Mail: m, MaxNote: resolve.MaxNote, SenderKnown: slices.Contains(u.opts.Query.SenderNames(), m.Sender)}
 	for _, d := range m.Deliveries {
 		var a deliveryActions
 		a.Close, a.Resend = u.opts.Resolve.Available(d, m.Stored)

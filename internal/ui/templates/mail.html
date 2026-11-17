@@ -8,7 +8,7 @@
 </div>
 <dl class="mail-sum">
   <div><dt>Received</dt><dd class="num">{{when $m.ReceivedAt}}</dd></div>
-  <div><dt>Sender (application)</dt><dd>{{$m.Sender}}</dd></div>
+  <div><dt>Sender (application)</dt><dd>{{if $v.SenderKnown}}<a href="/settings/senders/{{$m.Sender}}" title="The sender's keys and policy">{{$m.Sender}}</a>{{else}}{{$m.Sender}}{{end}}</dd></div>
   <div><dt>Recipients</dt><dd class="num">{{len $m.Recipients}}</dd></div>
   <div><dt>Size</dt><dd class="num">{{size $m.Size}}</dd></div>
 </dl>
@@ -94,6 +94,20 @@
     <div><dt>SMTPUTF8</dt><dd>{{if $m.Params.SMTPUTF8}}yes{{else}}no{{end}}</dd></div>
     <div><dt>SIZE declared</dt><dd>{{if $m.Params.DeclaredSize}}{{$m.Params.DeclaredSize}} bytes{{else}}<span class="muted">not given</span>{{end}}</dd></div>
   </dl>
+  <h3 id="audit-h">Sent by</h3>
+  {{with $m.Audit}}
+  {{if or .KeyID .AuthMech .ClientIP}}
+  <dl class="facts facts-list" aria-labelledby="audit-h">
+    <div><dt>Credential</dt><dd>{{if .KeyID}}key <a class="mono" href="/mails?key={{.KeyID}}" title="Mails sent with this key">{{.KeyID}}</a>{{else if .AuthMech}}password{{else}}<span class="muted">none</span>{{end}}{{with .KeySource}} <span class="tag">{{if eq . "db"}}database{{else}}senders file{{end}}</span>{{end}}</dd></div>
+    <div><dt>Client address</dt><dd>{{with .ClientIP}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">not recorded</span>{{end}}</dd></div>
+    <div><dt>TLS</dt><dd>{{with .TLSVersion}}{{.}}{{with $m.Audit.TLSCipher}}<br><span class="mono break small-inline">{{.}}</span>{{end}}{{else}}<span class="muted">none</span>{{end}}</dd></div>
+    <div><dt>EHLO</dt><dd>{{with .EHLO}}<span class="mono break">{{.}}</span>{{else}}<span class="muted">not given</span>{{end}}</dd></div>
+    <div><dt>AUTH</dt><dd>{{with .AuthMech}}{{.}}{{else}}<span class="muted">none</span>{{end}}</dd></div>
+  </dl>
+  {{else}}
+  <p class="muted small-inline">Not recorded: the mail came before Postwerk recorded the credential and the connection.</p>
+  {{end}}
+  {{end}}
   <h3>Recipients</h3>
   <ol class="rcpts" start="0">
     {{range $m.Recipients}}<li class="break">{{template "addr" .}}</li>{{end}}

@@ -1,0 +1,44 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$i := .Data.Issued}}
+<div class="page-head">
+  <h1>{{if $v.Rotated}}New key for <span class="mono id">{{$i.Sender}}</span>{{else}}Sender <span class="mono id">{{$i.Sender}}</span> created{{end}}</h1>
+</div>
+
+<section class="card key-card" aria-labelledby="key-h">
+  <h2 id="key-h" class="visually-hidden">The new key</h2>
+  <p class="notice notice-warn" role="status"><strong>Copy the key now.</strong> It is shown on this page only and never again: Postwerk keeps a hash of it, not the key. If it gets lost, add a new key and revoke this one.</p>
+  <label for="key">Key, the application's SMTP password</label>
+  <textarea id="key" class="key-field" rows="2" readonly autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="key-note">{{$i.Key}}</textarea>
+  <p id="key-note" class="muted small-inline">Click into the field, select all and copy. Store it as a secret of the application only, for example in its Kubernetes Secret; never in Git.</p>
+  <dl class="facts facts-row">
+    <div><dt>Key id</dt><dd><span class="mono">{{$i.KeyID}}</span></dd></div>
+    <div><dt>Valid until</dt><dd class="num">{{if $i.ExpiresAt.IsZero}}no expiry{{else}}{{when $i.ExpiresAt}}{{end}}</dd></div>
+  </dl>
+</section>
+
+<section class="card" aria-labelledby="smtp-h">
+  <h2 id="smtp-h">SMTP settings for the application</h2>
+  <dl class="facts facts-list smtp-settings">
+    <div><dt>Host</dt><dd>Postwerk's SMTP address; in Kubernetes its Service, for example <span class="mono">postwerk.mail.svc</span></dd></div>
+    <div><dt>Port</dt><dd>{{with $v.SMTPPort}}<span class="mono">{{.}}</span>{{else}}the port of <span class="mono">POSTWERK_SMTP_LISTEN</span>{{end}}</dd></div>
+    <div><dt>Security</dt><dd>STARTTLS; Postwerk accepts a login only after it</dd></div>
+    <div><dt>Authentication</dt><dd>PLAIN</dd></div>
+    <div><dt>User name</dt><dd><span class="mono">{{$i.Sender}}</span></dd></div>
+    <div><dt>Password</dt><dd>the key above</dd></div>
+  </dl>
+</section>
+
+{{if $v.Rotated}}
+<section class="card" aria-labelledby="next-h">
+  <h2 id="next-h">Finish the rotation</h2>
+  <ol class="steps">
+    <li>Put the new key into the application and reload or restart it.</li>
+    <li>On the sender's page, check that <em>Last login</em> of <span class="mono">{{$i.KeyID}}</span> moves (logins are noted once a minute).</li>
+    <li>{{if $v.Others}}Revoke the old key {{range $n, $id := $v.Others}}{{if $n}}, {{end}}<span class="mono">{{$id}}</span>{{end}}. Until then both keys work.{{else}}The sender had no other active key, so there is nothing to revoke.{{end}}</li>
+  </ol>
+</section>
+{{end}}
+
+<p class="done"><a href="/settings/senders/{{$i.Sender}}">Done: go to the sender's page</a> <span class="muted">(the key is not shown there)</span></p>
+{{end}}

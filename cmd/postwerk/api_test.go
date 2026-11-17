@@ -185,3 +185,99 @@ func TestServeAPI(t *testing.T) {
 		t.Fatalf("no folded ingress.auth_failed event at shutdown: %s", out.String())
 	}
 }
+
+// TestServeSenderAPI runs the whole program with senders in the database
+// only (POSTWERK_SENDER_KEYS=db): an admin token creates a sender through
+// the API, the application logs in with the key it got and sends a mail,
+// and the key is nowhere on stdout.
+func TestServeSenderAPI(t *testing.T) {
+	dir := t.TempDir()
+	tokenLine, err := auth.APITokenLine("ci", auth.RoleAdmin, "api-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		"store-key": []byte(keys.Generate(time.Now()) + "\n"), "api-tokens": []byte(tokenLine + "\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load([]string{
+		"POSTWERK_SMTP_LISTEN=127.0.0.1:0",
+		"POSTWERK_HTTP_LISTEN=127.0.0.1:0",
+		"POSTWERK_ADMIN_LISTEN=off",
+		"POSTWERK_API_LISTEN=127.0.0.1:0",
+		"POSTWERK_API_TOKENS_FILE=" + filepath.Join(dir, "api-tokens"),
+		"POSTWERK_SENDER_KEYS=db",
+		"POSTWERK_PSEUDONYMIZE_AFTER=0",
+		"POSTWERK_DATA=" + filepath.Join(dir, "pw.db"),
+		"POSTWERK_STORE_KEY_FILE=" + filepath.Join(dir, "store-key"),
+		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
+		"POSTWERK_SHUTDOWN_TIMEOUT=5s",
+		"POSTWERK_TARGETS=capture",
+		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://127.0.0.1:1",
+	}, readSecretFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testutil.SafeBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	addrs := make(chan [2]net.Addr, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, cfg, testutil.Logger(&out), &out, func(sm, _, _, a net.Addr) { addrs <- [2]net.Addr{sm, a} })
+	}()
+	var a [2]net.Addr
+	select {
+	case a = <-addrs:
+	case err := <-done:
+		t.Fatalf("serve returned early: %v", err)
+	}
+	req, _ := http.NewRequest("POST", "http://"+a[1].String()+"/v1/senders",
+		strings.NewReader(`{"name":"ci-app","policy":{"from":["*@example.test"]}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer ci.api-token")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	_, _ = body.ReadFrom(resp.Body)
+	resp.Body.Close()
+	key := regexp.MustCompile(`pwk_[a-z2-7]{12}_[a-z2-7]{52}`).FindString(body.String())
+	if resp.StatusCode != 201 || key == "" {
+		t.Fatalf("create: %d %s", resp.StatusCode, body.String())
+	}
+	sc, err := smtp.Dial(a[0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sc.Auth(sasl.NewPlainClient("", "ci-app", key)); err != nil {
+		t.Fatalf("login with the new key: %v", err)
+	}
+	if err := sc.SendMail("noreply@example.test", []string{"r@example.test"}, strings.NewReader("Subject: x\r\n\r\nhi\r\n")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := sc.Mail("someone@elsewhere.test", nil); err == nil {
+		t.Fatal("an envelope sender outside the policy was accepted")
+	}
+	sc.Close()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop")
+	}
+	s := out.String()
+	if !strings.Contains(s, `"kind":"sender.created","sender":"ci-app","actor":"ci"`) || !strings.Contains(s, `"kind":"mail.accepted"`) {
+		t.Fatalf("stdout lacks the events: %s", s)
+	}
+	_, secret, _ := strings.Cut(key[4:], "_")
+	if strings.Contains(s, secret) {
+		t.Fatal("the key is on stdout")
+	}
+}

@@ -431,7 +431,8 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		var u *ui.UI
 		if err == nil {
 			u, err = ui.New(ui.Options{
-				Query: q, Resolve: rs, Tokens: tokens, Accounts: st, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
+				Query: q, Resolve: rs, Senders: sources.store(), SMTPPort: portOf(cfg.SMTPListen),
+				Tokens: tokens, Accounts: st, Events: st, Hosts: cfg.Admin.Hosts, Instance: cfg.Instance,
 				Logger: logger,
 			})
 		}
@@ -445,7 +446,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		}
 		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
 	}
-	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, mgr, sources.registry, logger)
+	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, mgr, sources, logger)
 	if err != nil {
 		if adminL != nil {
 			adminL.Close()
@@ -633,16 +634,16 @@ func stopHTTP(ctx context.Context, srv *http.Server, limit time.Duration) error 
 
 // apiListener opens the JSON query API's listener (H2), with TLS from a
 // reloaded certificate if configured. It returns nils when the API is off.
-func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, reg *senders.Registry,
+func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, sources senderSources,
 	logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
 	if cfg.API.Listen == "" {
 		return nil, nil, nil, nil, nil
 	}
-	qo := queryOptions(cfg, st, mgr, reg)
+	qo := queryOptions(cfg, st, mgr, sources.registry)
 	q := query.New(qo)
 	rs := resolve.New(resolve.Options{Store: st, Targets: qo.Targets, Wake: mgr.Wake})
-	a, err := api.New(api.Options{Query: q, Resolve: rs, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts,
-		Logger: logger})
+	a, err := api.New(api.Options{Query: q, Resolve: rs, Senders: sources.store(), Tokens: cfg.API.Tokens, Events: st,
+		Hosts: cfg.API.Hosts, Logger: logger})
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -702,6 +703,23 @@ type senderSources struct {
 	file     *senders.FileSource
 	db       *senders.DBSource
 	registry *senders.Registry
+}
+
+// store is the managed write side for the UI and the API: the database
+// source, or nil (an untyped nil, so a nil check works) when it is off.
+func (s senderSources) store() senders.Store {
+	if s.db == nil {
+		return nil
+	}
+	return s.db
+}
+
+// portOf returns the port of a listen address, or "" if it has none.
+func portOf(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return port
+	}
+	return ""
 }
 
 // openSenders opens the sources POSTWERK_SENDER_KEYS names and composes

@@ -52,6 +52,17 @@
       </select>
     </div>
     <div>
+      <label for="sender">Sender</label>
+      <select id="sender" name="sender">
+        <option value="">all</option>
+        {{range .Data.Senders}}<option value="{{.}}"{{if eq . $.Data.Sender}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </div>
+    <div>
+      <label for="key">Key id</label>
+      <input id="key" name="key" type="text" value="{{.Data.Key}}" maxlength="12" autocomplete="off" autocapitalize="none" spellcheck="false" pattern="[a-z2-7]{12}" title="The 12 characters of a key id">
+    </div>
+    <div>
       <label for="from">Received from</label>
       <input id="from" name="from" type="date" value="{{.Data.From}}">
     </div>

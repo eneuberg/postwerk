@@ -12,8 +12,8 @@ import (
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
-// The settings pages hold the accounts (U17–U21) and, later, other
-// settings sections. Every account is an admin; every change needs the
+// The settings pages hold the accounts (U17–U21) and the sender keys
+// (senders.go). Every account is an admin; every change needs the
 // acting account's own current password, ends the sessions of the account
 // it changes, and is written together with its event.
 func (u *UI) settingsRoutes(mux *http.ServeMux) {
@@ -64,6 +64,16 @@ type settingsView struct {
 	Name     string // the name typed into the create form
 	Error    string
 	Min, Max int
+	// Senders is the sender keys section.
+	Senders sendersSection
+}
+
+// settingsForms is what was typed into the forms of the settings page and
+// the error that belongs to each.
+type settingsForms struct {
+	accountName, accountError string
+	sender                    senderForm
+	senderError               string
 }
 
 type accountView struct {
@@ -102,14 +112,27 @@ func (u *UI) settings(w http.ResponseWriter, r *http.Request, sess session) {
 // renderSettings shows the settings page; name and msg belong to the form
 // for a new account.
 func (u *UI) renderSettings(w http.ResponseWriter, r *http.Request, sess session, status int, name, msg string) {
+	u.renderSettingsWith(w, r, sess, status, settingsForms{accountName: name, accountError: msg})
+}
+
+// renderSettingsWith shows the settings page with what was typed into its
+// forms.
+func (u *UI) renderSettingsWith(w http.ResponseWriter, r *http.Request, sess session, status int, f settingsForms) {
 	rows, err := u.accountRows(r.Context(), sess.name)
+	if err != nil {
+		u.queryFailed(w, r, "settings", err)
+		return
+	}
+	snd, err := u.senderRows(r.Context())
 	if err != nil {
 		u.queryFailed(w, r, "settings", err)
 		return
 	}
 	sv := settingsView{
 		Me:       accountRow{Name: sess.name, FromFile: u.fileAccount(sess.name)},
-		Accounts: rows, Name: name, Error: msg, Min: auth.MinPasswordChars, Max: auth.MaxPasswordChars,
+		Accounts: rows, Name: f.accountName, Error: f.accountError, Min: auth.MinPasswordChars, Max: auth.MaxPasswordChars,
+		Senders: sendersSection{Managed: u.opts.Senders != nil, Senders: snd, Form: f.sender, Error: f.senderError,
+			Today: u.today()},
 	}
 	// The file row comes first for a shadowed name.
 	if i := slices.IndexFunc(rows, func(a accountRow) bool { return a.Self }); i >= 0 {

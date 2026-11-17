@@ -8,7 +8,8 @@
 // admin: from the tokens file (start and break-glass access) or from the
 // database (managed on the settings pages). The pages read through
 // internal/query; an admin's close or resend of a delivery goes through
-// internal/resolve. Nothing here touches message content. Searches are POSTs,
+// internal/resolve, a change of a sender kept in the database through
+// senders.Store. Nothing here touches message content. Searches are POSTs,
 // and neither the query, an address nor a password is ever logged or
 // written to an event.
 package ui
@@ -30,6 +31,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/resolve"
+	"github.com/eneuberg/postwerk/internal/senders"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -86,6 +88,12 @@ type Options struct {
 	Query *query.Service
 	// Resolve runs the admin actions on a delivery: close and resend.
 	Resolve *resolve.Service
+	// Senders creates and changes the senders kept in the database
+	// (senders.Store); nil when POSTWERK_SENDER_KEYS is file. The senders
+	// themselves are read through Query.
+	Senders senders.Store
+	// SMTPPort is the port applications send to, shown with a new key.
+	SMTPPort string
 	// Tokens are the accounts of the tokens file; nil without one.
 	Tokens   Verifier
 	Accounts AccountStore
@@ -180,6 +188,7 @@ func New(opts Options) (*UI, error) {
 	mux.HandleFunc("POST /logout", u.authed(u.logout))
 	u.pageRoutes(mux)
 	u.settingsRoutes(mux)
+	u.senderRoutes(mux)
 
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

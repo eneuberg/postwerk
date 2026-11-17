@@ -1,0 +1,167 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$s := .Data.Sender}}
+{{$csrf := .CSRF}}
+<div class="page-head sender-head">
+  <h1>Sender <span class="mono id">{{$s.Name}}</span></h1>
+  <span class="st st-lg {{$s.State.Class}}">{{$s.State.Word}}</span>
+  {{template "source" $s}}
+</div>
+<p><a href="/settings#senders">← Sender keys</a></p>
+{{if and $v.Error (not $s.Managed)}}<p class="notice notice-error" role="alert">{{$v.Error}}</p>{{end}}
+
+<dl class="mail-sum">
+  {{if not $s.CreatedAt.IsZero}}<div><dt>Created</dt><dd class="num">{{stamp $s.CreatedAt}} <span class="muted">by {{$s.CreatedBy}}</span></dd></div>{{end}}
+  {{if not $s.UpdatedAt.IsZero}}<div><dt>Last change</dt><dd class="num">{{stamp $s.UpdatedAt}} <span class="muted">by {{$s.UpdatedBy}}</span></dd></div>{{end}}
+  <div><dt>Last login</dt><dd class="num">{{stamp $s.LastUsed}}</dd></div>
+  <div><dt>Active credentials</dt><dd class="num">{{$s.ActiveKeys}}{{if $s.Password}} + password{{end}} of 2</dd></div>
+</dl>
+
+<section class="card" aria-labelledby="act-h">
+  <div class="card-head results-head">
+    <h2 id="act-h">Last 24 hours</h2>
+    <a href="/mails?sender={{$s.Name}}">Mails of {{$s.Name}} →</a>
+  </div>
+  <dl class="readouts readouts-wide">
+    <div><dt>Mails</dt><dd class="num">{{if $s.Recent.Mails}}<a href="/mails?sender={{$s.Name}}">{{group $s.Recent.Mails}}</a>{{else}}0{{end}}</dd></div>
+    <div{{if not $s.Recent.FailedRecipients}} class="zero"{{end}}><dt><span class="lamp lamp-failed" aria-hidden="true"></span> Failed recipients</dt><dd class="num">{{if $s.Recent.FailedRecipients}}<a href="/mails?sender={{$s.Name}}&amp;state=failed">{{group $s.Recent.FailedRecipients}}</a>{{else}}0{{end}}</dd></div>
+    <div{{if not $s.Recent.AuthFailures}} class="zero"{{end}}><dt><span class="lamp lamp-unknown" aria-hidden="true"></span> Refused logins</dt><dd class="num">{{group $s.Recent.AuthFailures}}</dd></div>
+    <div{{if not $s.Recent.Rejected}} class="zero"{{end}}><dt><span class="lamp lamp-unknown" aria-hidden="true"></span> Refused commands</dt><dd class="num">{{group $s.Recent.Rejected}}</dd></div>
+    <div{{if not $s.Recent.RateLimited}} class="zero"{{end}}><dt><span class="lamp lamp-unknown" aria-hidden="true"></span> Rate-limited</dt><dd class="num">{{group $s.Recent.RateLimited}}</dd></div>
+  </dl>
+  <p class="muted small">Refused logins: wrong or revoked keys for this name. Refused commands: an envelope sender outside the policy, too large, too many recipients. Rate-limited: over a limit of the policy, answered with 451.</p>
+</section>
+
+{{if $s.Removed}}
+<section class="card narrow">
+  <h2>Removed</h2>
+  <p>This sender is in no source any more: no file line and no database entry. It is shown while it has activity in the last 24 hours, so a login attempt with an old key is not missed.</p>
+</section>
+{{else}}
+
+<section class="card" aria-labelledby="keys-h">
+  <div class="card-head">
+    <h2 id="keys-h">Keys</h2>
+    <p class="muted">The key id names a key in mail records, events and logs; it is not secret. A sender has at most two active credentials, so a key can be replaced without downtime.</p>
+  </div>
+  <div class="table-wrap">
+  <table class="keys">
+    <thead><tr><th scope="col">Key id</th><th scope="col">State</th><th scope="col">Created</th><th scope="col">Valid until</th><th scope="col">Last login</th><th scope="col">Revoked</th>{{if $s.Managed}}<th scope="col"><span class="visually-hidden">Action</span></th>{{end}}</tr></thead>
+    <tbody>
+    {{range $s.Keys}}
+    <tr{{if not .RevokedAt.IsZero}} class="row-off"{{end}}>
+      <td class="c-id"><a class="mono" href="/mails?key={{.ID}}" title="Mails sent with this key">{{.ID}}</a></td>
+      <td class="c-st nowrap"><span class="st st-sm {{.State.Class}}">{{.State.Word}}</span>{{with .Soon}} <span class="tag tag-warn">{{.}}</span>{{end}}</td>
+      <td class="c-created nowrap num">{{if .CreatedAt.IsZero}}<span class="muted">in the file</span>{{else}}{{stamp .CreatedAt}} <span class="muted">by {{.CreatedBy}}</span>{{end}}</td>
+      <td class="c-exp nowrap num">{{if .ExpiresAt.IsZero}}<span class="muted">no expiry</span>{{else}}{{stamp .ExpiresAt}}{{end}}</td>
+      <td class="c-used nowrap num">{{stamp .LastUsed}}</td>
+      <td class="c-rev nowrap num">{{if .RevokedAt.IsZero}}<span class="muted">—</span>{{else}}{{stamp .RevokedAt}} <span class="muted">by {{.RevokedBy}}</span>{{end}}</td>
+      {{if $s.Managed}}
+      <td class="c-action">{{if .RevokedAt.IsZero}}
+        <details class="action action-inline"{{if and (eq $v.Form "revoke") (eq $v.Key .ID)}} open{{end}}>
+          <summary>Revoke…</summary>
+          <form method="post" action="/settings/senders/{{$s.Name}}/keys/{{.ID}}/revoke" autocomplete="off">
+            <input type="hidden" name="csrf" value="{{$csrf}}">
+            {{if and (eq $v.Form "revoke") (eq $v.Key .ID)}}<p class="notice notice-error" role="alert">{{$v.Error}}</p>{{end}}
+            <p>Key <span class="mono">{{.ID}}</span> stops working at once; a connection that logged in with it is refused at its next mail. This cannot be undone.</p>
+            <label for="revoke-current-{{.ID}}">Your current password</label>
+            <input id="revoke-current-{{.ID}}" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+            <div class="form-actions"><button type="submit" class="danger">Revoke {{.ID}}</button></div>
+          </form>
+        </details>
+      {{end}}</td>
+      {{end}}
+    </tr>
+    {{end}}
+    {{if $s.Password}}
+    <tr>
+      <td class="c-id">password <span class="muted small-inline">(PBKDF2, from 1.0)</span></td>
+      <td class="c-st"><span class="st st-sm st-handed_off">active</span></td>
+      <td class="c-created"><span class="muted">in the file</span></td>
+      <td class="c-exp"><span class="muted">no expiry</span></td>
+      <td class="c-used nowrap num">{{stamp $s.PasswordLastUsed}}</td>
+      <td class="c-rev"><span class="muted">—</span></td>
+    </tr>
+    {{end}}
+    {{if and (not $s.Keys) (not $s.Password)}}<tr><td colspan="6" class="empty">No keys.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+{{if $s.Managed}}
+<section class="card" id="rotate" aria-labelledby="rotate-h">
+  <h2 id="rotate-h">Add a key (rotation)</h2>
+  <p>Replace a key without downtime: add a second key, put it into the application, check above that its <em>Last login</em> moves, then revoke the old key. Both keys work in the meantime; logins are noted once a minute.</p>
+  {{if eq $v.Form "rotate"}}<p class="notice notice-error" role="alert">{{$v.Error}}</p>{{end}}
+  {{if $v.CanRotate}}
+  <details class="action"{{if eq $v.Form "rotate"}} open{{end}}>
+    <summary>Add a key…</summary>
+    <form method="post" action="/settings/senders/{{$s.Name}}/rotate" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <p>The new key is shown once, on the next page.</p>
+      <label for="rotate-expires">Valid until <span class="muted">(optional, end of the day, UTC)</span></label>
+      <input id="rotate-expires" name="expires" type="date" min="{{$v.Today}}">
+      <label for="rotate-current">Your current password</label>
+      <input id="rotate-current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit">Add a key to {{$s.Name}}</button></div>
+    </form>
+  </details>
+  {{else}}
+  <p class="action-off"><button type="button" disabled>Add a key</button> <span class="muted">{{$v.RotateReason}}</span></p>
+  {{end}}
+</section>
+{{end}}
+
+<section class="card" id="policy" aria-labelledby="policy-h">
+  <h2 id="policy-h">Policy</h2>
+  <dl class="facts facts-list">
+    <div><dt>Envelope senders</dt><dd>{{with $s.Policy.From}}<ul class="patterns">{{range .}}<li class="mono break">{{.}}</li>{{end}}</ul>{{else}}<span class="tag tag-warn">any envelope sender</span> <span class="muted small-inline">A leaked key could send as any address the provider accepts.</span>{{end}}</dd></div>
+    <div><dt>Messages</dt><dd>{{with $s.Policy.MaxPerMinute}}{{group .}} per minute{{else}}<span class="muted">no limit</span>{{end}}</dd></div>
+    <div><dt>Recipients</dt><dd>{{with $s.Policy.MaxRecipientsPerHour}}{{group .}} per hour{{else}}<span class="muted">no limit</span>{{end}}</dd></div>
+  </dl>
+  {{if $s.Managed}}
+  <details class="action"{{if eq $v.Form "policy"}} open{{end}}>
+    <summary>Edit the policy…</summary>
+    <form method="post" action="/settings/senders/{{$s.Name}}/policy" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      {{if eq $v.Form "policy"}}<p class="notice notice-error" role="alert">{{$v.Error}}</p>{{end}}
+      <p>Replaces the whole policy; it applies to both keys from the next mail.</p>
+      {{template "policyfields" $v.Policy}}
+      <label for="policy-current">Your current password</label>
+      <input id="policy-current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+      <div class="form-actions"><button type="submit">Save the policy</button></div>
+    </form>
+  </details>
+  {{end}}
+</section>
+
+{{if $s.Managed}}
+<section class="card narrow danger-zone" id="revoke-all" aria-labelledby="revoke-all-h">
+  <h2 id="revoke-all-h">Revoke all keys</h2>
+  <p class="muted">Switches the sender off: every key stops working at once. The sender, its keys and its mails stay for the record; senders are not deleted. To switch it on again, add a key.</p>
+  {{if eq $v.Form "revoke-all"}}<p class="notice notice-error" role="alert">{{$v.Error}}</p>{{end}}
+  {{if not $s.OpenKeys}}
+  <p class="action-off"><button type="button" disabled>Revoke all keys</button> <span class="muted">Every key is revoked.</span></p>
+  {{else}}
+  <form method="post" action="/settings/senders/{{$s.Name}}/revoke-all" autocomplete="off">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label for="revoke-all-current">Your current password</label>
+    <input id="revoke-all-current" name="current" type="password" autocomplete="current-password" maxlength="1024" required>
+    <div class="form-actions"><button type="submit" class="danger">Revoke every key of {{$s.Name}}</button></div>
+  </form>
+  {{end}}
+</section>
+{{else}}
+<section class="card" aria-labelledby="file-h">
+  <h2 id="file-h">Kept in the senders file</h2>
+  <p>This sender is a set of lines in <span class="mono">POSTWERK_SENDERS_FILE</span>, so it is read-only here. Change the file (in Kubernetes its Secret); Postwerk reads it again within 30 seconds and logs <span class="mono">senders.reloaded</span>.</p>
+  <ul class="steps">
+    <li><strong>New key:</strong> <span class="mono">postwerk gen-sender {{$s.Name}}</span> prints the key and its line. Add the line next to the old one, switch the application to the new key, then remove the old line.</li>
+    <li><strong>Revoke a key:</strong> remove its line, <span class="mono break">{{$s.Name}}:pwk-sha256$&lt;key id&gt;$…</span></li>
+    <li><strong>Policy:</strong> one line per sender; {{if $s.Policy.String}}the current one is <span class="mono break">{{$v.PolicyLine}}</span>{{else}}there is none yet, for example <span class="mono break">{{$s.Name}}:policy from=*@example.com max_per_minute=60</span>{{end}}</li>
+  </ul>
+</section>
+{{end}}
+{{end}}
+{{end}}

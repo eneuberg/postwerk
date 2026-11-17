@@ -1,0 +1,48 @@
+{{/* Parts shared by the settings page and a sender's page. */}}
+{{define "source"}}{{if .Removed}}<span class="tag tag-warn" title="In no source any more; shown while it has activity in the last 24 hours">removed</span>{{else if eq .Source "file"}}<span class="tag tag-file" title="Kept in the senders file (POSTWERK_SENDERS_FILE): read-only here">senders file</span>{{else}}<span class="tag" title="Kept in the database: managed here and through the API">database</span>{{end}}{{end}}
+
+{{define "keylist"}}
+<ul class="keylist">
+  {{range .Keys}}{{if .RevokedAt.IsZero}}<li><span class="st st-sm {{.State.Class}}"><span class="mono">{{.ID}}</span></span>{{if not .Active}} <span class="small-inline">{{.State.Word}}</span>{{end}}{{with .Soon}} <span class="tag tag-warn">{{.}}</span>{{end}}</li>{{end}}{{end}}
+  {{if .Password}}<li><span class="st st-sm st-handed_off">password</span></li>{{end}}
+  {{with revoked .Keys}}<li class="muted small-inline">{{.}} revoked</li>{{end}}
+  {{if and (not .Keys) (not .Password)}}<li class="muted">none</li>{{end}}
+</ul>
+{{end}}
+
+{{define "policysummary"}}
+{{if .Removed}}<span class="muted">—</span>{{else}}
+{{with .Policy.From}}<span class="mono break small-inline">{{join . ", "}}</span>{{else}}<span class="tag tag-warn" title="No from= patterns: a leaked key can send as any address">any envelope sender</span>{{end}}
+<br><span class="muted small-inline">{{limits .Policy}}</span>
+{{end}}
+{{end}}
+
+{{define "activity"}}
+<ul class="activity">
+  <li>{{if .Recent.Mails}}<a href="/mails?sender={{.Name}}">{{.Recent.Mails}} {{plural .Recent.Mails "mail" "mails"}}</a>{{else}}<span class="muted">no mail</span>{{end}}</li>
+  {{with .Recent.FailedRecipients}}<li><span class="st st-sm st-failed">{{.}} failed {{plural . "recipient" "recipients"}}</span></li>{{end}}
+  {{with .Recent.AuthFailures}}<li><span class="st st-sm st-unknown">{{.}} refused {{plural . "login" "logins"}}</span></li>{{end}}
+  {{with .Recent.Rejected}}<li><span class="st st-sm st-unknown">{{.}} refused {{plural . "command" "commands"}}</span></li>{{end}}
+  {{with .Recent.RateLimited}}<li><span class="st st-sm st-unknown">{{.}} rate-limited</span></li>{{end}}
+</ul>
+{{end}}
+
+{{define "policyfields"}}
+<fieldset class="policy-fields">
+  <legend>Policy <span class="muted">(what the application may do)</span></legend>
+  <label for="policy-from">Allowed envelope senders</label>
+  <textarea id="policy-from" name="from" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="policy-from-note">{{.From}}</textarea>
+  <p id="policy-from-note" class="muted small-inline">One pattern per line, for example <span class="mono">*@shop.example.com</span> or <span class="mono">noreply@example.com</span>; <span class="mono">&lt;&gt;</span> allows the null sender. Empty: any address, which a leaked key could misuse. Set it in production.</p>
+  <div class="field-pair">
+    <div>
+      <label for="policy-per-minute">Messages per minute</label>
+      <input id="policy-per-minute" name="max_per_minute" type="number" min="0" max="100000" step="1" inputmode="numeric" value="{{.PerMinute}}" placeholder="no limit">
+    </div>
+    <div>
+      <label for="policy-rcpts">Recipients per hour</label>
+      <input id="policy-rcpts" name="max_rcpt_per_hour" type="number" min="0" max="10000000" step="1" inputmode="numeric" value="{{.RcptsPerHour}}" placeholder="no limit">
+    </div>
+  </div>
+  <p class="muted small-inline">Over a limit, the application gets 451 and retries later. Empty or 0: no limit.</p>
+</fieldset>
+{{end}}
