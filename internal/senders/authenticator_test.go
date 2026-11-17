@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -294,5 +295,78 @@ func TestUsageFlush(t *testing.T) {
 	if len(uses) != 2 || !uses[0].At.Equal(t0.Add(time.Minute)) || uses[0].KeyID != "aaaaaaaaaaaa" ||
 		uses[1].Sender != "legacy" || !uses[1].At.Equal(t0) || uses[1].KeyID != "" {
 		t.Fatalf("uses %+v", uses)
+	}
+}
+
+// readFailDB is the store with a Senders read that fails while fail is set.
+type readFailDB struct {
+	*store.Store
+	fail atomic.Bool
+}
+
+func (f *readFailDB) Senders(ctx context.Context) ([]store.SenderRow, error) {
+	if f.fail.Load() {
+		return nil, errors.New("read failed")
+	}
+	return f.Store.Senders(ctx)
+}
+
+// A revoke or a policy change whose read-back fails must not leave the old
+// state usable: the keys it was about stop until a read succeeds.
+func TestFailedReadAfterChangeFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	db := &readFailDB{Store: openStore(t)}
+	src, err := NewDBSource(ctx, db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewAuthenticator(reg, AuthOptions{})
+	app1, _ := src.Create(ctx, CreateRequest{Name: "app", Actor: "ops"})
+	app2, _ := src.Rotate(ctx, "app", time.Time{}, "ops")
+	other, _ := src.Create(ctx, CreateRequest{Name: "other", Actor: "ops"})
+	p2, err := a.Authenticate("app", app2.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db.fail.Store(true)
+	if err := src.Revoke(ctx, app1.KeyID, "ops"); err == nil {
+		t.Fatal("a failed read-back was not reported")
+	}
+	if _, err := a.Authenticate("app", app1.Key); !errors.Is(err, ErrBadCredentials) {
+		t.Fatal("revoked key works after a failed read")
+	}
+	if _, err := a.Authenticate("app", app2.Key); err != nil {
+		t.Fatal("the other key of the sender stopped after a revoke")
+	}
+	pol, _ := NewPolicy([]string{"*@example.com"}, 0, 0)
+	if err := src.SetPolicy(ctx, "app", pol, "ops"); err == nil {
+		t.Fatal("a failed read-back was not reported")
+	}
+	if _, ok := a.Refresh(p2); ok {
+		t.Fatal("a session survived a policy change whose read failed")
+	}
+	if _, err := a.Authenticate("app", app2.Key); !errors.Is(err, ErrBadCredentials) {
+		t.Fatal("a key logs in with a policy that may be stale")
+	}
+	if _, err := a.Authenticate("other", other.Key); err != nil {
+		t.Fatal("another sender was affected")
+	}
+
+	// The next change that reads successfully restores the real state.
+	db.fail.Store(false)
+	if err := src.SetPolicy(ctx, "app", pol, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.Authenticate("app", app2.Key)
+	if err != nil || p.Policy.String() != "from=*@example.com" {
+		t.Fatalf("after a good read: %+v %v", p, err)
+	}
+	if _, err := a.Authenticate("app", app1.Key); !errors.Is(err, ErrBadCredentials) {
+		t.Fatal("revoked key works again")
 	}
 }

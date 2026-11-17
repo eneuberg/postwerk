@@ -72,6 +72,11 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ### Security
 
+- A revoke or policy change of a database sender whose read-back failed left the old state in memory, so a revoked key
+  kept working until the next successful change. Now the keys the change was about stop at once (fail closed) until
+  a later read succeeds.
+- A senders file written in place could be read half-written and still be valid, dropping a sender's policy line
+  until the next check 30 s later. A change is now used only once it reads the same twice, 2 s apart.
 - The statistics cache also counts its entries: requests for ever new sender or target names (which need not
   exist) cached an empty entry per hour of the range each and grew the memory without limit (D80).
 - A policy's `from=` patterns also bind the message's `From:` header: every address in it must match, and a missing,

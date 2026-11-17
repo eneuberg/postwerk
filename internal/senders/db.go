@@ -23,8 +23,10 @@ type DB interface {
 // DBSource is the Source and the Store of the senders kept in the database
 // (POSTWERK_SENDER_KEYS=db or both). It holds every sender in memory and
 // reads the tables again after each of its own changes; this process is the
-// only writer (D61), so the memory never falls behind. Logins never read the
-// database.
+// only writer (D61), so the memory never falls behind. If that read fails,
+// the keys the change was about are taken out of the memory until a later
+// read succeeds, so a revoke or a narrower policy is never left unenforced.
+// Logins never read the database.
 type DBSource struct {
 	db  DB
 	now func() time.Time
@@ -88,8 +90,12 @@ func (d *DBSource) read(ctx context.Context) (*set, error) {
 
 // change runs write under the registry's guard (or the source's own lock)
 // and then reads the tables again. check, run first under the same lock,
-// may refuse the change.
-func (d *DBSource) change(ctx context.Context, check func(g *guard) error, write func() error) error {
+// may refuse the change. affected names the keys the change restricts; if
+// the read fails they can no longer log in until a later read succeeds
+// (fail closed: the write may have landed). nil for a change that only adds
+// a key, which a stale memory simply does not know yet.
+func (d *DBSource) change(ctx context.Context, check func(g *guard) error, write func() error,
+	affected func(Credential) bool) error {
 	run := func(g *guard) error {
 		if check != nil {
 			if err := check(g); err != nil {
@@ -100,8 +106,11 @@ func (d *DBSource) change(ctx context.Context, check func(g *guard) error, write
 		// Read again even after a failed write: the memory must match the
 		// table, whatever happened.
 		s, rerr := d.read(context.WithoutCancel(ctx))
-		if rerr == nil {
+		switch {
+		case rerr == nil:
 			d.cur.Store(s)
+		case affected != nil:
+			d.cur.Store(d.cur.Load().without(affected))
 		}
 		if werr != nil {
 			return werr
@@ -135,7 +144,7 @@ func (d *DBSource) Create(ctx context.Context, r CreateRequest) (Issued, error) 
 	}, func() error {
 		return d.db.CreateSender(ctx, r.Name, storePolicy(r.Policy),
 			store.NewSenderKey{ID: id, Digest: digest[:], ExpiresAt: r.ExpiresAt}, r.Actor, d.now())
-	})
+	}, nil)
 	if errors.Is(err, store.ErrSenderExists) {
 		err = ErrNameTaken
 	}
@@ -161,7 +170,7 @@ func (d *DBSource) Rotate(ctx context.Context, name string, expiresAt time.Time,
 	}, func() error {
 		return d.db.AddSenderKey(ctx, name, store.NewSenderKey{ID: id, Digest: digest[:], ExpiresAt: expiresAt},
 			MaxActiveKeys, actor, d.now())
-	})
+	}, nil)
 	switch {
 	case errors.Is(err, store.ErrNoSender):
 		return Issued{}, ErrNoSender
@@ -184,7 +193,7 @@ func (d *DBSource) Revoke(ctx context.Context, keyID, actor string) error {
 	err := d.change(ctx, nil, func() error {
 		_, err := d.db.RevokeSenderKey(ctx, keyID, actor, d.now())
 		return err
-	})
+	}, func(c Credential) bool { return c.Key.ID == keyID })
 	switch {
 	case errors.Is(err, store.ErrNoSenderKey):
 		return ErrNoKey
@@ -201,7 +210,7 @@ func (d *DBSource) SetPolicy(ctx context.Context, name string, p Policy, actor s
 	}
 	err := d.change(ctx, nil, func() error {
 		return d.db.SetSenderPolicy(ctx, name, storePolicy(p), p.Summary(), actor, d.now())
-	})
+	}, func(c Credential) bool { return c.Sender == name })
 	if errors.Is(err, store.ErrNoSender) {
 		return ErrNoSender
 	}

@@ -100,10 +100,11 @@ shop:policy from=*@shop.example.com,noreply@example.com max_per_minute=60 max_rc
   (verified senders or domains). Other header fields such as `Sender:` or `Reply-To:` are not checked. The limits are counted in memory per sender (both
   keys share them) and start full after a restart.
 - **Reload.** The file is re-read every 30 s and compared by content, so a Kubernetes Secret update reaches a running
-  Postwerk without a restart. A valid file is used from the next login and writes `senders.reloaded`; an invalid one
-  (or one with a name that is also in the database) is not used, the previous one stays, and
-  `senders.reload_failed` (error) is written once per content. A removed or changed credential ends the sessions
-  that logged in with it at their next `MAIL`.
+  Postwerk without a restart. A change is used only once it reads the same twice, 2 s apart, so a file being written
+  in place is not picked up half-written (a valid file without its last policy line). A valid file is used from the
+  next login and writes `senders.reloaded`; an invalid one (or one with a name that is also in the database) is not
+  used, the previous one stays, and `senders.reload_failed` (error) is written once per content. A removed or changed
+  credential ends the sessions that logged in with it at their next `MAIL`.
 
 The file holds hashes only, but it is still a secret file: a copy allows offline guessing of passwords (not of keys).
 
@@ -112,7 +113,9 @@ The file holds hashes only, but it is still a secret file: a copy allows offline
 With `db` or `both`, senders are created under **Settings → Sender keys** in the UI ([ui.md](ui.md#7-sender-keys))
 and through the API with an `admin` token ([api.md](api.md#sender-keys-admin)), for example from a CI pipeline. A new
 sender gets its first key at once; a second key can be added for a rotation, and each key can be revoked on its own,
-effective at once. Each key may have an expiry. Every change is an event with the actor (`sender.created`,
+effective at once. Postwerk keeps the senders in memory and reads them back after each change; if that read fails,
+the change is reported as failed and the keys it was about stop working until a later change reads successfully (a
+revoked key never stays valid). Each key may have an expiry. Every change is an event with the actor (`sender.created`,
 `sender.rotated`, `sender.revoked`, `sender.policy_changed`). Keys are stored as the SHA-256 of their secret part,
 never the key; the key is shown once, in the answer that made it. The policy is the same as in the file. Senders are
 not deleted: revoking all keys switches one off, and its name stays taken (D76).

@@ -64,6 +64,20 @@ func (s *set) List() []Sender {
 	return out
 }
 
+// without returns a copy of s in which the keys for which drop is true can
+// no longer log in. The senders and their key lists are shared and stay as
+// they are.
+func (s *set) without(drop func(Credential) bool) *set {
+	c := *s
+	c.keys = make(map[string]Credential, len(s.keys))
+	for id, k := range s.keys {
+		if !drop(k) {
+			c.keys[id] = k
+		}
+	}
+	return &c
+}
+
 // hash returns the PBKDF2 value of name's password line, or "".
 func (s *set) hash(name string) string { return s.hashes[name] }
 

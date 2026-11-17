@@ -164,3 +164,43 @@ func TestRunStops(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// Content is used only once it reads the same twice, Settle apart: a file
+// read while it is written can be valid but incomplete.
+func TestHalfWrittenNotLoaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	write(t, path, "one")
+	r := &recorder{}
+	o := r.opts(path)
+	o.Settle = 50 * time.Millisecond
+	w, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid but still being written while Check reads it.
+	write(t, path, "two, the first half")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+				_ = os.WriteFile(path, []byte("two, part "+strings.Repeat("x", i)), 0o600)
+			}
+		}
+	}()
+	changed := w.Check(context.Background())
+	close(stop)
+	<-done
+	if changed || r.current != "one" || r.loaded != 0 || len(r.failed) != 0 {
+		t.Fatalf("changing file: changed %v current %q loaded %d failed %v", changed, r.current, r.loaded, r.failed)
+	}
+	// Once the writer is done, the next check loads it.
+	write(t, path, "two, complete")
+	if !w.Check(context.Background()) || r.current != "two, complete" {
+		t.Fatalf("finished file not loaded: %q", r.current)
+	}
+}

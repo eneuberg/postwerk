@@ -40,7 +40,7 @@ func startWithKeys(t *testing.T, extra ...string) *keyEnv {
 	}
 	ke := &keyEnv{path: filepath.Join(t.TempDir(), "senders"), key: key, id: id}
 	ke.write(t, append([]string{line}, extra...)...)
-	ke.file, err = senders.NewFileSource(senders.FileOptions{Path: ke.path})
+	ke.file, err = senders.NewFileSource(senders.FileOptions{Path: ke.path, Settle: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

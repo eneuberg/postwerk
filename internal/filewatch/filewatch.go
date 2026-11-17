@@ -4,9 +4,12 @@
 //   - The files are read at a fixed interval and compared by content (a
 //     SHA-256 over all of them), not by modification time: Kubernetes swaps
 //     the files of a Secret volume with a symlink change that keeps the times.
-//   - Changed content goes to Load. If Load refuses it, the files are read once
-//     more after Settle (a read may have fallen between two files of a swap);
-//     content that is still refused is reported once, through Failed, and the
+//   - Changed content goes to Load only once it reads the same twice, Settle
+//     apart: a file written in place can be read half-written, and a
+//     half-written file may still be valid (a senders file without its last
+//     policy line). Content still changing after a second wait is left to the
+//     next check.
+//   - Content that Load refuses is reported once, through Failed, and the
 //     caller keeps what it had. The same broken content is not reported again.
 //   - Content that Load accepted is reported through Loaded.
 //
@@ -46,8 +49,7 @@ type Options struct {
 	Failed func(err error)
 	// Interval between checks; 0 means DefaultInterval.
 	Interval time.Duration
-	// Settle before the second read of refused content; 0 means
-	// DefaultSettle.
+	// Settle between the reads of changed content; 0 means DefaultSettle.
 	Settle time.Duration
 	// MaxBytes per file; 0 means DefaultMaxBytes.
 	MaxBytes int64
@@ -113,22 +115,27 @@ func (w *Watcher) Check(ctx context.Context) bool {
 	if err == nil && digest == w.current {
 		return false
 	}
-	if err == nil {
-		err = w.opts.Load(contents)
-	}
-	if err != nil {
+	// Changed: wait until it reads the same twice.
+	for round := 0; ; round++ {
 		select {
 		case <-ctx.Done():
 			return false
 		case <-time.After(w.opts.Settle):
 		}
+		prev := digest
 		contents, digest, err = w.read()
-		if err == nil && digest == w.current {
-			return false
+		if digest == prev {
+			break
 		}
-		if err == nil {
-			err = w.opts.Load(contents)
+		if round == 1 {
+			return false // still changing; the next check reads again
 		}
+	}
+	if err == nil && digest == w.current {
+		return false
+	}
+	if err == nil {
+		err = w.opts.Load(contents)
 	}
 	if err != nil {
 		if !w.hasFailed || digest != w.failed {
