@@ -1,6 +1,6 @@
 name: release
 
-# A tag v<semver> (for example v0.1.0) publishes ghcr.io/eneuberg/postwerk:<semver>
+# A tag v<semver> (for example v1.0.0) publishes ghcr.io/eneuberg/postwerk:<semver>
 # for linux/amd64 and linux/arm64, with an SBOM and a provenance attestation,
 # signed keyless with cosign. No "latest" tag (D39). Only a tag on a commit
 # of main is released (D43). Verification: docs/kubernetes.md, section
@@ -64,8 +64,14 @@ jobs:
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
             echo "tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-<pre>]"; exit 1
           fi
-          if ! grep -Fxq "appVersion: \"$version\"" deploy/helm/postwerk/Chart.yaml; then
-            echo "deploy/helm/postwerk/Chart.yaml: appVersion must be \"$version\""; exit 1
+          # The chart is released with Postwerk: both its version and its
+          # appVersion are the Postwerk version (docs/versioning.md).
+          chart=deploy/helm/postwerk/Chart.yaml
+          if ! grep -Fxq "appVersion: \"$version\"" "$chart"; then
+            echo "$chart: appVersion must be \"$version\""; exit 1
+          fi
+          if ! grep -Fxq -e "version: $version" -e "version: \"$version\"" "$chart"; then
+            echo "$chart: version must be $version"; exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
