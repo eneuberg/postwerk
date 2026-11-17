@@ -243,7 +243,7 @@ networkPolicy:
   # allows, so they need no entry.
   httpFrom: []
   egress:
-    # DNS for target host names.
+    # DNS for target host names. "to" must not be empty.
     dns:
       enabled: true
       to:
@@ -254,16 +254,20 @@ networkPolicy:
             matchLabels:
               k8s-app: kube-dns
     # Target ports. Provider IP addresses change, so the default allows these
-    # ports to any address; narrow targetCIDRs if your provider publishes ranges.
+    # ports to any address, IPv4 and IPv6, written out; narrow targetCIDRs if
+    # your provider publishes ranges. An empty targetCIDRs is refused (it
+    # would mean every address without saying so); targetPorts: [] drops the
+    # rule, for targets reached only through extra.
     targetPorts: [587, 465]
-    targetCIDRs: [0.0.0.0/0]
+    targetCIDRs: [0.0.0.0/0, "::/0"]
     # Sentry or GlitchTip on HTTPS, only while sentry.enabled. NetworkPolicy
     # knows no host names: narrow the CIDRs to the addresses of your Sentry
-    # host if it has fixed ones. For a GlitchTip inside the cluster, use
-    # extra instead.
+    # host if it has fixed ones. Empty cidrs are refused. For a GlitchTip
+    # inside the cluster, set enabled: false and add a rule to extra.
     sentry:
+      enabled: true
       port: 443
-      cidrs: [0.0.0.0/0]
+      cidrs: [0.0.0.0/0, "::/0"]
     # More egress rules, for example to an in-cluster capture tool.
     extra: []
 

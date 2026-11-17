@@ -79,6 +79,23 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail "sentry.enabled needs secrets.sentryDsn (an existing Secret with the DSN)" }}
 {{- end }}
 {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+An egress rule with ports but no peers ("to" empty) allows those ports to
+every address. Never render one by accident: "any address" must be written
+out as cidrs [0.0.0.0/0, ::/0] (D59).
+*/}}
+{{- $eg := .Values.networkPolicy.egress }}
+{{- if and $eg.dns.enabled (not $eg.dns.to) }}
+{{- fail "networkPolicy.egress.dns.to is empty: the DNS rule would allow port 53 to every address. Name the DNS pods, or set networkPolicy.egress.dns.enabled=false" }}
+{{- end }}
+{{- if and $eg.targetPorts (not $eg.targetCIDRs) }}
+{{- fail "networkPolicy.egress.targetCIDRs is empty: the rule for targetPorts would allow every address. List your provider's ranges, write [0.0.0.0/0, \"::/0\"] for any address, or set targetPorts: [] and reach the targets through networkPolicy.egress.extra" }}
+{{- end }}
+{{- if and .Values.sentry.enabled $eg.sentry.enabled (not $eg.sentry.cidrs) }}
+{{- fail "networkPolicy.egress.sentry.cidrs is empty: the Sentry rule would allow port 443 to every address. List your Sentry host's ranges, write [0.0.0.0/0, \"::/0\"] for any address, or set networkPolicy.egress.sentry.enabled=false and reach it through networkPolicy.egress.extra" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.targets }}
 {{- fail "targets: at least one target is required" }}
 {{- end }}

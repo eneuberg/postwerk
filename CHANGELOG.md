@@ -73,6 +73,10 @@ No version has been released yet. This section lists what exists today.
   for the account's password again.
 - Query API tokens stored as SHA-256; addresses and the `Message-ID` masked for `read` tokens; rate limits; every
   request and failed authentication is an event.
+- Helm chart NetworkPolicy: every egress rule names its peers. "Any address" is written out as `0.0.0.0/0` and
+  `::/0` (the default for the target ports and Sentry); an empty `dns.to`, `targetCIDRs` or `sentry.cidrs` fails the
+  render instead of opening the port to every address. `networkPolicy.egress.sentry.enabled: false` drops the 443
+  rule for a GlitchTip inside the cluster (D59).
 - Helm chart closed by default: one replica, ClusterIP only, NetworkPolicy, non-root, read-only root file system, no
   service account token.
 - Build inputs pinned by digest; releases only from tags on `main`.

@@ -233,9 +233,9 @@ The chart encodes what the design needs, so a default install is a safe one:
   switch on purpose. People reach the health port through a VPN or `kubectl port-forward`.
 - **NetworkPolicy on.** SMTP only from the pods that send, HTTP only from named sources, egress only DNS and the
   submission ports 587 and 465. The target ports are open to any address by default because providers change their
-  addresses without notice; a CIDR list is there for providers that publish ranges. Probes need no rule: Kubernetes
-  NetworkPolicy does not block traffic from a pod's own node. Without per-IP rules in Postwerk (D26), the policy is
-  the place that decides who may connect.
+  addresses without notice, written out as CIDRs (D59); a CIDR list is there for providers that publish ranges.
+  Probes need no rule: Kubernetes NetworkPolicy does not block traffic from a pod's own node. Without per-IP rules
+  in Postwerk (D26), the policy is the place that decides who may connect.
 - **Secrets as files from existing Secrets.** Keys never pass through Helm values (which end up in release secrets
   and shell histories) or environment variables (D20). Mode `0440` with `fsGroup: 65532` makes them readable by
   Postwerk only.
@@ -846,3 +846,22 @@ the `target.recovered` that follows is `info` and reaches no one.
 - **Configurable, 0 to 10.** `0` restores D45's behaviour. More than one failed probe is for a target known to be
   flaky; the wait doubles with each probe, so 3 means about 3.5 minutes with the defaults. `queue.stale` (D49) still
   catches mail that waits, whatever this says.
+
+## D59 "Any address" in the NetworkPolicy is written out, never implied
+
+An egress rule with ports and an empty `to` allows those ports to every address. The chart built such a rule from an
+empty CIDR list: `networkPolicy.egress.sentry.cidrs: []` with the Sentry sink on opened port 443 to everything,
+`targetCIDRs: []` the target ports. An operator who emptied the list to close it got the opposite.
+
+- **Refused, not guessed.** The chart fails to render when a rule it builds would have ports but no peers: an empty
+  `dns.to`, `targetCIDRs` while `targetPorts` is set, `sentry.cidrs` while the Sentry rule is on. The message names
+  the ways out. Treating the empty list as "no rule" would also be safe, but it silently breaks delivery or the
+  error export for whoever meant "any"; a failed install says what is wrong.
+- **The default stays "any address", in the values.** `targetCIDRs` and `sentry.cidrs` default to
+  `[0.0.0.0/0, "::/0"]`, IPv6 included, so the default means what the documentation always promised and a reader of
+  the values sees it. Narrowing is a change to that list.
+- **Dropping a rule is a switch of its own.** `targetPorts: []`, `dns.enabled: false` and
+  `networkPolicy.egress.sentry.enabled: false` (for a GlitchTip inside the cluster, reached through `extra`) remove
+  the rule; an empty peer list never does.
+- **CI proves it.** Every rendered NetworkPolicy is checked for an egress rule without peers, the default for the
+  two explicit CIDRs, and each empty list for a failed render.

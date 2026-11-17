@@ -220,9 +220,9 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `networkPolicy.enabled` | `true` (**recommended**) | Section 7. |
 | `networkPolicy.smtpFrom` | pods in the namespace labelled `postwerk-client=true` | NetworkPolicy peers that may connect to port 2525. |
 | `networkPolicy.httpFrom` | `[]` | Peers that may reach port 8080; probes need no entry. |
-| `networkPolicy.egress.dns` | kube-dns in `kube-system` | DNS for the target host names. |
-| `networkPolicy.egress.targetPorts`, `targetCIDRs` | `[587, 465]`, `[0.0.0.0/0]` | Where Postwerk may connect. Provider addresses change, so any address is allowed on these ports by default. |
-| `networkPolicy.egress.sentry.port`, `cidrs` | `443`, `[0.0.0.0/0]` | Egress to the Sentry host, only while `sentry.enabled`. |
+| `networkPolicy.egress.dns` | kube-dns in `kube-system` | DNS for the target host names. `dns.to` must not be empty. |
+| `networkPolicy.egress.targetPorts`, `targetCIDRs` | `[587, 465]`, `[0.0.0.0/0, "::/0"]` | Where Postwerk may connect. Provider addresses change, so any address (IPv4 and IPv6) is allowed on these ports by default, written out. An empty `targetCIDRs` is refused; `targetPorts: []` drops the rule. |
+| `networkPolicy.egress.sentry.enabled`, `port`, `cidrs` | `true`, `443`, `[0.0.0.0/0, "::/0"]` | Egress to the Sentry host, only while `sentry.enabled`. Empty `cidrs` are refused; `enabled: false` drops the rule (a GlitchTip in the cluster, reached through `extra`). |
 | `networkPolicy.egress.extra` | `[]` | More egress rules, for example to a capture tool in the cluster. |
 
 ## 5. Wiring an application
@@ -379,9 +379,15 @@ Calico): `tls.enabled=false` and `tls.allowInsecureAuth=true`, and write down wh
   node).
 - **Query API (8082)**, when on, only from the pods in `api.allowFrom`; an empty list lets nobody in.
 - **Egress** only DNS and the target ports 587 and 465. Provider addresses change without notice, so the default
-  allows those ports to any address; narrow `targetCIDRs` if your provider publishes fixed ranges. A target inside the
-  cluster (a capture tool) needs an `egress.extra` rule. With `sentry.enabled`, port 443 is open as well, to
-  `networkPolicy.egress.sentry.cidrs` (any address by default).
+  allows those ports to any address: `targetCIDRs` is `[0.0.0.0/0, "::/0"]`, written out in the values. Narrow it if
+  your provider publishes fixed ranges. A target inside the cluster (a capture tool) needs an `egress.extra` rule.
+  With `sentry.enabled`, port 443 is open as well, to `networkPolicy.egress.sentry.cidrs` (the same two entries by
+  default).
+- **"Any address" is never implied.** A NetworkPolicy rule with ports but no peers allows those ports to every
+  address. The chart refuses to render one: an empty `dns.to`, `targetCIDRs` (while `targetPorts` is set) or
+  `sentry.cidrs` (while the Sentry sink is on) fails with a message (D59). To allow any address, write
+  `[0.0.0.0/0, "::/0"]`; to drop a rule, set `targetPorts: []`, `dns.enabled: false` or `sentry.enabled: false`
+  under `networkPolicy.egress`.
 - **Access for people** only through a tunnel: the UI with `kubectl port-forward` (section 7.1), the health port
   with `kubectl -n mail port-forward deploy/postwerk 8080:8080` (then `curl http://127.0.0.1:8080/readyz`). Never a
   public address.
@@ -470,7 +476,7 @@ issue, however many mails fail. Addresses and content are never sent
    networkPolicy:
      egress:
        sentry:
-         cidrs: [0.0.0.0/0]    # narrow to your Sentry host's addresses if they are fixed
+         cidrs: [0.0.0.0/0, "::/0"]  # any address; narrow to your Sentry host's if they are fixed
    ```
 
 4. Check the start log: `"sentry":"glitchtip.example.test (error)"`. A failing export logs one line, such as
@@ -478,7 +484,7 @@ issue, however many mails fail. Addresses and content are never sent
 
 **GlitchTip inside the cluster.** If GlitchTip runs in the same cluster without TLS, its DSN starts with `http://`.
 That needs `sentry.allowHTTP: true` (only on a network that encrypts traffic between nodes) and an egress rule to the
-GlitchTip pods:
+GlitchTip pods instead of the 443 rule:
 
 ```yaml
 sentry:
@@ -486,6 +492,8 @@ sentry:
   allowHTTP: true
 networkPolicy:
   egress:
+    sentry:
+      enabled: false   # no port 443 rule to the outside
     extra:
       - to:
           - namespaceSelector:

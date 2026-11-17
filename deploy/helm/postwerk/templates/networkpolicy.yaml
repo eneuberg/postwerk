@@ -38,6 +38,7 @@ spec:
           protocol: TCP
     {{- end }}
   egress:
+    {{- /* Every rule below has peers: postwerk.validate refuses empty ones (D59). */}}
     {{- if $np.egress.dns.enabled }}
     - to:
         {{- toYaml $np.egress.dns.to | nindent 8 }}
@@ -51,7 +52,7 @@ spec:
     - to:
         {{- range $np.egress.targetCIDRs }}
         - ipBlock:
-            cidr: {{ . }}
+            cidr: {{ . | quote }}
         {{- end }}
       ports:
         {{- range $np.egress.targetPorts }}
@@ -59,12 +60,12 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
-    {{- if .Values.sentry.enabled }}
+    {{- if and .Values.sentry.enabled $np.egress.sentry.enabled }}
     # The Sentry-protocol sink: HTTPS to the Sentry host.
     - to:
         {{- range $np.egress.sentry.cidrs }}
         - ipBlock:
-            cidr: {{ . }}
+            cidr: {{ . | quote }}
         {{- end }}
       ports:
         - port: {{ $np.egress.sentry.port }}

@@ -67,6 +67,20 @@ jobs:
         run: |
           chart=deploy/helm/postwerk
           helm() { docker run --rm -v "$PWD:/src" -w /src "$HELM" "$@"; }
+          # Every egress rule of a NetworkPolicy names its peers ("to" with at
+          # least one entry): a rule without them allows every address (D59).
+          egress_peers() {
+            awk '
+              function finish() { if (rule && !peers) bad = 1; rule = 0; peers = 0 }
+              /^---/ { finish(); np = 0; eg = 0 }
+              /^kind: NetworkPolicy/ { np = 1 }
+              np && eg && /^  [^ ]/ { finish(); eg = 0 }
+              np && /^  egress:/ { eg = 1; next }
+              eg && /^    - / { finish(); rule = 1; sub(/^    - /, "      ") }
+              eg && rule && /^      to:[[:space:]]*$/ { getline; if ($0 ~ /^      [ ]*- /) peers = 1 }
+              END { finish(); exit bad }
+            ' "$1" || { echo "$1: NetworkPolicy egress rule without peers (every address)"; return 1; }
+          }
           for values in "" "$chart/ci/full-values.yaml" "$chart/ci/insecure-values.yaml"; do
             args=(); if [ -n "$values" ]; then args=(-f "$values"); fi
             echo "== values: ${values:-defaults}"
@@ -76,6 +90,7 @@ jobs:
               -schema-location default \
               -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
               - < rendered.yaml
+            egress_peers rendered.yaml
             # Never exposed outside the cluster.
             if grep -Eq 'type: (LoadBalancer|NodePort)|kind: Ingress' rendered.yaml; then
               echo "chart exposes Postwerk outside the cluster"; exit 1
@@ -108,4 +123,37 @@ jobs:
           fi
           if helm template ci "$chart" --set sentry.enabled=true --set sentry.minLevel=info >/dev/null 2>&1; then
             echo "sentry.minLevel=info rendered"; exit 1
+          fi
+          # NetworkPolicy egress: "any address" only when written out (D59).
+          helm template ci "$chart" --set sentry.enabled=true > rendered.yaml
+          egress_peers rendered.yaml
+          for cidr in '0.0.0.0/0' '::/0'; do
+            # by default once for the target ports and once for Sentry
+            if [ "$(grep -cFx "            cidr: \"$cidr\"" rendered.yaml)" -ne 2 ]; then
+              echo "default egress does not list $cidr for the target ports and Sentry"; exit 1
+            fi
+          done
+          # An empty peer list must fail, never render a rule for every address.
+          for args in \
+              "--set-json networkPolicy.egress.targetCIDRs=[]" \
+              "--set networkPolicy.egress.targetCIDRs=null" \
+              "--set sentry.enabled=true --set-json networkPolicy.egress.sentry.cidrs=[]" \
+              "--set-json networkPolicy.egress.dns.to=[]"; do
+            # shellcheck disable=SC2086 # $args holds several flags
+            if helm template ci "$chart" $args >/dev/null 2>&1; then
+              echo "empty egress peers rendered: $args"; exit 1
+            fi
+          done
+          # The explicit ways out render no rule at all.
+          helm template ci "$chart" --set-json 'networkPolicy.egress.targetPorts=[]' \
+            --set-json 'networkPolicy.egress.targetCIDRs=[]' > rendered.yaml
+          egress_peers rendered.yaml
+          if grep -Eq 'port: (587|465)$' rendered.yaml; then
+            echo "targetPorts=[] still renders the target rule"; exit 1
+          fi
+          helm template ci "$chart" --set sentry.enabled=true --set networkPolicy.egress.sentry.enabled=false \
+            --set-json 'networkPolicy.egress.sentry.cidrs=[]' > rendered.yaml
+          egress_peers rendered.yaml
+          if grep -Eq 'port: 443$' rendered.yaml; then
+            echo "networkPolicy.egress.sentry.enabled=false still renders the Sentry rule"; exit 1
           fi
