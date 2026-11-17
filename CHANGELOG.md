@@ -10,6 +10,16 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ## [Unreleased]
 
+### Fixed
+
+- A second Postwerk on the same database can no longer run alongside the first. `kubectl delete pod` and evictions
+  start the new pod while the old one is still stopping, `Recreate` or not. Postwerk now takes an exclusive lock on
+  `postwerk.db.lock` next to the database and waits for it up to `POSTWERK_DATA_LOCK_WAIT` (default `150s`, chart
+  value `dataLockWait`), logging the holder every 5 seconds, then exits with status 1. The lock is released after the
+  final export at shutdown, and by the kernel if the process dies.
+- The health listener opens before the store, so `/healthz` answers while Postwerk waits for the lock or runs
+  recovery, and `/readyz` fails until it can take mail.
+
 ## [1.0.0] - 2026-11-17
 
 The first release.

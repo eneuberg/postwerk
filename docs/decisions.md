@@ -895,3 +895,27 @@ to `X-MJ-CustomID`.
 - **Allow-lists fail closed on case folding to ASCII.** A recipient with a non-ASCII character that lower-cases to an
   ASCII one (the Kelvin sign `K` becomes `k`) is never allowed by `ALLOW_RECIPIENTS`: it would match an ASCII pattern
   while the target receives a different address.
+
+## D61 An exclusive lock on the database; the health listener opens first
+
+D6 and D28 assume one process on the SQLite file, and `Recreate` was the only guard. It orders rollouts only:
+`kubectl delete pod`, an eviction or a preemption makes the ReplicaSet start the new pod while the old one is still in
+its grace period (up to 120 s). A `ReadWriteOnce` volume on the same node mounts in both, and two Postwerks would run
+delivery workers on one queue: a mail sent twice, or state that one process overwrites under the other.
+
+- **`flock` on a lock file next to the database.** `store.Open` takes `LOCK_EX|LOCK_NB` on `postwerk.db.lock` before it
+  touches the database, and `Close` releases it after the final export. The kernel ends the lock with the process,
+  however it ends, so a crash never leaves a stale lock that would need a human. A row in the database or a PID
+  file could not promise that. `flock` rather than `fcntl` locks, because `fcntl` locks belong to the process
+  and are lost when any descriptor of the file is closed; SQLite's own locks are short and per transaction, so they
+  cannot guard a whole run.
+- **Wait, then fail.** A new process retries for `POSTWERK_DATA_LOCK_WAIT` (150 s, longer than the chart's grace
+  period) and logs the holder's host name and process id every 5 seconds; in Kubernetes the host name is the old pod.
+  It then exits with status 1, and the orchestrator restarts it. Failing at once would turn every deleted pod into a
+  crash loop; waiting forever would hide a second instance that never stops.
+- **Alive while waiting, not ready.** The health listener opens before the store: `/healthz` answers, so neither the
+  startup nor the liveness probe restarts a pod that waits as designed, and `/readyz` fails until the store, the
+  workers and the listeners run, so the Service sends it nothing. SMTP opens only after the lock.
+- **Not a cluster lock.** `flock` covers processes on one machine and one local file system. On Windows and other
+  systems without it Postwerk logs a warning and does not lock; on a network file system it may not reach other
+  machines. The database belongs on a local disk (D6), and the chart has one replica.

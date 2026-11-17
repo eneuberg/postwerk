@@ -6,7 +6,7 @@ this page is the map for people reading or changing the code.
 ## Packages
 
 ```
-cmd/postwerk          main: parse config, open store, start ingress, workers, reporter, retention, HTTP, admin; handle signals
+cmd/postwerk          main: parse config, open HTTP, open store (data lock), start ingress, workers, reporter, retention, admin; handle signals
 internal/config       environment + secret files → validated Config (O1); reference in configuration.md
 internal/id           mail ids: "pw_" + 26 chars, time-ordered, crypto random
 internal/message      header handling: read Ref/Skip/Message-ID, strip X-Postwerk-*, prepend own headers (I8, D10)
@@ -15,7 +15,7 @@ internal/auth         sender password hashes, UI tokens (name:admin:hash), UI pa
 internal/keys         key file format (<key-id>:<base64>), active key + old keys, gen-key (E5)
 internal/seal         AES-256-GCM sealing of the stored message, keyed by the key id in each blob (E1–E4)
 internal/addrhash     address normalization and HMAC-SHA256 keyed hashes, lookups over all keys (K1–K3)
-internal/store        SQLite: open, migrate, all reads and writes, retention steps; the only package that speaks SQL (S1–S12)
+internal/store        SQLite: data lock, open, migrate, all reads and writes, retention steps; the only package that speaks SQL (S1–S12, D61)
 internal/ingress      SMTP server session: AUTH, limits, seal, store-then-250 (I1–I9)
 internal/tlsreload    TLS certificate from files, re-read every minute, validated before it is served (I16)
 internal/delivery     one worker per target: claim, open the seal, send, classify per recipient, schedule, recover (D1–D16)
@@ -75,6 +75,17 @@ it the same way.
 One `*sql.DB` with a single open connection. All access is serialized; at transactional volumes this is simpler and
 safer than juggling readers and a writer, and it avoids `SQLITE_BUSY` entirely. Pragmas per connection: `journal_mode=WAL`,
 `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout`.
+
+**One process (D61).** The single connection serializes one process; nothing in SQLite stops a second one from
+running its own workers on the same file. `store.Open` therefore first takes `flock(LOCK_EX|LOCK_NB)` on
+`<database>.lock` (`lock_unix.go`, through `golang.org/x/sys/unix`), and only then creates or opens the database. While
+another open file holds the lock, in this process or another, it retries every 250 ms up to `Options.LockWait` and
+calls `Options.OnLockWait` at once and then every 5 s, then returns `store.ErrLocked`; a cancelled context ends the
+wait. The holder writes `host=… pid=… since=…` into the file, read only for those messages. `Close` closes the
+database, then the lock file, which releases the lock; the kernel releases it too when the process ends, so there is
+never a stale lock. Where `flock` is not built (`lock_other.go`, Windows and others), `store.LockSupported` is false,
+Open does not wait and `cmd/postwerk` logs a warning. `cmd/postwerk` opens the health listener before the store:
+`/healthz` answers during the wait, and `/readyz` fails until the store, the workers and the other listeners run.
 
 Tables (version 7):
 
@@ -275,7 +286,7 @@ sessions get at most half of the deadline, then they are closed (mails accepted 
 start); the API listener gets the same half, then its remaining connections are closed. net/http counts a connection
 that has not sent a request yet as busy for five seconds, and an HTTP client's spare keep-alive connection is one, so
 without that bound it could use up the deadline. Ingress and the API then write their folded refusal events. Then the
-remaining events are exported, HTTP stops and the store closes. Because the deadline is longer than
+remaining events are exported, HTTP stops and the store closes, which releases the data lock. Because the deadline is longer than
 the attempt cap, a send in progress always ends normally; a shorter configured deadline logs a warning. The
 orchestrator's grace period must be longer than the deadline (120 s).
 

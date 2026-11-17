@@ -108,7 +108,8 @@ can be checked in the deployed container.
 
 What it costs:
 
-- **Single instance.** One SQLite file has one writer. Two copies of Postwerk cannot share it.
+- **Single instance.** One SQLite file has one writer. Two copies of Postwerk cannot share it: a second one waits for
+  the first to stop (D61).
 - **No high availability.** During a restart or upgrade, the SMTP port is closed for a few seconds. Senders see a
   refused connection.
 - **Local disk only.** SQLite needs a local file system with working locks. Network file systems are not supported.

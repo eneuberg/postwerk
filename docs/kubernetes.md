@@ -8,7 +8,7 @@ Kubernetes.
 
 | Resource | What and why |
 |---|---|
-| Deployment | **One replica, strategy `Recreate`.** Postwerk keeps its queue in one SQLite file with one writer; two pods on the same file would corrupt it. `Recreate` stops the old pod before the new one starts. |
+| Deployment | **One replica, strategy `Recreate`.** Postwerk keeps its queue in one SQLite file with one writer; two pods on the same file would corrupt it. `Recreate` stops the old pod before the new one starts on a rollout; for the cases it does not cover, a data lock makes the new pod wait (below). |
 | Service | **`ClusterIP` only**, port 2525 (SMTP). No Ingress, no `LoadBalancer`, no `NodePort`: Postwerk is never reachable from outside the cluster. Port 8080 (health) is added only with `service.exposeHTTP=true`, port 8082 (query API) only with `api.enabled=true`. The UI port is never on the Service (section 7.1). |
 | PersistentVolumeClaim | The SQLite file at `/data`. Kept on `helm uninstall` (`helm.sh/resource-policy: keep`), so the queue and the records survive. |
 | NetworkPolicy | On by default: SMTP only from the pods you name, HTTP only from the sources you name, the query API only from the pods in `api.allowFrom`, egress only DNS and the target ports 587 and 465, plus 443 to Sentry while the Sentry sink is on (section 7). |
@@ -28,6 +28,18 @@ it. A target that is down does not make it fail: neither probe restarts Postwerk
 restart cannot fix, and the mails wait in the queue (`queue.stale` reports them). The internal UI runs on its own listener on the pod's loopback,
 `127.0.0.1:8081` ([ui.md](ui.md)); probes never touch it, and nothing in the cluster can reach it. The grace period is 120 s, longer than Postwerk's own shutdown deadline of 100 s, so a
 send in progress always finishes (configuration.md, section "Shutdown").
+
+**Why a data lock as well as `Recreate`.** `Recreate` only orders a rollout. `kubectl delete pod`, an eviction (node
+pressure, `kubectl drain`) or a preemption replaces the pod at once: the ReplicaSet starts the new one while the old
+one is still in its grace period of up to 120 s. With a `ReadWriteOnce` volume on the same node, both can mount it,
+and two Postwerks would run delivery workers on one SQLite file, sending mails twice or corrupting the queue. So
+Postwerk takes an exclusive lock on `/data/postwerk.db.lock` before it opens the database (D61). The new pod waits for
+it up to `dataLockWait` (150 s, longer than the grace period) and logs `database in use by another process, waiting
+for it to stop` with the old pod's name every 5 seconds, then starts as soon as the old pod has written its last
+events and closed the store. The health listener opens before the wait: `/healthz` answers, so the startup and
+liveness probes leave the waiting pod alone, and `/readyz` fails, so the Service sends it no mail until it runs. If
+the old pod still holds the lock after `dataLockWait`, the new one exits with status 1 and Kubernetes restarts it.
+The lock ends with the process that holds it, so a crashed or killed pod never leaves it behind.
 
 ## 2. Before you install
 
@@ -194,6 +206,7 @@ All values are in [values.yaml](../deploy/helm/postwerk/values.yaml) with commen
 | `limits.minFreeBytes` | `67108864` (**recommended**) | `POSTWERK_MIN_FREE_BYTES`: free space kept on the data volume; below it new mail gets `452` and `disk.low` is written. Keep `persistence.size` well above it. |
 | `queue.staleAfter`, `queue.staleRepeat` | `15m` (**recommended**), `"0"` | `POSTWERK_QUEUE_STALE_AFTER`, `POSTWERK_QUEUE_STALE_REPEAT`: `queue.stale` when a target's oldest queued mail is older; repeated while it lasts only if set. |
 | `shutdownTimeout`, `terminationGracePeriodSeconds` | `100s`, `120` | The grace period must stay longer than the shutdown deadline. |
+| `dataLockWait` | `150s` | `POSTWERK_DATA_LOCK_WAIT`: how long a new pod waits for an old one to let go of the database (section 1). Keep it longer than the grace period. |
 | `storeEncryption` | `on` (**recommended**) | `POSTWERK_STORE_ENCRYPTION`; `off` also drops the store key mount. |
 | `retention.rawKeepAfterHandoff` | `0` (**recommended**) | `POSTWERK_RAW_KEEP_AFTER_HANDOFF`. |
 | `retention.rawKeepAfterFailure` | `72h` (**recommended**) | `POSTWERK_RAW_KEEP_AFTER_FAILURE`. |
@@ -623,7 +636,8 @@ The volume holds the queue, delivery records and events; the raw messages in it 
 - Schema migrations run at start, automatically, in a transaction each. There is no downgrade: an older Postwerk
   refuses a database with a newer schema. Take a snapshot before an upgrade, and roll back by restoring it together
   with the older image.
-- Keep `terminationGracePeriodSeconds` (120) longer than `shutdownTimeout` (100 s).
+- Keep `terminationGracePeriodSeconds` (120) longer than `shutdownTimeout` (100 s), and `dataLockWait` (150 s) longer
+  than the grace period.
 - Read [CHANGELOG.md](../CHANGELOG.md) for new and changed settings; an unknown `POSTWERK_*` variable stops the start,
   so a typo shows up at once in `kubectl logs`. What a version number promises, and the upgrade steps in general:
   [versioning.md](versioning.md).

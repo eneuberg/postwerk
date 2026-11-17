@@ -106,11 +106,27 @@ most 4 KiB; a `read` search returns at most 20 mails.
 
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
-| `POSTWERK_DATA` | `/data/postwerk.db` | path on a local disk | The SQLite database. Created with mode `0600`; its WAL file sits next to it. |
+| `POSTWERK_DATA` | `/data/postwerk.db` | path on a local disk | The SQLite database. Created with mode `0600`; its WAL file and the lock file (`postwerk.db.lock`) sit next to it. |
+| `POSTWERK_DATA_LOCK_WAIT` | `150s` | `0` or a duration | How long a start waits while another process holds the database, then exits with status 1. `0` does not wait. Keep it longer than the orchestrator's grace period. |
 | `POSTWERK_STORE_KEY_FILE` | required, unless encryption is `off` | path | Keys that encrypt stored messages at rest (AES-256-GCM). |
 | `POSTWERK_STORE_ENCRYPTION` | `on` (**recommended**) | `on`, `off` | `off` stores messages in plaintext: local development only. A warning is logged at every start. `off` together with a store key file is a configuration error. |
 | `POSTWERK_HASH_KEY_FILE` | required while `POSTWERK_PSEUDONYMIZE_AFTER` > 0, so required by default | path | Keys for the keyed hashes that replace addresses after the pseudonymization age, and for lookups by address. |
 | `POSTWERK_SECURE_DELETE` | `on` (**recommended**) | `on`, `off` | SQLite `secure_delete`: deleted content is overwritten with zeros. `off` saves some write I/O and leaves deleted content readable in free pages. |
+
+### Data lock
+
+Only one process may use the database. Before it opens it, Postwerk takes an exclusive lock (`flock`) on the lock
+file next to it. If another Postwerk holds it, typically an old container that is still shutting down, the new one
+logs `database in use by another process, waiting for it to stop` every 5 seconds, with the holder's host name and
+process id, and tries again every quarter second until `POSTWERK_DATA_LOCK_WAIT` has passed. Then it exits with
+status 1 and the same reason. While it waits, `/healthz` answers `200` and `/readyz` `503`; the SMTP, admin and API
+listeners are not open yet. A `SIGTERM` during the wait stops it with status 0.
+
+The lock belongs to the process, not to the file: it ends when the process ends, however it ends, so a crash or
+`kill -9` never leaves a stale lock behind. The lock file stays on the volume and must not be deleted while
+Postwerk runs. On Linux, macOS and the BSDs the lock is enforced; on other systems (Windows) Postwerk logs a warning
+at start and nothing stops a second process. On a network file system, `flock` may not reach other machines; the
+database belongs on a local disk anyway.
 
 ### Key files
 
@@ -386,7 +402,8 @@ non-empty value stops the start.
 - [ ] **Encryption on and secure delete on** (the defaults); no `off` warnings in the start log.
 - [ ] **Data volume owned by uid 65532** (the image's user), on a local disk, not shared with anything else; directory
       `0700`.
-- [ ] **Grace period** longer than `POSTWERK_SHUTDOWN_TIMEOUT` (Kubernetes `terminationGracePeriodSeconds: 120`).
+- [ ] **Grace period** longer than `POSTWERK_SHUTDOWN_TIMEOUT` (Kubernetes `terminationGracePeriodSeconds: 120`), and
+      `POSTWERK_DATA_LOCK_WAIT` longer than the grace period (default `150s`).
 - [ ] **No capture target in production.**
 - [ ] **HTTP listener** reachable only by the probes (`:8080` inside the container, never published).
 - [ ] **Admin listener** on loopback (`127.0.0.1:8081`, the default) and opened only through `kubectl port-forward` or
