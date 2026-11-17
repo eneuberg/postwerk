@@ -165,16 +165,17 @@ in the event log. A close or resend writes its events in the transaction that ma
 
 ## 5. Pages
 
-All pages are server-rendered HTML with one stylesheet, readable at phone width, light and dark by the system setting.
-A status is always written out as text, colour only supports it.
+All pages are server-rendered HTML with one stylesheet and the embedded Barlow typeface, readable at phone width,
+light and dark by the system setting. A status is always written out as text, next to a lamp whose colour and shape
+both name it. How the UI looks, and why: [design-system.md](design-system.md).
 
 | Page | Path | Shows |
 |---|---|---|
 | Login | `GET /login`, `POST /login` | name and password or token |
-| Overview | `GET /` | per target: up, or down since when and why (`auth`, `unreachable`; D45), whether it is optional, recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial` by their required targets) |
+| Overview | `GET /` | a summary first: targets up or down, the queue and its oldest mail, failed and unknown recipients of the last 24 hours; then per target: up, or down since when and why (`auth`, `unreachable`; D45), whether it is optional, recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial` by their required targets) |
 | Mails | `GET /mails` | the search form; list with filters (state, target, received from and to), newest first, 50 per page |
 | Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
-| Mail | `GET /mails/{id}` | id, received time, sending application, size, ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline. Opening it writes `ui.view` |
+| Mail | `GET /mails/{id}` | on top the id, the overall status, received time, sending application, number of recipients and size, and a route to each target with its status; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline, the day shown once; beside it (below on narrow screens) the record: ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored, the recipients. Opening it writes `ui.view` |
 | Close, resend | `POST /mails/{id}/targets/{target}/close`, `POST /mails/{id}/targets/{target}/resend` | on success back to the mail page with a notice; when refused, the mail page with the reason at that target |
 | Settings | `GET /settings`, `POST /settings/accounts` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
 | Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
@@ -227,7 +228,7 @@ provider by its `X-Postwerk-Id` (Mailjet: the custom id). Found: close as confir
 | `internal/store` | the SQL for every read (lists, counts, events of a mail) and for the accounts table; still the only package that speaks SQL |
 | `internal/resolve` | close and resend for the UI and the API: input checks, what is possible for a delivery, the store's change and the wake signal for the workers |
 | `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
-| `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates and the stylesheet embedded with `embed` and rendered with `html/template` |
+| `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates, the stylesheet, the logo and the typeface (with its licence, `static/OFL.txt`) embedded with `embed`, served from a fixed list and rendered with `html/template` |
 | `internal/auth` | token file parsing, password rules and the equal-cost checker, on top of the sender password hashes |
 
 For design work, `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m` serves made-up data,

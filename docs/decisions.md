@@ -919,3 +919,41 @@ delivery workers on one queue: a mail sent twice, or state that one process over
 - **Not a cluster lock.** `flock` covers processes on one machine and one local file system. On Windows and other
   systems without it Postwerk logs a warning and does not lock; on a network file system it may not reach other
   machines. The database belongs on a local disk (D6), and the chart has one replica.
+
+## D70 The UI looks like a relay interlocking's panel; colour is kept for state
+
+The first UI used a teal accent on warm grey, rounded pills and system fonts: tidy, but it looked like any generated
+admin page and gave the operator no rule for where to look. The new design ([design-system.md](design-system.md))
+takes its rules from the signal box of a relay interlocking, the railway's own relay: graphite tracks on a grey
+panel, lamps that light up where something happens.
+
+- **Colour only for state.** Chrome, links and buttons are graphite and grey; status colours appear only as lamps and
+  tints of the status they name. A healthy page is calm, a problem is the coloured spot. The calm states (queued,
+  handed off, skipped) keep their word in text colour.
+- **Every lamp has its own shape** (ring, lit ring, circle, square, diamond, half circle, bar) next to the word, so
+  the state reads with any colour vision. The hues follow the Okabe–Ito set and every pair passes WCAG AA in light
+  and dark.
+- **Summary before detail.** The overview opens with targets, queue and the last 24 hours in one line; a mail's
+  page opens with its status, its key facts and a route to each target, and keeps the record beside the deliveries.
+- **No JavaScript still.** Charts are inline SVG coloured by class, the Resolve forms are `<details>`, and the mail
+  list turns into blocks on phones with CSS alone.
+
+A postal look was the obvious other choice. It leads to envelopes, stamps and the colours of national post companies,
+which Postwerk must not resemble, and it says nothing about watching routes.
+
+## D71 One embedded typeface, served by the UI; `font-src 'self'`
+
+Barlow (400, 600) and Barlow Semi Condensed (500), Latin subset, under the SIL Open Font License 1.1, are embedded in
+the binary and served from the UI's fixed list of static files, with the licence at `/static/OFL.txt` and named in the
+README. The CSP gains `font-src 'self'` and nothing else: no CDN, no request leaves the admin listener. The three files
+are about 67 KB together; `Cache-Control: no-store` stays on every response (U9), so a browser loads them again on
+each page, which is acceptable for a tool used through a tunnel by a few people. A system font stack would have cost
+nothing, but it looks different on every operator's machine; Barlow, drawn after public signs and trains, matches the
+panel, and its tabular figures keep tables aligned.
+
+## D72 A new logo: one track in, three out, each with a lamp
+
+The old logo, an envelope fanning out to three dots, used the teal that D70 retires. The new one is a track plan in a
+graphite tile: one line branches twice into three, each ending in a lamp. It shows what Postwerk does (one mail, one
+copy per target, a state for each) in the panel's own language, holds at 16 px, works on light and dark backgrounds,
+and has a one-colour version (`docs/logo-mono.svg`). It avoids envelopes, horns and railway company marks.
