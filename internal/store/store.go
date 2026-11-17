@@ -404,8 +404,49 @@ type NewMail struct {
 	Raw  []byte
 	Size int
 	// Params are the MAIL parameters the sender declared.
-	Params     Params
+	Params Params
+	// Audit says where the mail came from (D65).
+	Audit      MailAudit
 	Deliveries []NewDelivery
+}
+
+// MailAudit is where a mail came from: the credential its sender logged in
+// with and the connection. Every field may be empty (mails stored before
+// version 9 have none).
+type MailAudit struct {
+	// KeyID is the sender key used; empty for a password line.
+	KeyID string
+	// KeySource is where the credential is kept: "file" or "db".
+	KeySource string
+	// ClientIP is the connection's remote address without the port.
+	ClientIP string
+	// TLSVersion and TLSCipher are empty without TLS ("TLS 1.3",
+	// "TLS_AES_128_GCM_SHA256").
+	TLSVersion, TLSCipher string
+	// EHLO is the name the client gave in EHLO or HELO, redacted and at
+	// most 255 bytes.
+	EHLO string
+	// AuthMech is the SASL mechanism ("PLAIN").
+	AuthMech string
+}
+
+// Text is the audit as the text of the mail.accepted event:
+// "source=db key=<id> client=<ip>", or "source=file auth=password client=…".
+func (a MailAudit) Text() string {
+	var parts []string
+	if a.KeySource != "" {
+		parts = append(parts, "source="+a.KeySource)
+	}
+	switch {
+	case a.KeyID != "":
+		parts = append(parts, "key="+a.KeyID)
+	case a.KeySource != "":
+		parts = append(parts, "auth=password")
+	}
+	if a.ClientIP != "" {
+		parts = append(parts, "client="+a.ClientIP)
+	}
+	return strings.Join(parts, " ")
 }
 
 // Body values of the MAIL BODY= parameter that Postwerk accepts.
@@ -454,10 +495,12 @@ func (s *Store) Accept(ctx context.Context, m NewMail) error {
 	err := s.eventTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO mails (id, received_at, sender, envelope_from, message_id, ref, size, raw, raw_purged_at,
-				body, smtputf8, declared_size)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				body, smtputf8, declared_size, key_id, key_source, client_ip, tls_version, tls_cipher, ehlo, auth_mech)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			m.ID, at, m.Sender, m.EnvelopeFrom, nullStr(m.MessageID), nullStr(m.Ref), m.Size, raw, purgedAt,
-			nullStr(m.Params.Body), m.Params.SMTPUTF8, nullInt64(m.Params.DeclaredSize))
+			nullStr(m.Params.Body), m.Params.SMTPUTF8, nullInt64(m.Params.DeclaredSize),
+			nullStr(m.Audit.KeyID), nullStr(m.Audit.KeySource), nullStr(m.Audit.ClientIP), nullStr(m.Audit.TLSVersion),
+			nullStr(m.Audit.TLSCipher), nullStr(redactEHLO(m.Audit.EHLO)), nullStr(m.Audit.AuthMech))
 		if err != nil {
 			return fmt.Errorf("insert mail: %w", err)
 		}
@@ -467,7 +510,8 @@ func (s *Store) Accept(ctx context.Context, m NewMail) error {
 				return fmt.Errorf("insert recipient: %w", err)
 			}
 		}
-		if err := insertEvent(ctx, tx, Event{Time: m.ReceivedAt, MailID: m.ID, Kind: KindMailAccepted, Level: Info}); err != nil {
+		if err := insertEvent(ctx, tx, Event{Time: m.ReceivedAt, MailID: m.ID, Kind: KindMailAccepted, Level: Info,
+			Text: m.Audit.Text()}); err != nil {
 			return err
 		}
 		for _, d := range m.Deliveries {
@@ -1095,6 +1139,16 @@ func oneRow(res sql.Result) error {
 }
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
+
+// redactEHLO keeps the client's EHLO name within 255 bytes, without
+// addresses or control characters.
+func redactEHLO(s string) string {
+	s = redact.Text(s)
+	if len(s) > 255 {
+		s = strings.ToValidUTF8(s[:255], "")
+	}
+	return s
+}
 
 func nullStr(s string) any {
 	if s == "" {

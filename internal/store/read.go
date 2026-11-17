@@ -42,6 +42,9 @@ type MailFilter struct {
 	// a mail with no delivery to a required target uses all of them
 	// (design.md section 4, MailStatus).
 	Optional []string
+	// Sender, if set, limits the list to the mails of this sender; KeyID to
+	// those sent with this key (D65).
+	Sender, KeyID string
 	// IDs, if not nil, limits the list to these mails (search results).
 	IDs []string
 	// Limit (required, > 0) and Offset page through the list, newest first.
@@ -101,6 +104,14 @@ func (s *Store) ListMails(ctx context.Context, f MailFilter) ([]MailSummary, err
 	if !f.To.IsZero() {
 		where = append(where, `m.received_at < ?`)
 		args = append(args, ms(f.To))
+	}
+	if f.Sender != "" {
+		where = append(where, `m.sender = ?`)
+		args = append(args, f.Sender)
+	}
+	if f.KeyID != "" {
+		where = append(where, `m.key_id = ?`)
+		args = append(args, f.KeyID)
 	}
 	if f.IDs != nil {
 		where = append(where, `m.id IN (`+placeholders(len(f.IDs))+`)`)

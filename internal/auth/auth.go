@@ -150,6 +150,31 @@ func scanLines(r io.Reader, fn func(lineNo int, line string) error) []error {
 	return errs
 }
 
+// CheckHash reports whether v is a valid senders-file hash value
+// (pbkdf2-sha256$…). The error never quotes v.
+func CheckHash(v string) error {
+	_, err := parseHash(v)
+	return err
+}
+
+// NewSenders returns the checks for the senders and their hash values, as
+// ParseSenders builds them from a file (internal/senders reads the file
+// now). Every value must pass CheckHash; hashes must not be empty.
+func NewSenders(hashes map[string]string) (*Senders, error) {
+	if len(hashes) == 0 {
+		return nil, errors.New("auth: no senders")
+	}
+	users := make(map[string]hash, len(hashes))
+	for name, v := range hashes {
+		h, err := parseHash(v)
+		if err != nil {
+			return nil, fmt.Errorf("auth: sender %q: %w", name, err)
+		}
+		users[name] = h
+	}
+	return newSenders(users), nil
+}
+
 // newSenders sets up the checks for users, which must not be empty.
 func newSenders(users map[string]hash) *Senders {
 	s := &Senders{

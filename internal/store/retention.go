@@ -423,6 +423,9 @@ type MailRecord struct {
 	RawPurgedAt     time.Time // zero while the message is stored
 	PseudonymizedAt time.Time // zero while addresses are plain
 	SealedRawBytes  int       // length of the stored blob
+	// Audit is where the mail came from (D65); empty for mails stored
+	// before version 9.
+	Audit MailAudit
 }
 
 // ErrNotFound is returned for a mail id that does not exist.
@@ -436,12 +439,13 @@ func (s *Store) Mail(ctx context.Context, id string) (MailRecord, error) {
 	var purged, pseudo sql.NullInt64
 	var rawLen, declared sql.NullInt64
 	var body sql.NullString
+	var keyID, keySource, client, tlsVersion, tlsCipher, ehlo, mech sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, received_at, sender, envelope_from, message_id, ref, size, length(raw), raw_purged_at, pseudonymized_at,
-			body, smtputf8, declared_size
+			body, smtputf8, declared_size, key_id, key_source, client_ip, tls_version, tls_cipher, ehlo, auth_mech
 		FROM mails WHERE id = ?`, id).
 		Scan(&m.ID, &received, &m.Sender, &m.EnvelopeFrom, &messageID, &ref, &m.Size, &rawLen, &purged, &pseudo,
-			&body, &m.Params.SMTPUTF8, &declared)
+			&body, &m.Params.SMTPUTF8, &declared, &keyID, &keySource, &client, &tlsVersion, &tlsCipher, &ehlo, &mech)
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, ErrNotFound
 	}
@@ -451,6 +455,8 @@ func (s *Store) Mail(ctx context.Context, id string) (MailRecord, error) {
 	m.ReceivedAt = time.UnixMilli(received)
 	m.MessageID, m.Ref = messageID.String, ref.String
 	m.Params.Body, m.Params.DeclaredSize = body.String, declared.Int64
+	m.Audit = MailAudit{KeyID: keyID.String, KeySource: keySource.String, ClientIP: client.String,
+		TLSVersion: tlsVersion.String, TLSCipher: tlsCipher.String, EHLO: ehlo.String, AuthMech: mech.String}
 	m.HasRaw, m.SealedRawBytes = rawLen.Valid, int(rawLen.Int64)
 	if purged.Valid {
 		m.RawPurgedAt = time.UnixMilli(purged.Int64)
