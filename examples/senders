@@ -1,5 +1,10 @@
-# Senders file for the local compose example. One line per sending
-# application: name:hash. The hash below is for the password
+# Senders file for the local compose example. One line per credential of a
+# sending application: a key (name:pwk-sha256$..., made with
+#   docker run --rm postwerk:dev gen-sender NAME
+# which also prints the key, the application's SMTP password) or, as here,
+# a password hash (name:pbkdf2-sha256$...). An optional policy line per
+# sender: name:policy from=*@example.test max_per_minute=60
+# See docs/configuration.md, "The senders file". The hash below is for the password
 # "change-me-local-only"; never use it anywhere else.
 # Create your own with:
 #   printf '%s' 'your-password' | docker run --rm -i postwerk:dev hash-password

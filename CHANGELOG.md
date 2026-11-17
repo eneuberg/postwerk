@@ -10,8 +10,32 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ## [Unreleased]
 
+### Added
+
+- Sender keys: `postwerk gen-sender NAME` prints a random key (`pwk_<id>_<secret>`, the application's SMTP password)
+  and its senders-file line, which holds only a SHA-256 of the key. One key per application, two at once for a
+  rotation without downtime. Password lines from 1.0 keep working.
+- A policy per sender in the senders file (`name:policy from=*@example.com max_per_minute=60 max_rcpt_per_hour=500`):
+  an envelope sender outside `from=` gets `550 5.7.1` (`ingress.rejected reason=from_not_allowed`), a sender over a
+  limit `451 4.7.1` (new event `ingress.rate_limited`, warn).
+- `POSTWERK_SENDER_KEYS` (`file`, the default and 1.0's behaviour; `db`; `both`): senders can also be kept in the
+  database, with create, rotate, revoke and policy changes as events with the actor (`sender.created`,
+  `sender.rotated`, `sender.revoked`, `sender.policy_changed`). The UI pages and API endpoints for them follow.
+- Every mail records the key it came with, the client address, TLS version and cipher, the `EHLO` name and the
+  `AUTH` mechanism; `mail.accepted` carries `source=… key=… client=…` as text. Removed with the mail record.
+- `sender.volume_high` (error) when a sender sends far more than its own average of the past week
+  (`POSTWERK_SENDER_VOLUME_FACTOR`, `POSTWERK_SENDER_VOLUME_MIN`, `POSTWERK_SENDER_VOLUME_MAX`).
+- The senders file is re-read every 30 s: a valid change is used without a restart (`senders.reloaded`), an invalid
+  one is not (`senders.reload_failed`, error). A removed or revoked credential ends its open sessions at the next
+  `MAIL`.
+- The chart value `senderKeys` (and `senderVolume`) for the new settings.
+
 ### Changed
 
+- Database schema version 9 (two migrations: managed senders, per-mail audit columns). As always, there is no way
+  back to an older version except a backup.
+- A senders-file password that has the exact form of a sender key (`pwk_` followed by 12 and 52 base32 characters)
+  is now checked as a key. No password made by `hash-password` or chosen by a person has that form.
 - The UI has a new design ([docs/design-system.md](docs/design-system.md)): colour only for state, each status a lamp
   with its own shape and its word, a summary on top of the overview, a route to each target and a timeline on a
   mail's page, mail lists as blocks on phones. Pages, forms and addresses are unchanged.

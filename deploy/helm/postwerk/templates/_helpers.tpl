@@ -47,6 +47,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/* Checks that fail the render with a clear message. */}}
 {{- define "postwerk.validate" -}}
+{{- if not (has (toString .Values.senderKeys) (list "file" "db" "both")) }}
+{{- fail "senderKeys must be file, db or both" }}
+{{- end }}
 {{- if and (not .Values.tls.enabled) (not .Values.tls.allowInsecureAuth) }}
 {{- fail "tls.enabled=false needs tls.allowInsecureAuth=true (cleartext AUTH; only on a network that encrypts traffic between nodes)" }}
 {{- end }}

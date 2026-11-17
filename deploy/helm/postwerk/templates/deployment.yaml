@@ -130,8 +130,18 @@ spec:
             - name: POSTWERK_INSTANCE
               value: {{ . | quote }}
             {{- end }}
+            {{- if ne .Values.senderKeys "db" }}
             - name: POSTWERK_SENDERS_FILE
               value: /run/secrets/senders/senders
+            {{- end }}
+            - name: POSTWERK_SENDER_KEYS
+              value: {{ .Values.senderKeys | quote }}
+            - name: POSTWERK_SENDER_VOLUME_FACTOR
+              value: {{ .Values.senderVolume.factor | toString | quote }}
+            - name: POSTWERK_SENDER_VOLUME_MIN
+              value: {{ .Values.senderVolume.min | toString | quote }}
+            - name: POSTWERK_SENDER_VOLUME_MAX
+              value: {{ .Values.senderVolume.max | toString | quote }}
             {{- if eq (toString .Values.storeEncryption) "off" }}
             - name: POSTWERK_STORE_ENCRYPTION
               value: "off"
@@ -247,9 +257,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if ne .Values.senderKeys "db" }}
             - name: senders
               mountPath: /run/secrets/senders
               readOnly: true
+            {{- end }}
             {{- if ne (toString .Values.storeEncryption) "off" }}
             - name: store-key
               mountPath: /run/secrets/store-key
@@ -331,6 +343,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" $fullname) }}
         # Secrets as files, readable by the group 65532 (fsGroup) only.
+        {{- if ne .Values.senderKeys "db" }}
         - name: senders
           secret:
             secretName: {{ .Values.secrets.senders.name }}
@@ -338,6 +351,7 @@ spec:
             items:
               - key: {{ .Values.secrets.senders.key }}
                 path: senders
+        {{- end }}
         {{- if ne (toString .Values.storeEncryption) "off" }}
         - name: store-key
           secret:

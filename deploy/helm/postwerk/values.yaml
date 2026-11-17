@@ -29,10 +29,25 @@ hostname: ""
 # POSTWERK_INSTANCE: added to every log line and event.
 instance: ""
 
+# POSTWERK_SENDER_KEYS: where senders and their keys are kept. "file" (the
+# senders Secret, as in 1.0), "db" (in the database, managed in the UI and
+# the API; no senders Secret is mounted) or "both".
+senderKeys: file
+
+# sender.volume_high (error) when a sender's mails in the last hour exceed
+# factor times its hourly average of the week before (and at least min), or
+# max whatever the history. factor 0 and max 0 turn it off.
+senderVolume:
+  factor: 10
+  min: 100
+  max: 0
+
 # Existing Secrets, referenced by name and key. The chart never creates
 # secrets; see docs/kubernetes.md for the kubectl commands.
 secrets:
-  # Senders file (postwerk hash-password). Required.
+  # Senders file: lines from postwerk gen-sender (or hash-password), and
+  # optional policy lines. Required unless senderKeys is "db". Changes are
+  # picked up within a minute, without a restart.
   senders:
     name: postwerk-senders
     key: senders

@@ -4,6 +4,8 @@ image:
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 hostname: relay.example.test
 instance: prod
+senderKeys: both
+senderVolume: {factor: 20, min: 50, max: 5000}
 tls:
   certManager:
     enabled: true

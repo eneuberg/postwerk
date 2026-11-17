@@ -110,6 +110,13 @@ jobs:
           if helm template ci "$chart" --set ui.port=8080 >/dev/null 2>&1; then
             echo "ui.port on the health port rendered"; exit 1
           fi
+          if helm template ci "$chart" --set senderKeys=ldap >/dev/null 2>&1; then
+            echo "an unknown senderKeys rendered"; exit 1
+          fi
+          # Senders only in the database: no senders file, no senders Secret.
+          if helm template ci "$chart" --set senderKeys=db | grep -Eq 'POSTWERK_SENDERS_FILE|secretName: postwerk-senders'; then
+            echo "senderKeys=db still mounts the senders file"; exit 1
+          fi
           # The API is off by default: no API port anywhere.
           if helm template ci "$chart" | grep -Eq 'POSTWERK_API_LISTEN|name: api$'; then
             echo "API on by default"; exit 1
