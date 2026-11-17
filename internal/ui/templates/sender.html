@@ -20,7 +20,7 @@
 <section class="card" aria-labelledby="act-h">
   <div class="card-head results-head">
     <h2 id="act-h">Last 24 hours</h2>
-    <a href="/mails?sender={{$s.Name}}">Mails of {{$s.Name}} →</a>
+    <p class="card-links"><a href="/stats?range=7d&amp;sender={{$s.Name}}">Statistics, 7 days →</a> <a href="/mails?sender={{$s.Name}}">Mails of {{$s.Name}} →</a></p>
   </div>
   <dl class="readouts readouts-wide">
     <div><dt>Mails</dt><dd class="num">{{if $s.Recent.Mails}}<a href="/mails?sender={{$s.Name}}">{{group $s.Recent.Mails}}</a>{{else}}0{{end}}</dd></div>

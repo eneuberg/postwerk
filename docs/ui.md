@@ -287,7 +287,8 @@ a session, a log line or an event, and Postwerk stores only its SHA-256. A reloa
 because the name is taken. A lost key is replaced by a rotation, not recovered.
 
 **A sender's page** shows the same, its keys in full (created, valid until, last login, revoked, each with who did
-it) and links to its mails and to the mails of each key. For a sender in the database:
+it) and links to its mails, to the mails of each key and to the statistics of the sender (section 5.1, last 7 days).
+For a sender in the database:
 
 - **Add a key (rotation).** A second key, shown once like the first. Put it into the application, check that its last
   login moves, then revoke the old key; both work in the meantime. A sender has at most two active keys, so the button

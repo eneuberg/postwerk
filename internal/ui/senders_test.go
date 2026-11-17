@@ -133,6 +133,9 @@ func TestSenderKeysList(t *testing.T) {
 	if gone.StatusCode != 200 || !strings.Contains(gone.body, "in no source any more") || strings.Contains(gone.body, "<form method=\"post\" action=\"/settings/senders") {
 		t.Fatalf("removed sender page: %d", gone.StatusCode)
 	}
+	if shop := b.get("/settings/senders/billing"); !strings.Contains(shop.body, `href="/stats?range=7d&amp;sender=billing"`) {
+		t.Error("the sender page does not link to its statistics")
+	}
 	if r := b.get("/settings/senders/nobody"); r.StatusCode != 404 {
 		t.Fatalf("unknown sender: %d", r.StatusCode)
 	}
