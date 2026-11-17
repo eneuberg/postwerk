@@ -53,9 +53,9 @@ const (
 )
 
 // ContentSecurityPolicy is sent with every response (U9). The UI has no
-// JavaScript; styles and images come from the UI itself.
-const ContentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; " +
-	"frame-ancestors 'none'; base-uri 'none'"
+// JavaScript; styles, images and fonts come from the UI itself.
+const ContentSecurityPolicy = "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; " +
+	"form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 // Verifier checks the tokens of the tokens file (auth.Tokens).
 type Verifier interface {
@@ -281,6 +281,11 @@ func (u *UI) authed(fn func(http.ResponseWriter, *http.Request, session)) http.H
 var staticTypes = map[string]string{
 	"ui.css":   "text/css; charset=utf-8",
 	"logo.svg": "image/svg+xml",
+	// The typeface, Barlow, under the SIL Open Font License (OFL.txt).
+	"barlow-400.woff2":                "font/woff2",
+	"barlow-600.woff2":                "font/woff2",
+	"barlow-semi-condensed-500.woff2": "font/woff2",
+	"OFL.txt":                         "text/plain; charset=utf-8",
 }
 
 func serveStatic(w http.ResponseWriter, r *http.Request) {

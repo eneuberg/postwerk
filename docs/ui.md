@@ -135,7 +135,7 @@ A page on the internet can make the operator's browser send requests to `localho
   the login form itself. A missing or wrong token gets `403`. Go's cross-origin protection (`Sec-Fetch-Site` and
   `Origin`) refuses cross-site `POST`s as well.
 - **Strict headers on every response:**
-  `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+  `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
   `X-Frame-Options: DENY`. The UI has no JavaScript at all.
 

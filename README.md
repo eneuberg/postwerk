@@ -82,3 +82,7 @@ options: [docs/scope.md](docs/scope.md).
 ## License
 
 MIT, provided as is, without warranty of any kind. See [LICENSE](LICENSE).
+
+The UI embeds the Barlow and Barlow Semi Condensed typefaces, Copyright 2017 The Barlow Project Authors, under the
+SIL Open Font License 1.1: see [internal/ui/static/OFL.txt](internal/ui/static/OFL.txt), also served by the UI at
+`/static/OFL.txt`.

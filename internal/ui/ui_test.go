@@ -241,7 +241,7 @@ func (h *harness) events() []store.Event {
 func assertHeaders(t *testing.T, what string, r response) {
 	t.Helper()
 	want := map[string]string{
-		"Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		"Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		"X-Content-Type-Options":  "nosniff",
 		"Referrer-Policy":         "no-referrer",
 		"Cache-Control":           "no-store",
@@ -299,6 +299,8 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		{"login without csrf", anon.do("POST", "/login", url.Values{"name": {"ops"}})},
 		{"stylesheet", anon.get("/static/ui.css")},
 		{"logo", anon.get("/static/logo.svg")},
+		{"font", anon.get("/static/barlow-400.woff2")},
+		{"font licence", anon.get("/static/OFL.txt")},
 		{"unknown static", anon.get("/static/../ui.go")},
 		{"not found", anon.get("/nope")},
 		{"wrong method", anon.do("PUT", "/login", url.Values{})},
@@ -310,6 +312,14 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 	}
 	if r := anon.get("/static/ui.css"); r.StatusCode != 200 || r.Header.Get("Content-Type") != "text/css; charset=utf-8" {
 		t.Fatalf("stylesheet: %d %s", r.StatusCode, r.Header.Get("Content-Type"))
+	}
+	for _, name := range []string{"barlow-400.woff2", "barlow-600.woff2", "barlow-semi-condensed-500.woff2"} {
+		if r := anon.get("/static/" + name); r.StatusCode != 200 || r.Header.Get("Content-Type") != "font/woff2" || len(r.body) < 1000 {
+			t.Fatalf("font %s: %d %s", name, r.StatusCode, r.Header.Get("Content-Type"))
+		}
+	}
+	if r := anon.get("/static/OFL.txt"); r.StatusCode != 200 || !strings.Contains(r.body, "SIL OPEN FONT LICENSE") {
+		t.Fatalf("font licence: %d", r.StatusCode)
 	}
 	if r := anon.get("/static/"); r.StatusCode != 404 {
 		t.Fatalf("static directory listing: %d", r.StatusCode)

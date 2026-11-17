@@ -1,49 +1,106 @@
-/* Postwerk UI. One file, system fonts, light and dark by the system
-   setting. Status is always written out; colour only supports it. */
+/* Postwerk UI. One file, light and dark by the system setting. The design
+   system is in docs/design-system.md: a relay interlocking's panel, where
+   colour is reserved for state. Status is always written out; colour and
+   the lamp's shape only support it. */
 
+@font-face {
+  font-family: "Barlow"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("barlow-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("barlow-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Semi Condensed"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("barlow-semi-condensed-500.woff2") format("woff2");
+}
+
+/* Tokens. The names are stable; other parts of the UI build on them. */
 :root {
   color-scheme: light dark;
-  --bg: #f6f6f3;
-  --surface: #ffffff;
-  --surface-2: #f0f0ec;
-  --text: #1c1e21;
-  --muted: #62666d;
-  --border: #e1e1dc;
-  --link: #0b5f59;
-  --focus: #0e6f68;
-  --brand: #0e6f68;
 
-  --ok-fg: #1d6b3a;    --ok-bg: #e2f1e7;
-  --bad-fg: #a3261c;   --bad-bg: #fbe4e0;
-  --warn-fg: #7f4d00;  --warn-bg: #fbeed3;
-  --part-fg: #8a3e00;  --part-bg: #fde5d2;
-  --info-fg: #1f4f99;  --info-bg: #e3ebf9;
-  --busy-fg: #5a3a9c;  --busy-bg: #ece6f7;
-  --off-fg: #555a61;   --off-bg: #ebebe7;
+  /* Panel: surfaces, lines and text */
+  --bg: #e3e6e1;          /* the panel the page sits on */
+  --surface: #f7f8f5;     /* a tile: cards, tables, forms */
+  --surface-2: #edefeb;   /* sunken: table heads, hovered rows, figures */
+  --line: #cdd2cc;        /* hairlines between rows and around tiles */
+  --line-strong: #8f9791; /* track lines, input borders */
+  --text: #1c201e;        /* graphite */
+  --muted: #555d58;       /* labels and secondary text, AA on every surface */
+  --ink: #262b28;         /* primary buttons, the logo tile */
+  --on-ink: #f7f8f5;      /* text on --ink */
+  --focus: #1c201e;       /* focus ring */
+  --link: #1c201e;
 
-  --radius: 10px;
+  /* Status: -fg for text and the lamp's rim (AA on every surface), -lamp for
+     the lamp's fill, -bg for a tinted area such as a notice. */
+  --queued-fg: #3e4642;     --queued-lamp: transparent; --queued-bg: #e6e9e5;
+  --sending-fg: #1f5fa8;    --sending-lamp: #3d86d9;    --sending-bg: #e1eaf6;
+  --handed_off-fg: #1e7340; --handed_off-lamp: #2e9e5b; --handed_off-bg: #dfeee3;
+  --failed-fg: #b42318;     --failed-lamp: #d7371f;     --failed-bg: #f8e2de;
+  --unknown-fg: #7f5300;    --unknown-lamp: #eab21a;    --unknown-bg: #f6ebcd;
+  --partial-fg: #8e3b78;    --partial-lamp: #b4529c;    --partial-bg: #f3e2ee;
+  --skipped-fg: #5a625d;    --skipped-lamp: #a3aaa5;    --skipped-bg: #e9ece8;
+
+  /* Charts (inline SVG): grid and axis lines */
+  --chart-grid: var(--line);
+  --chart-axis: var(--line-strong);
+
+  /* Type */
+  --font: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-label: "Barlow Semi Condensed", "Barlow", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-sm: .8125rem;  /* 13 px: labels, lamps in tables */
+  --fs-table: .9375rem; /* 15 px: tables */
+  --fs-body: 1rem;    /* 16 px */
+  --fs-h3: 1.125rem;  /* 18 px */
+  --fs-h2: 1.3125rem; /* 21 px */
+  --fs-h1: 1.625rem;  /* 26 px */
+
+  /* Space: a 4 px step */
+  --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem; --sp-5: 1.5rem; --sp-6: 2rem; --sp-7: 3rem;
+
+  /* Corners: tiles and controls are almost square */
+  --r-1: 2px;
+  --r-2: 4px;
+
+  --page: 78rem;
+
+  /* Old names, kept so older rules keep working; use the names above. */
+  --border: var(--line);
+  --brand: var(--ink);
+  --radius: var(--r-2);
+  --ok-fg: var(--handed_off-fg);   --ok-bg: var(--handed_off-bg);
+  --bad-fg: var(--failed-fg);      --bad-bg: var(--failed-bg);
+  --warn-fg: var(--unknown-fg);    --warn-bg: var(--unknown-bg);
+  --part-fg: var(--partial-fg);    --part-bg: var(--partial-bg);
+  --info-fg: var(--sending-fg);    --info-bg: var(--sending-bg);
+  --busy-fg: var(--sending-fg);    --busy-bg: var(--sending-bg);
+  --off-fg: var(--skipped-fg);     --off-bg: var(--skipped-bg);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #15171a;
-    --surface: #1d2024;
-    --surface-2: #24282d;
-    --text: #e7e7e3;
-    --muted: #9da2a9;
-    --border: #2f343a;
-    --link: #6fd0c4;
-    --focus: #6fd0c4;
-    --brand: #1f8f84;
+    --bg: #1b1f1d;
+    --surface: #232825;
+    --surface-2: #2b312d;
+    --line: #3a423d;
+    --line-strong: #5e6862;
+    --text: #e4e8e3;
+    --muted: #a0a9a2;
+    --ink: #e4e8e3;
+    --on-ink: #1b1f1d;
+    --focus: #e4e8e3;
+    --link: #e4e8e3;
 
-    --ok-fg: #8fd8a8;    --ok-bg: #173323;
-    --bad-fg: #ff9d92;   --bad-bg: #3d1c19;
-    --warn-fg: #f2c46f;  --warn-bg: #362a12;
-    --part-fg: #ffb27a;  --part-bg: #3a2414;
-    --info-fg: #9dbcf5;  --info-bg: #1a2a45;
-    --busy-fg: #c3abf5;  --busy-bg: #2c2242;
-    --off-fg: #aab0b7;   --off-bg: #2a2e33;
+    --queued-fg: #c9d0ca;     --queued-lamp: transparent; --queued-bg: #2e3430;
+    --sending-fg: #7fb2f0;    --sending-lamp: #5e9fe6;    --sending-bg: #1f2d40;
+    --handed_off-fg: #5cc489; --handed_off-lamp: #45b572; --handed_off-bg: #1e3527;
+    --failed-fg: #ff8a73;     --failed-lamp: #f0553b;     --failed-bg: #3d231f;
+    --unknown-fg: #e6b54a;    --unknown-lamp: #f2c14a;    --unknown-bg: #3a311d;
+    --partial-fg: #e08fcb;    --partial-lamp: #d07abd;    --partial-bg: #3a2437;
+    --skipped-fg: #9aa29c;    --skipped-lamp: #6e7771;    --skipped-bg: #2b302d;
   }
 }
 
@@ -55,7 +112,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: 400 var(--fs-body)/1.5 var(--font);
 }
 
 a { color: var(--link); text-underline-offset: 2px; }
