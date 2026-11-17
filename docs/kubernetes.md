@@ -39,7 +39,10 @@ for it to stop` with the old pod's name every 5 seconds, then starts as soon as 
 events and closed the store. The health listener opens before the wait: `/healthz` answers, so the startup and
 liveness probes leave the waiting pod alone, and `/readyz` fails, so the Service sends it no mail until it runs. If
 the old pod still holds the lock after `dataLockWait`, the new one exits with status 1 and Kubernetes restarts it.
-The lock ends with the process that holds it, so a crashed or killed pod never leaves it behind.
+The lock ends with the process that holds it, so a crashed or killed pod never leaves it behind. It protects only on
+a file system that supports `flock` across the processes involved: local disks and most block-backed volumes
+(`ReadWriteOnce` on a cloud disk, Longhorn, local-path), not some NFS or SMB setups, where a second process may not
+see the lock.
 
 ## 2. Before you install
 

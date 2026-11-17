@@ -194,8 +194,9 @@ listeners are not open yet. A `SIGTERM` during the wait stops it with status 0.
 The lock belongs to the process, not to the file: it ends when the process ends, however it ends, so a crash or
 `kill -9` never leaves a stale lock behind. The lock file stays on the volume and must not be deleted while
 Postwerk runs. On Linux, macOS and the BSDs the lock is enforced; on other systems (Windows) Postwerk logs a warning
-at start and nothing stops a second process. On a network file system, `flock` may not reach other machines; the
-database belongs on a local disk anyway.
+at start and nothing stops a second process. The lock only protects against a second process on a file system that
+supports `flock`: local disks and most block-backed volumes do, some NFS and SMB setups do not (the lock may not reach
+other machines, or not be taken at all). The database belongs on a local disk anyway.
 
 ### Key files
 

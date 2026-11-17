@@ -66,7 +66,8 @@ One short line per change, written for operators. At a release, Unreleased becom
   start the new pod while the old one is still stopping, `Recreate` or not. Postwerk now takes an exclusive lock on
   `postwerk.db.lock` next to the database and waits for it up to `POSTWERK_DATA_LOCK_WAIT` (default `150s`, chart
   value `dataLockWait`), logging the holder every 5 seconds, then exits with status 1. The lock is released after the
-  final export at shutdown, and by the kernel if the process dies.
+  final export at shutdown, and by the kernel if the process dies. It needs a file system with `flock` (local disks,
+  most block-backed volumes; not some NFS or SMB setups).
 - The health listener opens before the store, so `/healthz` answers while Postwerk waits for the lock or runs
   recovery, and `/readyz` fails until it can take mail.
 
