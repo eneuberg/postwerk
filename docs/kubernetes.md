@@ -504,28 +504,82 @@ Postwerk sends facts with a level; the rules in GlitchTip or Sentry decide who i
 ([design.md](design.md#91-alerting)). Issues are grouped by kind and target, so "`queue.stale` at `mailjet`" is one
 issue for the whole outage.
 
-**GlitchTip.** Its project alerts count events per issue (so many events within so many minutes) and have no filter
-by tag, and Postwerk sends to one project:
+**GlitchTip** (tested with GlitchTip 7.0.0, November 2026; check again after an upgrade). A project alert offers:
 
-1. Keep `sentry.minLevel: error`. Every error kind needs a person, sooner or later.
-2. In the project's settings, under *Alerts*, add a rule: **1 event in 1 minute**, recipients the channel that should
-   learn about it (a webhook to the chat tool, or e-mail through a path that does not depend on this Postwerk). It
-   fires for every issue that receives an event, and Postwerk's issues are a kind at a target: `target.down`,
-   `queue.stale` and `disk.low`, but also `delivery.failed` at `mailjet`. Check how often your GlitchTip version repeats a rule for an
-   issue that keeps receiving events; `delivery.failed` can come once per mail.
-3. If only the page kinds may wake someone at night, point that rule at a working-hours channel and page from where
-   you can filter: the platform's monitoring on the pod (readiness, restarts), and, if your log tool can alert, a rule
-   on `"kind":"target.down"`, `"kind":"queue.stale"` or `"kind":"disk.low"` in Postwerk's stdout stream.
-4. Resolve the issue by hand once `queue.recovered` or `disk.ok` shows in the log; a later `queue.stale` reopens it and
-   the rule fires again. For a rule that should fire again while it lasts, set `queue.staleRepeat: 4h`.
+| | GlitchTip 7.0.0 |
+|---|---|
+| Trigger | "An issue gets *N* events in *M* minutes", counted per issue; or "One of this project's uptime monitors goes down" |
+| Filter | environments only (Postwerk's environment is `instance`); nothing by tag, `kind` or level |
+| Repeats | once per issue and alert; again only after the issue was resolved and gets a new event |
+| Timing | alerts are checked once a minute; issues that come up in the same minute arrive in one message |
+| Recipients | e-mail (the members of the project's teams), generic webhook (Mattermost, Rocket.Chat and others), Slack, Discord, Microsoft Teams, Google Chat, ntfy, Zulip, Feishu |
 
-**Sentry.** Issue alerts can filter by tag, so one project is enough:
+What a test showed, with `minLevel: warn` and one alert "1 event in 1 minute" to a webhook:
 
-| Rule | Conditions | Action |
-|---|---|---|
-| Postwerk: page | a new issue is created, or an issue changes from resolved to unresolved; tag `kind` is one of `queue.stale`, `disk.low`, `target.down` | page on-call |
-| Postwerk: ticket | the same, tag `kind` is not one of those | channel or ticket queue |
-| Postwerk: senders (with `minLevel: warn`) | tag `kind` starts with `ingress.`, or is `delivery.rejected` | the team of the application named in tag `sender` |
+- The first event of each issue notified within a minute: `tls.expiring`, `delivery.failed`, `delivery.rejected`,
+  `ingress.auth_failed`, `delivery.retry`, `target.down`, `queue.stale`. So `warn` kinds reach the same alert.
+- While an issue was open, nothing more: not a second failed mail, not the `queue.stale` of a second outage, not the
+  `queue.staleRepeat` repeats.
+- After `target.down` was resolved, the next outage notified again. A `queue.stale` resolved while the queue was still
+  stuck notified again with the next repeat.
+- An alert limited to the environment `prod` fired for every issue; one limited to `staging` never did.
+- An alert "3 events in 10 minutes" fired once per issue that reached three events, and then not again.
+- One message bundles the issues of a minute. When one of them reopened, another issue of that bundle
+  (`delivery.retry`) notified again with its next event, although nobody had resolved it. Do not build on this.
+
+Setup:
+
+1. Keep `sentry.minLevel: error`. GlitchTip cannot keep `warn` events out of an alert, so `warn` adds retries and
+   refused senders to the same channel.
+2. *Settings → Projects → (the project) → Alerts → New alert*: "An issue gets **1** event in **1** minute"; under
+   *Environments* pick the instance if several instances send to the project; *Add Alert Recipient*: the channel
+   people watch (a chat webhook, or e-mail through a path that does not depend on this Postwerk). The same with the
+   API (a token with `project:write`):
+
+   ```sh
+   curl -X POST https://glitchtip.example.test/api/0/projects/<org>/<project>/alerts/ \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"name":"postwerk","quantity":1,"timespanMinutes":1,"environments":["prod"],
+          "alertRecipients":[{"recipientType":"webhook","url":"https://chat.example.test/hooks/ops",
+                              "tagsToAdd":["kind","target","sender"]}]}'
+   ```
+
+   `tagsToAdd` (API only, not in the 7.0.0 UI) puts these tags into the message as fields (`Kind`, `Target`,
+   `Sender`).
+3. Resolve every issue once it is handled: after `target.recovered`, `queue.recovered` or `disk.ok` shows in the log,
+   or once the mail is dealt with. Only a resolved issue notifies again; one left open hides the next outage.
+   `queue.staleRepeat` helps only together with this: resolve `queue.stale` while the queue is still stuck, and the
+   next repeat brings it back.
+4. To page only `target.down`, `queue.stale` and `disk.low`, filter outside GlitchTip:
+   - a generic webhook recipient with `tagsToAdd: ["kind", "target", "sender"]` into a receiver of your alerting that
+     pages on the field `Kind`. The body is `{"text": "GlitchTip Alert", "attachments": [{"title": "queue.stale at
+     mailjet: queued=3 oldest=16m after=15m", "title_link": "<issue URL>", "fields": [{"title": "Project", ...},
+     {"title": "Environment", "value": "prod"}, {"title": "Kind", "value": "queue.stale"}, {"title": "Target",
+     "value": "mailjet"}]}]}`, up to three issues per message (`MAX_ISSUES_PER_ALERT`). Because GlitchTip sends
+     once per issue, the receiver sees each outage once, until the issue is resolved;
+   - or a rule in your log tool on Postwerk's stdout: `"kind":"target.down"`, `"kind":"queue.stale"`,
+     `"kind":"disk.low"`. This also covers the senders' team (`"kind":"ingress.auth_failed"` with `"sender"`), which
+     GlitchTip cannot route.
+5. Postwerk's absence: *Uptime Monitors → New monitor*, type GET, URL
+   `http://postwerk.<namespace>.svc.cluster.local:8080/readyz` (the full name: a host name without a dot is refused as
+   "Invalid Url"), the Postwerk project; and an alert "One of this project's uptime monitors goes down" on the
+   project. In the test, the stopped Postwerk was reported within one check interval, and again when it was back.
+   This needs `GLITCHTIP_UPTIME_ALLOW_PRIVATE_IPS=true` in GlitchTip and GlitchTip's namespace in
+   `networkPolicy.httpFrom`. A webhook recipient inside the cluster needs `GLITCHTIP_ALLOW_PRIVATE_IPS=true`.
+
+**Sentry.** Alerts can filter on tags and the event level (*Monitors → Alerts*; taken from Sentry's documentation in
+November 2026, not tested here). Its documentation says tag and level filters work with the triggers "A new issue is
+created" and "An event or issue activity is captured", not with "A resolved issue regresses". So trigger on events
+and let *Throttling* (per issue) limit the repeats; this also covers a reopened issue and `queue.staleRepeat`:
+
+| Alert | When | If | Throttling | Then |
+|---|---|---|---|---|
+| Postwerk: page | an event or issue activity is captured | tagged event `kind` is one of `queue.stale`, `disk.low`, `target.down` | 30 minutes | page on-call |
+| Postwerk: ticket | the same | event level equals `error`; tagged event `kind` is not one of those three | 24 hours | channel or ticket queue |
+| Postwerk: senders (with `minLevel: warn`) | the same | tagged event `kind` is one of `ingress.auth_failed`, `ingress.rejected`, `delivery.rejected`; tagged event `sender` equals the application | 60 minutes | that application's team |
+
+One alert per sending application, or one alert with an If/Then block each. `delivery.retry` and other `warn` kinds
+match no alert. Choose the environment (the instance) in the alert's environment filter.
 
 The `mail_id` tag and the `ui_path` extra lead from an alert to the mail in the UI.
 
