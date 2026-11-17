@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/eneuberg/postwerk/internal/addrhash"
+	"github.com/eneuberg/postwerk/internal/senders"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -71,6 +72,9 @@ type Options struct {
 	// Health returns the state of the configured targets (D45); nil when
 	// nobody delivers, as in tests.
 	Health func() []TargetHealth
+	// Senders are the senders of every enabled source (the registry);
+	// nil lists only the senders seen in the store.
+	Senders senders.Source
 	// Now returns the current time; nil means time.Now.
 	Now func() time.Time
 }
@@ -201,6 +205,10 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 type ListFilter struct {
 	State  string
 	Target string
+	// Sender limits the list to one sender's mails, KeyID to the mails
+	// sent with one key (D65).
+	Sender string
+	KeyID  string
 	// From and To are UTC days: received on or after From and on or before
 	// To.
 	From, To time.Time
@@ -238,6 +246,18 @@ func (s *Service) List(ctx context.Context, f ListFilter) (ListPage, error) {
 			return ListPage{}, fmt.Errorf("%w: target", ErrInvalid)
 		}
 		mf.Target = f.Target
+	}
+	if f.Sender != "" {
+		if !senders.ValidName(f.Sender) {
+			return ListPage{}, fmt.Errorf("%w: sender", ErrInvalid)
+		}
+		mf.Sender = f.Sender
+	}
+	if f.KeyID != "" {
+		if !senders.ValidKeyID(f.KeyID) {
+			return ListPage{}, fmt.Errorf("%w: key", ErrInvalid)
+		}
+		mf.KeyID = f.KeyID
 	}
 	if !f.From.IsZero() {
 		mf.From = day(f.From)
@@ -506,6 +526,10 @@ type MailDetail struct {
 	RawPurgedAt     time.Time // zero while stored
 	PseudonymizedAt time.Time // zero while addresses are plain
 	Status          store.Status
+	// Audit is where the mail came from: key id and source, client
+	// address, TLS, EHLO name, AUTH mechanism (D65). Empty for mails
+	// stored before 1.1.
+	Audit           store.MailAudit
 	Recipients      []Address
 	Deliveries      []DeliveryDetail
 	Events          []store.Event
@@ -526,7 +550,7 @@ func (s *Service) Mail(ctx context.Context, id string, access Access) (MailDetai
 	d := MailDetail{
 		ID: m.ID, ReceivedAt: m.ReceivedAt, Sender: m.Sender, Size: m.Size, Ref: m.Ref, MessageID: m.MessageID,
 		EnvelopeFrom: showAddress(m.EnvelopeFrom, pseudo, access), Params: m.Params, Stored: m.HasRaw,
-		RawPurgedAt: m.RawPurgedAt, PseudonymizedAt: m.PseudonymizedAt,
+		RawPurgedAt: m.RawPurgedAt, PseudonymizedAt: m.PseudonymizedAt, Audit: m.Audit,
 	}
 	if access != Full && d.MessageID != "" {
 		d.MessageID = MaskMessageID(d.MessageID)

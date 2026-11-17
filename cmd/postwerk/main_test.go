@@ -203,7 +203,7 @@ func TestServe(t *testing.T) {
 		"POSTWERK_ADMIN_LISTEN=127.0.0.1:0",
 		"POSTWERK_UI_TOKENS_FILE=/ui-tokens",
 		"POSTWERK_DATA=" + dbPath,
-		"POSTWERK_SENDERS_FILE=/senders",
+		"POSTWERK_SENDERS_FILE=" + realFile(t, files["/senders"]),
 		"POSTWERK_STORE_KEY_FILE=/store-key",
 		"POSTWERK_HASH_KEY_FILE=/hash-key",
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
@@ -213,7 +213,7 @@ func TestServe(t *testing.T) {
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://" + tl.Addr().String(),
 		"POSTWERK_SENTRY_DSN_FILE=/sentry",
 		"POSTWERK_SENTRY_ALLOW_HTTP=true",
-	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
+	}, func(name string) ([]byte, error) { return readTestFile(files, name) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 		"POSTWERK_SMTP_LISTEN=127.0.0.1:0",
 		"POSTWERK_HTTP_LISTEN=127.0.0.1:0",
 		"POSTWERK_DATA=" + dbPath,
-		"POSTWERK_SENDERS_FILE=/senders",
+		"POSTWERK_SENDERS_FILE=" + realFile(t, files["/senders"]),
 		"POSTWERK_STORE_KEY_FILE=/store-key",
 		"POSTWERK_HASH_KEY_FILE=/hash-key",
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
@@ -423,7 +423,7 @@ func TestServeExpiresInterruptedMailPastMaxAge(t *testing.T) {
 		"POSTWERK_ADMIN_LISTEN=off",
 		"POSTWERK_TARGETS=capture",
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://" + tl.Addr().String(),
-	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
+	}, func(name string) ([]byte, error) { return readTestFile(files, name) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,14 +480,14 @@ func TestServeNeedsAUIAccount(t *testing.T) {
 		"POSTWERK_HTTP_LISTEN=127.0.0.1:0",
 		"POSTWERK_ADMIN_LISTEN=127.0.0.1:0",
 		"POSTWERK_DATA=" + dbPath,
-		"POSTWERK_SENDERS_FILE=/senders",
+		"POSTWERK_SENDERS_FILE=" + realFile(t, files["/senders"]),
 		"POSTWERK_STORE_KEY_FILE=/store-key",
 		"POSTWERK_PSEUDONYMIZE_AFTER=0",
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
 		"POSTWERK_SHUTDOWN_TIMEOUT=5s",
 		"POSTWERK_TARGETS=capture",
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://127.0.0.1:1",
-	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
+	}, func(name string) ([]byte, error) { return readTestFile(files, name) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,4 +525,24 @@ func TestServeNeedsAUIAccount(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// realFile writes content to a file of its own, for the files Postwerk
+// reads again while it runs (the senders file), and returns its path.
+func realFile(t testing.TB, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// readTestFile answers config.Load from files, and from the disk for a
+// path not in it (a realFile).
+func readTestFile(files map[string]string, name string) ([]byte, error) {
+	if c, ok := files[name]; ok {
+		return []byte(c), nil
+	}
+	return os.ReadFile(name)
 }

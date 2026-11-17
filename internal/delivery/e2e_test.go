@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/keys"
 	"github.com/eneuberg/postwerk/internal/report"
 	"github.com/eneuberg/postwerk/internal/seal"
+	"github.com/eneuberg/postwerk/internal/senders"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
 )
@@ -279,17 +281,31 @@ func target(name string, f *fakeTarget, sc scheme, mod ...func(*config.Target)) 
 
 // ---- Postwerk under test ----
 
-var testSenders = sync.OnceValue(func() *auth.Senders {
+var testHash = sync.OnceValue(func() string {
 	h, err := auth.Hash("secret", auth.MinIterations)
 	if err != nil {
 		panic(err)
 	}
-	s, err := auth.ParseSenders(strings.NewReader("app:" + h + "\n"))
-	if err != nil {
-		panic(err)
-	}
-	return s
+	return h
 })
+
+// testAuth returns an Authenticator for the sender "app", password "secret".
+func testAuth(t testing.TB) *senders.Authenticator {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "senders")
+	if err := os.WriteFile(path, []byte("app:"+testHash()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := senders.NewFileSource(senders.FileOptions{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := senders.NewRegistry(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return senders.NewAuthenticator(reg, senders.AuthOptions{})
+}
 
 type harness struct {
 	t       *testing.T
@@ -412,7 +428,7 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 	h.mgr = New(opts)
 
 	h.ingress = ingress.New(ingress.Options{
-		Store: st, Sealer: ho.sealer, Senders: testSenders(), Targets: targets, Hostname: "postwerk.test",
+		Store: st, Sealer: ho.sealer, Auth: testAuth(t), Targets: targets, Hostname: "postwerk.test",
 		AllowInsecure: true, MaxMessageBytes: ho.maxBytes, MaxRecipients: 10,
 		Wake: h.mgr.Wake, Logger: logger,
 	})

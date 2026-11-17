@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,22 +24,39 @@ import (
 	"github.com/eneuberg/postwerk/internal/keys"
 	"github.com/eneuberg/postwerk/internal/message"
 	"github.com/eneuberg/postwerk/internal/seal"
+	"github.com/eneuberg/postwerk/internal/senders"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/testutil"
 	"github.com/eneuberg/postwerk/internal/tlsreload"
 )
 
-var senders = sync.OnceValue(func() *auth.Senders {
+var testHash = sync.OnceValue(func() string {
 	h, err := auth.Hash("secret", auth.MinIterations)
 	if err != nil {
 		panic(err)
 	}
-	s, err := auth.ParseSenders(strings.NewReader("app:" + h + "\n"))
-	if err != nil {
-		panic(err)
-	}
-	return s
+	return h
 })
+
+// testAuth returns an Authenticator over a senders file with the sender
+// "app" (password "secret") and the extra lines.
+func testAuth(t testing.TB, extra ...string) *senders.Authenticator {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "senders")
+	content := "app:" + testHash() + "\n" + strings.Join(extra, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := senders.NewFileSource(senders.FileOptions{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := senders.NewRegistry(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return senders.NewAuthenticator(reg, senders.AuthOptions{})
+}
 
 type env struct {
 	srv   *Server
@@ -57,7 +75,7 @@ func start(t *testing.T, mod func(*Options)) *env {
 	t.Cleanup(func() { st.Close() })
 	e := &env{store: st, logs: &testutil.SafeBuffer{}, woken: make(chan struct{}, 100)}
 	opts := Options{
-		Store: st, Sealer: seal.Off(), Senders: senders(), Hostname: "postwerk.test",
+		Store: st, Sealer: seal.Off(), Auth: testAuth(t), Hostname: "postwerk.test",
 		Targets:         []config.Target{{Name: "a"}, {Name: "b", AllowRecipients: []string{"*@example.test"}}},
 		AllowInsecure:   true,
 		MaxMessageBytes: 4096, MaxRecipients: 3,
@@ -427,7 +445,7 @@ func TestShutdownClosesIdleSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	srv := New(Options{Store: st, Sealer: seal.Off(), Senders: senders(), AllowInsecure: true, MaxMessageBytes: 4096, MaxRecipients: 3})
+	srv := New(Options{Store: st, Sealer: seal.Off(), Auth: testAuth(t), AllowInsecure: true, MaxMessageBytes: 4096, MaxRecipients: 3})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -693,36 +711,32 @@ func TestNonASCIIAddressNeedsSMTPUTF8(t *testing.T) {
 	}
 }
 
-func TestAuthChecksLimited(t *testing.T) {
-	h, err := auth.Hash("secret", auth.MinIterations)
-	if err != nil {
-		t.Fatal(err)
+// busyAuth refuses the first login as busy, as the Authenticator does when
+// no password check slot comes free.
+type busyAuth struct {
+	*senders.Authenticator
+	calls atomic.Int32
+}
+
+func (b *busyAuth) Authenticate(name, password string) (senders.Principal, error) {
+	if b.calls.Add(1) == 1 {
+		return senders.Principal{}, senders.ErrBusy
 	}
-	fresh, err := auth.ParseSenders(strings.NewReader("app:" + h + "\n")) // nothing cached yet
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := start(t, func(o *Options) { o.Senders = fresh; o.MaxAuthChecks = 1; o.authWait = 50 * time.Millisecond })
-	// Take the only slot, as a long password check would.
-	slots := e.srv.authSlots
-	slots <- struct{}{}
+	return b.Authenticator.Authenticate(name, password)
+}
+
+func TestAuthBusy(t *testing.T) {
+	b := &busyAuth{Authenticator: testAuth(t)}
+	e := start(t, func(o *Options) { o.Auth = b })
 	c := dial(t, e.addr)
-	err = c.Auth(sasl.NewPlainClient("", "app", "secret"))
+	err := c.Auth(sasl.NewPlainClient("", "app", "secret"))
 	var se *smtp.SMTPError
 	if !errors.As(err, &se) || se.Code != 454 || se.Message != "Temporary authentication failure, try again later" {
 		t.Fatalf("AUTH while busy: %v", err)
 	}
-	<-slots
-	// Not counted as a failed login; the next try works and is cached.
+	// Not counted as a failed login; the next try works.
 	if err := c.Auth(sasl.NewPlainClient("", "app", "secret")); err != nil {
-		t.Fatalf("AUTH after the slot was freed: %v", err)
-	}
-	// A cached login needs no slot.
-	slots <- struct{}{}
-	defer func() { <-slots }()
-	c2 := dial(t, e.addr)
-	if err := c2.Auth(sasl.NewPlainClient("", "app", "secret")); err != nil {
-		t.Fatalf("cached AUTH while busy: %v", err)
+		t.Fatalf("AUTH after busy: %v", err)
 	}
 }
 

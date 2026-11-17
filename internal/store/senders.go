@@ -103,7 +103,7 @@ func (s *Store) Senders(ctx context.Context) ([]SenderRow, error) {
 			return err
 		}
 		rows, err = tx.QueryContext(ctx, `SELECT id, sender, digest, created_at, created_by, expires_at, revoked_at, revoked_by
-			FROM sender_keys ORDER BY created_at DESC, id`)
+			FROM sender_keys ORDER BY created_at DESC, rowid DESC`)
 		if err != nil {
 			return err
 		}

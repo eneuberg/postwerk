@@ -4,6 +4,7 @@
 //
 //	postwerk [serve]        run the relay (configuration from POSTWERK_* variables)
 //	postwerk hash-password  read a password from stdin, print a senders-file hash
+//	postwerk gen-sender NAME  print a new sender key and its senders-file line
 //	postwerk gen-key        print a new key line for a store or hash key file
 //	postwerk gen-token NAME  print a new UI token and its tokens-file line
 //	postwerk gen-api-token NAME ROLE  print a new API bearer token and its tokens-file line
@@ -42,6 +43,8 @@ import (
 	"github.com/eneuberg/postwerk/internal/resolve"
 	"github.com/eneuberg/postwerk/internal/retention"
 	"github.com/eneuberg/postwerk/internal/seal"
+	"github.com/eneuberg/postwerk/internal/senders"
+	"github.com/eneuberg/postwerk/internal/senders/limit"
 	"github.com/eneuberg/postwerk/internal/store"
 	"github.com/eneuberg/postwerk/internal/tlsreload"
 	"github.com/eneuberg/postwerk/internal/ui"
@@ -59,6 +62,9 @@ const usage = `usage: postwerk [command]
 commands:
   serve          run the relay (default); configured by POSTWERK_* environment variables
   hash-password  read one password from stdin and print the value for the senders file
+  gen-sender NAME
+                 print a new random sender key (first line, the SMTP password of the application)
+                 and its line for POSTWERK_SENDERS_FILE (second line); the user name is NAME
   gen-key        print a new random key line (<key-id>:<base64>) for POSTWERK_STORE_KEY_FILE
                  or POSTWERK_HASH_KEY_FILE; use a separate key for each file
   gen-token NAME [admin]
@@ -84,6 +90,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if cmd == "gen-api-token" {
 		return genToken(args, stdout, stderr, true)
+	}
+	if cmd == "gen-sender" {
+		return genSender(args, stdout, stderr)
 	}
 	if len(args) > 0 {
 		fmt.Fprint(stderr, usage)
@@ -152,6 +161,24 @@ func genToken(args []string, stdout, stderr io.Writer, forAPI bool) int {
 		token = api.BearerToken(args[0], token)
 	}
 	fmt.Fprintln(stdout, token)
+	fmt.Fprintln(stdout, line)
+	return 0
+}
+
+// genSender prints a new sender key and its senders-file line (D62). The
+// file keeps only the SHA-256 of the key's secret part.
+func genSender(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	key, _ := senders.NewKey()
+	line, err := senders.KeyLine(args[0], key)
+	if err != nil {
+		fmt.Fprintln(stderr, "postwerk: invalid sender name (use [a-z0-9][a-z0-9._-]{0,63})")
+		return 2
+	}
+	fmt.Fprintln(stdout, key)
 	fmt.Fprintln(stdout, line)
 	return 0
 }
@@ -364,8 +391,22 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		st.Close()
 		return err
 	}
+	sources, err := openSenders(ctx, cfg, st, logger)
+	if err != nil {
+		st.Close()
+		return err
+	}
+	usage := senders.NewUsage(st, 0, logger)
+	authn := senders.NewAuthenticator(sources.registry, senders.AuthOptions{Usage: usage, Logger: logger})
+	volume, err := watch.NewVolume(ctx, watch.VolumeOptions{
+		Store: st, Factor: cfg.SenderVolume.Factor, Min: cfg.SenderVolume.Min, Max: cfg.SenderVolume.Max, Logger: logger,
+	})
+	if err != nil {
+		st.Close()
+		return err
+	}
 	ing := ingress.New(ingress.Options{
-		Store: st, Sealer: sealer, Senders: cfg.Senders, Targets: cfg.Targets, Hostname: cfg.Hostname,
+		Store: st, Sealer: sealer, Auth: authn, Limiter: limit.New(nil), Targets: cfg.Targets, Hostname: cfg.Hostname,
 		GetCertificate: getCert, AllowInsecure: cfg.AllowInsecureAuth,
 		MaxMessageBytes: acceptBytes(cfg), MaxRecipients: cfg.MaxRecipients,
 		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
@@ -379,7 +420,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	var adminSrv *http.Server
 	var adminL net.Listener
 	if cfg.Admin.Listen != "" {
-		qo := queryOptions(cfg, st, mgr)
+		qo := queryOptions(cfg, st, mgr, sources.registry)
 		q := query.New(qo)
 		rs := resolve.New(resolve.Options{Store: st, Targets: qo.Targets, Wake: mgr.Wake})
 		var tokens ui.Verifier // nil without a tokens file
@@ -404,7 +445,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		}
 		adminSrv = ui.NewServer(cfg.Admin.Listen, u, logger)
 	}
-	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, mgr, logger)
+	apiHandler, apiSrv, apiL, apiTLS, err := apiListener(cfg, st, mgr, sources.registry, logger)
 	if err != nil {
 		if adminL != nil {
 			adminL.Close()
@@ -424,6 +465,13 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	go func() { disk.Run(runCtx); close(diskDone) }()
 	queueDone := make(chan struct{})
 	go func() { queue.Run(runCtx); close(queueDone) }()
+	volumeDone := make(chan struct{})
+	go func() { volume.Run(runCtx); close(volumeDone) }()
+	usageDone := make(chan struct{})
+	go func() { usage.Run(runCtx); close(usageDone) }()
+	if sources.file != nil {
+		go sources.file.Run(runCtx)
+	}
 	mgr.Start(runCtx)
 	if smtpTLS != nil {
 		go smtpTLS.Run(runCtx)
@@ -462,7 +510,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	}
 	logger.Info("postwerk started", "version", version, "smtp", smtpL.Addr().String(),
 		"http", httpL.Addr().String(), "admin", adminLog, "api", apiLog, "api_tls", apiTLS != nil,
-		"targets", strings.Join(names, ","), "sentry", sentryLog,
+		"targets", strings.Join(names, ","), "sentry", sentryLog, "sender_keys", string(cfg.Senders.Keys),
 		"max_message_bytes", cfg.MaxMessageBytes, "smtp_size", acceptBytes(cfg),
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String(),
@@ -533,11 +581,15 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	}
 	<-ingDone
 	<-apiDone
-	for _, done := range []chan struct{}{repDone, retDone, diskDone, queueDone} {
+	for _, done := range []chan struct{}{repDone, retDone, diskDone, queueDone, volumeDone, usageDone} {
 		select {
 		case <-done:
 		case <-sd.Done():
 		}
+	}
+	// The last logins' times, before the store closes.
+	if err := usage.Flush(sd); err != nil {
+		logger.Warn("writing sender usage at shutdown failed", "err", err)
 	}
 	// The final export is bounded on its own, so a slow remote sink cannot
 	// use up the deadline that closing the store still needs. stdout is
@@ -581,11 +633,12 @@ func stopHTTP(ctx context.Context, srv *http.Server, limit time.Duration) error 
 
 // apiListener opens the JSON query API's listener (H2), with TLS from a
 // reloaded certificate if configured. It returns nils when the API is off.
-func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
+func apiListener(cfg *config.Config, st *store.Store, mgr *delivery.Manager, reg *senders.Registry,
+	logger *slog.Logger) (*api.API, *http.Server, net.Listener, *tlsreload.Reloader, error) {
 	if cfg.API.Listen == "" {
 		return nil, nil, nil, nil, nil
 	}
-	qo := queryOptions(cfg, st, mgr)
+	qo := queryOptions(cfg, st, mgr, reg)
 	q := query.New(qo)
 	rs := resolve.New(resolve.Options{Store: st, Targets: qo.Targets, Wake: mgr.Wake})
 	a, err := api.New(api.Options{Query: q, Resolve: rs, Tokens: cfg.API.Tokens, Events: st, Hosts: cfg.API.Hosts,
@@ -625,14 +678,69 @@ func acceptBytes(cfg *config.Config) int64 {
 // eventAppender writes certificate reload events to the event log, so they
 // reach every sink like other events.
 func eventAppender(st *store.Store, logger *slog.Logger) func(tlsreload.Event) {
-	return func(e tlsreload.Event) {
+	appendEvent := appender(st, logger)
+	return func(e tlsreload.Event) { appendEvent(e.Kind, string(e.Level), e.Text) }
+}
+
+// appender writes events that come from outside the store's transactions
+// (certificate and senders-file reloads) to the event log.
+func appender(st *store.Store, logger *slog.Logger) func(kind, level, text string) {
+	return func(kind, level, text string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := st.Append(ctx, store.Event{Time: time.Now(), Kind: e.Kind, Level: store.Level(e.Level), Text: e.Text})
+		err := st.Append(ctx, store.Event{Time: time.Now(), Kind: kind, Level: store.Level(level), Text: text})
 		if err != nil {
-			logger.Warn("writing a certificate event failed", "kind", e.Kind, "err", err)
+			logger.Warn("writing an event failed", "kind", kind, "err", err)
 		}
 	}
+}
+
+// senderSources are the enabled sources of senders (D66). file and db are
+// nil when off; db is also the managed write side (senders.Store) that the
+// UI and the API use to create, rotate and revoke keys.
+type senderSources struct {
+	file     *senders.FileSource
+	db       *senders.DBSource
+	registry *senders.Registry
+}
+
+// openSenders opens the sources POSTWERK_SENDER_KEYS names and composes
+// them. A name or key id in both stops the start.
+func openSenders(ctx context.Context, cfg *config.Config, st *store.Store, logger *slog.Logger) (senderSources, error) {
+	var s senderSources
+	var err error
+	if cfg.Senders.UsesFile() {
+		appendEvent := appender(st, logger)
+		s.file, err = senders.NewFileSource(senders.FileOptions{
+			Path: cfg.Senders.File, AllowEmpty: cfg.Senders.Keys == config.SenderKeysBoth,
+			OnEvent: func(e senders.Event) {
+				if e.Kind == senders.KindReloadFailed {
+					logger.Error(e.Text, "kind", e.Kind)
+				} else {
+					logger.Info(e.Text, "kind", e.Kind)
+				}
+				appendEvent(e.Kind, e.Level, e.Text)
+			},
+		})
+		if err != nil {
+			return s, fmt.Errorf("senders file: %w", err)
+		}
+	}
+	if cfg.Senders.UsesDB() {
+		if s.db, err = senders.NewDBSource(ctx, st, nil); err != nil {
+			return s, err
+		}
+	}
+	if s.registry, err = senders.NewRegistry(s.file, s.db); err != nil {
+		return s, fmt.Errorf("senders: %w", err)
+	}
+	n := len(s.registry.List())
+	if n == 0 {
+		logger.Warn("no senders yet: nobody can send until one is created (docs/configuration.md, Senders)",
+			"sender_keys", string(cfg.Senders.Keys))
+	}
+	logger.Info("senders loaded", "sender_keys", string(cfg.Senders.Keys), "senders", n)
+	return s, nil
 }
 
 // checkUIAccounts makes sure someone can log in to the UI (U23): the first
@@ -711,8 +819,8 @@ func warnUnconfiguredTargets(ctx context.Context, st *store.Store, targets []con
 // queryOptions are the read layer's options for the UI and the API: the
 // configured targets, which of them are optional, and the targets' health
 // from the delivery workers (D45).
-func queryOptions(cfg *config.Config, st *store.Store, mgr *delivery.Manager) query.Options {
-	o := query.Options{Store: st, Hasher: hasher(cfg)}
+func queryOptions(cfg *config.Config, st *store.Store, mgr *delivery.Manager, reg *senders.Registry) query.Options {
+	o := query.Options{Store: st, Hasher: hasher(cfg), Senders: reg}
 	for _, t := range cfg.Targets {
 		o.Targets = append(o.Targets, t.Name)
 		if t.Optional {

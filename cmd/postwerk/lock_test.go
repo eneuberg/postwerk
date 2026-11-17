@@ -43,14 +43,14 @@ func lockConfig(t *testing.T, dbPath, lockWait string) (*config.Config, string) 
 		"POSTWERK_ADMIN_LISTEN=off",
 		"POSTWERK_DATA=" + dbPath,
 		"POSTWERK_DATA_LOCK_WAIT=" + lockWait,
-		"POSTWERK_SENDERS_FILE=/senders",
+		"POSTWERK_SENDERS_FILE=" + realFile(t, files["/senders"]),
 		"POSTWERK_STORE_KEY_FILE=/store-key",
 		"POSTWERK_PSEUDONYMIZE_AFTER=0",
 		"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=true",
 		"POSTWERK_SHUTDOWN_TIMEOUT=5s",
 		"POSTWERK_TARGETS=capture",
 		"POSTWERK_TARGET_CAPTURE_URL=smtp+plain://127.0.0.1:1",
-	}, func(name string) ([]byte, error) { return []byte(files[name]), nil })
+	}, func(name string) ([]byte, error) { return readTestFile(files, name) })
 	if err != nil {
 		t.Fatal(err)
 	}

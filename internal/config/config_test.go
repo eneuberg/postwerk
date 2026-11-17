@@ -88,7 +88,7 @@ func TestMinimalDefaults(t *testing.T) {
 	if c.SMTPListen != ":2525" || c.HTTPListen != "127.0.0.1:8080" || c.DataPath != "/data/postwerk.db" ||
 		c.Hostname != "postwerk" || c.MaxMessageBytes != 15728640 || c.MaxRecipients != 50 ||
 		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.DataLockWait != 150*time.Second || c.Instance != "" ||
-		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 ||
+		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders.File == "" || c.Senders.Keys != SenderKeysFile || c.SenderVolume.Factor != 10 || c.MaxConnections != 100 ||
 		c.MaxInflightBytes != 256<<20 || c.QueueStaleAfter != 15*time.Minute || c.QueueStaleRepeat != 0 ||
 		c.MinFreeBytes != 64<<20 {
 		t.Fatalf("defaults wrong: %+v", c)
@@ -379,6 +379,11 @@ func TestErrors(t *testing.T) {
 		{"down after probes negative", []string{"POSTWERK_TARGET_DOWN_AFTER_PROBES=-1"}, "POSTWERK_TARGET_DOWN_AFTER_PROBES"},
 		{"probe max below min", []string{"POSTWERK_PROBE_INTERVAL=1m", "POSTWERK_PROBE_MAX_INTERVAL=30s"}, "POSTWERK_PROBE_MAX_INTERVAL must be at least POSTWERK_PROBE_INTERVAL"},
 		{"tokens with admin off", []string{"POSTWERK_ADMIN_LISTEN=off"}, "POSTWERK_UI_TOKENS_FILE is set but the admin listener is off"},
+		{"bad sender keys", []string{"POSTWERK_SENDER_KEYS=ldap"}, "POSTWERK_SENDER_KEYS: expected file, db or both"},
+		{"db with a senders file", []string{"POSTWERK_SENDER_KEYS=db"}, "POSTWERK_SENDERS_FILE is set but POSTWERK_SENDER_KEYS=db"},
+		{"both without a file", []string{"POSTWERK_SENDER_KEYS=both", "POSTWERK_SENDERS_FILE="}, "POSTWERK_SENDERS_FILE: required"},
+		{"bad volume factor", []string{"POSTWERK_SENDER_VOLUME_FACTOR=-1"}, "POSTWERK_SENDER_VOLUME_FACTOR"},
+		{"bad volume min", []string{"POSTWERK_SENDER_VOLUME_MIN=0"}, "POSTWERK_SENDER_VOLUME_MIN"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -709,5 +714,45 @@ func TestSentryConfig(t *testing.T) {
 	}
 	if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "cleartext") {
 		t.Fatalf("warnings %q", w)
+	}
+}
+
+func TestSenderKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		env      []string
+		file     string
+		want     SenderKeys
+		wantFile bool
+		senders  int
+	}{
+		{"default is the file, as in 1.0", nil, "", SenderKeysFile, true, 1},
+		{"file", []string{"POSTWERK_SENDER_KEYS=file"}, "", SenderKeysFile, true, 1},
+		{"db", []string{"POSTWERK_SENDER_KEYS=db", "POSTWERK_SENDERS_FILE="}, "", SenderKeysDB, false, 0},
+		{"both", []string{"POSTWERK_SENDER_KEYS=both"}, "", SenderKeysBoth, true, 1},
+		{"both with an empty file", []string{"POSTWERK_SENDER_KEYS=both"}, "# none yet\n", SenderKeysBoth, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := baseFiles(t)
+			if tc.file != "" {
+				f["/run/secrets/senders"] = tc.file
+			}
+			c, err := Load(append(minimalEnv(), tc.env...), f.read)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Senders.Keys != tc.want || (c.Senders.File != "") != tc.wantFile || c.Senders.FileSenders != tc.senders {
+				t.Fatalf("senders %+v", c.Senders)
+			}
+			if c.Senders.UsesFile() != tc.wantFile || c.Senders.UsesDB() != (tc.want != SenderKeysFile) {
+				t.Fatal("UsesFile/UsesDB")
+			}
+		})
+	}
+	// An empty file is an error in file mode, as in 1.0.
+	f := baseFiles(t)
+	f["/run/secrets/senders"] = "# none\n"
+	if _, err := Load(minimalEnv(), f.read); err == nil || !strings.Contains(err.Error(), "no senders defined") {
+		t.Fatalf("empty file: %v", err)
 	}
 }

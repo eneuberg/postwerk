@@ -26,6 +26,7 @@ import (
 
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/keys"
+	"github.com/eneuberg/postwerk/internal/senders"
 )
 
 // Prefix starts every Postwerk environment variable.
@@ -208,10 +209,14 @@ func foldsToASCII(s string) bool {
 
 // Config is the validated configuration.
 type Config struct {
-	SMTPListen     string
-	HTTPListen     string
-	DataPath       string
-	Senders        *auth.Senders
+	SMTPListen string
+	HTTPListen string
+	DataPath   string
+	// Senders says where the sending applications and their keys are kept
+	// (D66).
+	Senders Senders
+	// SenderVolume configures the sender.volume_high signal (D67).
+	SenderVolume   SenderVolume
 	TLSCertificate *tls.Certificate // nil: no STARTTLS on ingress
 	// TLSCertFile and TLSKeyFile name the pair, so it can be reloaded
 	// (I16); empty without STARTTLS.
@@ -271,6 +276,50 @@ type Config struct {
 	// so the caller can check file permissions.
 	SecretFiles map[string]string
 }
+
+// SenderKeys is where senders are kept: POSTWERK_SENDER_KEYS.
+type SenderKeys string
+
+// Values of POSTWERK_SENDER_KEYS.
+const (
+	// SenderKeysFile: the senders file only, as in 1.0. The default.
+	SenderKeysFile SenderKeys = "file"
+	// SenderKeysDB: managed in the database only; no senders file.
+	SenderKeysDB SenderKeys = "db"
+	// SenderKeysBoth: the senders file and the database; a name may be in
+	// one of them only.
+	SenderKeysBoth SenderKeys = "both"
+)
+
+// Senders configures the sources of senders.
+type Senders struct {
+	Keys SenderKeys
+	// File is POSTWERK_SENDERS_FILE; empty with SenderKeysDB.
+	File string
+	// FileSenders is the number of senders in the file at start.
+	FileSenders int
+}
+
+// UsesFile and UsesDB report which sources are on.
+func (s Senders) UsesFile() bool { return s.Keys == SenderKeysFile || s.Keys == SenderKeysBoth }
+func (s Senders) UsesDB() bool   { return s.Keys == SenderKeysDB || s.Keys == SenderKeysBoth }
+
+// SenderVolume configures the unusual-volume signal (D67).
+type SenderVolume struct {
+	// Factor: a sender's mails in the last hour above Factor times its
+	// hourly average of the last 7 days; 0 turns this rule off.
+	Factor int
+	// Min: the factor rule needs at least this many mails in the hour.
+	Min int
+	// Max: more mails than this in one hour, whatever the average; 0 off.
+	Max int
+}
+
+// Defaults of the volume signal.
+const (
+	DefaultSenderVolumeFactor = 10
+	DefaultSenderVolumeMin    = 100
+)
 
 // Admin configures the admin listener.
 type Admin struct {
@@ -408,6 +457,10 @@ const (
 	envHTTPListen        = "POSTWERK_HTTP_LISTEN"
 	envData              = "POSTWERK_DATA"
 	envSendersFile       = "POSTWERK_SENDERS_FILE"
+	envSenderKeys        = "POSTWERK_SENDER_KEYS"
+	envSenderVolFactor   = "POSTWERK_SENDER_VOLUME_FACTOR"
+	envSenderVolMin      = "POSTWERK_SENDER_VOLUME_MIN"
+	envSenderVolMax      = "POSTWERK_SENDER_VOLUME_MAX"
 	envTLSCertFile       = "POSTWERK_SMTP_TLS_CERT_FILE"
 	envTLSKeyFile        = "POSTWERK_SMTP_TLS_KEY_FILE"
 	envAllowInsecureAuth = "POSTWERK_SMTP_ALLOW_INSECURE_AUTH"
@@ -454,7 +507,8 @@ const (
 var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_WEBHOOK_URL"}
 
 var globalVars = []string{
-	envSMTPListen, envHTTPListen, envData, envSendersFile, envTLSCertFile, envTLSKeyFile,
+	envSMTPListen, envHTTPListen, envData, envSendersFile, envSenderKeys, envSenderVolFactor, envSenderVolMin,
+	envSenderVolMax, envTLSCertFile, envTLSKeyFile,
 	envAllowInsecureAuth, envHostname, envMaxMessageBytes, envMaxRecipients, envMaxConnections, envMaxInflightBytes, envRetryWindow,
 	envShutdownTimeout, envDataLockWait, envInstance, envTargets, envQueueStaleAfter, envQueueStaleRepeat, envMinFreeBytes,
 	envStoreKeyFile, envStoreEncryption, envHashKeyFile, envSecureDelete,
@@ -541,6 +595,11 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	c.AllowInsecureAuth = l.boolean(envAllowInsecureAuth)
 
 	c.Senders = l.senders()
+	c.SenderVolume = SenderVolume{
+		Factor: l.integer(envSenderVolFactor, DefaultSenderVolumeFactor, 0, 1000),
+		Min:    l.integer(envSenderVolMin, DefaultSenderVolumeMin, 1, 10_000_000),
+		Max:    l.integer(envSenderVolMax, 0, 0, 10_000_000),
+	}
 	c.TLSCertificate = l.tlsCertificate()
 	if c.TLSCertificate != nil {
 		c.TLSCertFile, c.TLSKeyFile = l.env[envTLSCertFile], l.env[envTLSKeyFile]
@@ -736,23 +795,39 @@ func (l *loader) file(varName string) ([]byte, bool) {
 	return b, true
 }
 
-func (l *loader) senders() *auth.Senders {
+// senders reads POSTWERK_SENDER_KEYS and checks the senders file (D66).
+// Without the variable it is "file", as in 1.0: the file is required.
+func (l *loader) senders() Senders {
+	c := Senders{Keys: SenderKeys(l.get(envSenderKeys, string(SenderKeysFile)))}
+	switch c.Keys {
+	case SenderKeysFile, SenderKeysBoth:
+	case SenderKeysDB:
+		if l.env[envSendersFile] != "" {
+			l.errorf("%s is set but %s=db keeps senders in the database only; remove the file "+
+				"or set %s=both", envSendersFile, envSenderKeys, envSenderKeys)
+		}
+		return c
+	default:
+		l.errorf("%s: expected file, db or both", envSenderKeys)
+		return c
+	}
 	if l.env[envSendersFile] == "" {
-		l.errorf("%s: required (file with one name:hash line per sender; create hashes with 'postwerk hash-password')", envSendersFile)
-		return nil
+		l.errorf("%s: required (one line per sender; create a key with 'postwerk gen-sender NAME')", envSendersFile)
+		return c
 	}
 	b, ok := l.file(envSendersFile)
 	if !ok {
-		return nil
+		return c
 	}
-	s, err := auth.ParseSenders(bytes.NewReader(b))
+	n, err := senders.CheckFile(b, c.Keys == SenderKeysBoth)
 	if err != nil {
 		for _, e := range unjoin(err) {
 			l.errorf("%s: %v", envSendersFile, e)
 		}
-		return nil
+		return c
 	}
-	return s
+	c.File, c.FileSenders = l.env[envSendersFile], n
+	return c
 }
 
 // admin reads the admin listener and the UI tokens (U1–U4). Unlike other

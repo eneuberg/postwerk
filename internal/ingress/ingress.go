@@ -1,6 +1,7 @@
 // Package ingress is Postwerk's SMTP server (I1–I8).
 //
-// Every transaction needs AUTH PLAIN with a known sender. A mail is answered
+// Every transaction needs AUTH PLAIN with a known sender (internal/senders
+// checks the login; ingress depends on its Authenticator only). A mail is answered
 // with 250 only after it, its recipients, its deliveries and their events are
 // committed; the message is sealed (encrypted at rest) before it is stored.
 // The client only ever sees fixed reply texts chosen here; internal errors
@@ -15,7 +16,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,12 +27,13 @@ import (
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 
-	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/config"
 	"github.com/eneuberg/postwerk/internal/fold"
 	"github.com/eneuberg/postwerk/internal/id"
 	"github.com/eneuberg/postwerk/internal/message"
 	"github.com/eneuberg/postwerk/internal/seal"
+	"github.com/eneuberg/postwerk/internal/senders"
+	"github.com/eneuberg/postwerk/internal/senders/limit"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -47,9 +48,6 @@ const (
 	rejectTimeout = 2 * time.Second
 	// authTimeout: a connection that has not logged in by then is closed.
 	authTimeout = 30 * time.Second
-	// authWait is how long a login waits for a free password check slot
-	// before it gets a 454.
-	authWait = 5 * time.Second
 )
 
 // DefaultMaxConnections is the default limit of concurrent connections.
@@ -65,6 +63,9 @@ const (
 	// KindRejected: commands of a logged-in sender refused for a reason
 	// in its text ("reason=too_large rejected=<n>").
 	KindRejected = "ingress.rejected"
+	// KindRateLimited: commands of a logged-in sender refused by its
+	// policy's rate limit (D64), text "limit=<max_per_minute|max_rcpt_per_hour> limited=<n>".
+	KindRateLimited = "ingress.rate_limited"
 )
 
 // RefusalWindow is how long refusals of one kind, sender and reason are
@@ -78,6 +79,13 @@ const (
 	ReasonNeedsSMTPUTF8     = "needs_smtputf8"      // 553 5.6.7
 	ReasonTooManyRecipients = "too_many_recipients" // 452 4.5.3
 	ReasonLineTooLong       = "line_too_long"       // 500 5.5.2
+	ReasonFromNotAllowed    = "from_not_allowed"    // 550 5.7.1 (D63)
+)
+
+// Limits of an ingress.rate_limited event.
+const (
+	LimitPerMinute   = "max_per_minute"
+	LimitRcptPerHour = "max_rcpt_per_hour"
 )
 
 // replyTooManyConns is written to a connection over the limit, then it is
@@ -101,6 +109,8 @@ var (
 	errReadFailed   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 2}, Message: "Error while reading the message"}
 	errLineTooLong  = &smtp.SMTPError{Code: 500, EnhancedCode: smtp.EnhancedCode{5, 5, 2}, Message: "Line too long"}
 	errNoStorage    = &smtp.SMTPError{Code: 452, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "Insufficient system storage, try again later"}
+	errFromDenied   = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "Sender address not allowed for this login"}
+	errRateLimited  = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 7, 1}, Message: "Rate limit exceeded, try again later"}
 )
 
 // reasons maps the fixed replies counted as ingress.rejected to their reason.
@@ -110,14 +120,35 @@ var reasons = map[*smtp.SMTPError]string{
 	errNeedsUTF8:   ReasonNeedsSMTPUTF8,
 	errTooManyRcpt: ReasonTooManyRecipients,
 	errLineTooLong: ReasonLineTooLong,
+	errFromDenied:  ReasonFromNotAllowed,
+}
+
+// Authenticator checks a login (internal/senders.Authenticator).
+type Authenticator interface {
+	// Authenticate returns senders.ErrBusy when no check slot came free
+	// in time, any other error for a failed login.
+	Authenticate(name, password string) (senders.Principal, error)
+	// Refresh returns the principal with its current policy, or false
+	// when its credential was revoked, expired or removed.
+	Refresh(p senders.Principal) (senders.Principal, bool)
+	// Known reports whether name is a sender, for naming it in an event.
+	Known(name string) bool
+}
+
+// RateLimiter counts what a sender may do (internal/senders/limit).
+type RateLimiter interface {
+	Allow(key string, r limit.Rate) bool
 }
 
 // Options configure a Server.
 type Options struct {
 	Store *store.Store
 	// Sealer seals every message before it is stored. Required.
-	Sealer  *seal.Sealer
-	Senders *auth.Senders
+	Sealer *seal.Sealer
+	// Auth checks logins. Required.
+	Auth Authenticator
+	// Limiter enforces each sender's rate limits; nil: no limits.
+	Limiter RateLimiter
 	Targets []config.Target
 	// Hostname is the name in the greeting.
 	Hostname       string
@@ -134,9 +165,6 @@ type Options struct {
 	// MaxConnections limits concurrent connections; 0 means
 	// DefaultMaxConnections.
 	MaxConnections int
-	// MaxAuthChecks limits concurrent password checks (PBKDF2); 0 means
-	// runtime.GOMAXPROCS(0).
-	MaxAuthChecks int
 	// MaxInflightBytes is the memory budget for messages being received:
 	// each DATA reserves MaxMessageBytes (or the declared SIZE, if smaller)
 	// before it reads. 0 means no budget beyond MaxConnections.
@@ -152,17 +180,14 @@ type Options struct {
 
 	// Only tests set these; zero means the fixed values above.
 	authTimeout   time.Duration
-	authWait      time.Duration
 	refusalWindow time.Duration
 }
 
 // Server is the SMTP ingress.
 type Server struct {
-	opts Options
-	srv  *smtp.Server
-	// authSlots holds one token per password check in progress.
-	authSlots chan struct{}
-	budget    budget
+	opts   Options
+	srv    *smtp.Server
+	budget budget
 	// refused folds refusals into events (D51).
 	refused *fold.Counter[refusal]
 
@@ -174,6 +199,9 @@ type Server struct {
 func New(opts Options) *Server {
 	if opts.Sealer == nil {
 		panic("ingress: Options.Sealer is required")
+	}
+	if opts.Auth == nil {
+		panic("ingress: Options.Auth is required")
 	}
 	if opts.MaxConnections <= 0 {
 		opts.MaxConnections = DefaultMaxConnections
@@ -187,20 +215,13 @@ func New(opts Options) *Server {
 	if opts.Wake == nil {
 		opts.Wake = func() {}
 	}
-	if opts.MaxAuthChecks <= 0 {
-		opts.MaxAuthChecks = runtime.GOMAXPROCS(0)
-	}
 	if opts.authTimeout <= 0 {
 		opts.authTimeout = authTimeout
-	}
-	if opts.authWait <= 0 {
-		opts.authWait = authWait
 	}
 	if opts.refusalWindow <= 0 {
 		opts.refusalWindow = RefusalWindow
 	}
-	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), authSlots: make(chan struct{}, opts.MaxAuthChecks),
-		budget: budget{max: opts.MaxInflightBytes}}
+	s := &Server{opts: opts, conns: make(map[*trackedConn]struct{}), budget: budget{max: opts.MaxInflightBytes}}
 	s.refused = fold.New(opts.refusalWindow, s.writeRefusal)
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Domain = opts.Hostname
@@ -385,18 +406,23 @@ func (s *Server) newSession(c *smtp.Conn) (smtp.Session, error) {
 	if a := c.Conn().RemoteAddr(); a != nil {
 		remote = a.String()
 	}
-	return &session{srv: s, conn: tracked(c), remote: remote}, nil
+	return &session{srv: s, conn: tracked(c), smtpConn: c, remote: remote}, nil
 }
 
 // session is one SMTP session. With BDAT, Data runs on another goroutine than
 // the other methods, so the fields are guarded by mu.
 type session struct {
-	srv    *Server
-	conn   *trackedConn
-	remote string
+	srv      *Server
+	conn     *trackedConn
+	smtpConn *smtp.Conn
+	remote   string
 
-	mu      sync.Mutex
-	sender  string // set after a successful AUTH
+	mu        sync.Mutex
+	sender    string // set after a successful AUTH
+	principal senders.Principal
+	// audit is where the mail comes from, taken at MAIL (on the command
+	// goroutine, so it does not race with the connection's own state).
+	audit   store.MailAudit
 	from    string
 	hasFrom bool
 	params  store.Params
@@ -415,23 +441,19 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 }
 
 func (s *session) checkPlain(identity, username, password string) error {
-	ok := false
-	if identity == "" || identity == username {
-		var err error
-		if ok, err = s.srv.verify(username, password); err != nil {
-			return err
-		}
-	} else {
-		// Same cost as any other failed login.
-		if _, err := s.srv.verify("", password); err != nil {
-			return err
-		}
+	name := username
+	if identity != "" && identity != username {
+		name = "" // same cost as any other failed login, never a match
 	}
-	if !ok {
+	p, err := s.srv.opts.Auth.Authenticate(name, password)
+	if errors.Is(err, senders.ErrBusy) {
+		return errAuthBusy
+	}
+	if err != nil || name == "" {
 		return s.authFailure(username)
 	}
 	s.mu.Lock()
-	s.sender = username
+	s.sender, s.principal = p.Sender, p
 	s.mu.Unlock()
 	if s.conn != nil {
 		s.conn.authed.Store(true)
@@ -439,30 +461,11 @@ func (s *session) checkPlain(identity, username, password string) error {
 	return nil
 }
 
-// verify checks a password. A login seen before costs one HMAC; every other
-// check needs one of MaxAuthChecks slots, so a burst of logins cannot take
-// every CPU. A check that finds no slot within authWait gets a fixed 454.
-func (s *Server) verify(name, password string) (bool, error) {
-	if s.opts.Senders.Cached(name, password) {
-		return true, nil
-	}
-	t := time.NewTimer(s.opts.authWait)
-	defer t.Stop()
-	select {
-	case s.authSlots <- struct{}{}:
-	case <-t.C:
-		s.opts.Logger.Warn("smtp auth refused, too many password checks at once", "limit", cap(s.authSlots))
-		return false, errAuthBusy
-	}
-	defer func() { <-s.authSlots }()
-	return s.opts.Senders.Verify(name, password), nil
-}
-
 // authFailure counts a failed login. The name goes into the event only if
 // it is in the senders file: a password typed into the name field must not
 // reach the event log, and the keys stay bounded by the file.
 func (s *session) authFailure(name string) error {
-	if name != "" && !s.srv.opts.Senders.Known(name) {
+	if name != "" && !s.srv.opts.Auth.Known(name) {
 		name = ""
 	}
 	s.srv.refused.Add(refusal{kind: KindAuthFailed, sender: name})
@@ -497,13 +500,23 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	if s.sender == "" {
 		return errAuthRequired
 	}
+	// The credential may have been revoked since the login, and the
+	// policy changed (D62).
+	p, ok := s.srv.opts.Auth.Refresh(s.principal)
+	if !ok {
+		s.srv.opts.Logger.Warn("smtp session ended, the credential was revoked or removed", "sender", s.sender,
+			"remote", s.remote)
+		s.sender, s.principal = "", senders.Principal{}
+		return errAuthRequired
+	}
+	s.principal = p
 	if !validAddress(from) {
 		return s.reject(errBadAddress)
 	}
 	if !s.srv.spaceFor(0) {
 		return errNoStorage
 	}
-	var p store.Params
+	var params store.Params
 	if opts != nil {
 		// The library answers a SIZE= over srv.MaxMessageBytes itself
 		// (552 5.3.4) before Mail runs, so this is not reached and the
@@ -511,18 +524,56 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 		if opts.Size > s.srv.opts.MaxMessageBytes {
 			return s.reject(errTooBig)
 		}
-		p = store.Params{Body: string(opts.Body), SMTPUTF8: opts.UTF8, DeclaredSize: opts.Size}
+		params = store.Params{Body: string(opts.Body), SMTPUTF8: opts.UTF8, DeclaredSize: opts.Size}
 		// The library refuses other BODY values; this keeps the store's
 		// CHECK constraint safe if that ever changes.
-		if p.Body != "" && p.Body != store.Body7Bit && p.Body != store.Body8BitMIME {
+		if params.Body != "" && params.Body != store.Body7Bit && params.Body != store.Body8BitMIME {
 			return errBadParams
 		}
 	}
-	if !p.SMTPUTF8 && !isASCII(from) {
+	if !params.SMTPUTF8 && !isASCII(from) {
 		return s.reject(errNeedsUTF8)
 	}
-	s.from, s.hasFrom, s.params, s.to = from, true, p, nil
+	if !p.Policy.AllowsFrom(from) {
+		return s.reject(errFromDenied)
+	}
+	if !s.allow("msg", p.Policy.MessageRate()) {
+		return s.limited(LimitPerMinute)
+	}
+	s.from, s.hasFrom, s.params, s.to = from, true, params, nil
+	s.audit = s.connAudit()
 	return nil
+}
+
+// allow takes one from the sender's limit of kind; without a Limiter
+// everything is allowed. s.mu must be held.
+func (s *session) allow(kind string, r limit.Rate) bool {
+	if s.srv.opts.Limiter == nil || r.Unlimited() {
+		return true
+	}
+	return s.srv.opts.Limiter.Allow(kind+":"+s.sender, r)
+}
+
+// limited counts a command refused by a rate limit (D64). s.mu must be held.
+func (s *session) limited(which string) error {
+	s.srv.refused.Add(refusal{kind: KindRateLimited, sender: s.sender, reason: which})
+	return errRateLimited
+}
+
+// connAudit describes the connection and the login for the mail record
+// (D65). s.mu must be held.
+func (s *session) connAudit() store.MailAudit {
+	a := store.MailAudit{KeyID: s.principal.KeyID, KeySource: string(s.principal.Source), AuthMech: sasl.Plain}
+	if host, _, err := net.SplitHostPort(s.remote); err == nil {
+		a.ClientIP = host
+	}
+	if s.smtpConn != nil {
+		a.EHLO = s.smtpConn.Hostname()
+		if st, ok := s.smtpConn.TLSConnectionState(); ok {
+			a.TLSVersion, a.TLSCipher = tls.VersionName(st.Version), tls.CipherSuiteName(st.CipherSuite)
+		}
+	}
+	return a
 }
 
 func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
@@ -546,13 +597,16 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	if !s.srv.spaceFor(0) {
 		return errNoStorage
 	}
+	if !s.allow("rcpt", s.principal.Policy.RecipientRate()) {
+		return s.limited(LimitRcptPerHour)
+	}
 	s.to = append(s.to, to)
 	return nil
 }
 
 func (s *session) Data(r io.Reader) error {
 	s.mu.Lock()
-	sender, from, params, to := s.sender, s.from, s.params, slices.Clone(s.to)
+	sender, from, params, to, audit := s.sender, s.from, s.params, slices.Clone(s.to), s.audit
 	ok := s.sender != "" && s.hasFrom && len(s.to) > 0
 	s.mu.Unlock()
 	if sender == "" {
@@ -611,7 +665,7 @@ func (s *session) Data(r io.Reader) error {
 		return errNoStorage
 	}
 
-	mailID, err := s.srv.accept(sender, from, to, params, raw)
+	mailID, err := s.srv.accept(sender, from, to, params, audit, raw)
 	if err != nil {
 		s.srv.opts.Logger.Error("storing mail failed, replied 451", "sender", sender, "err", err)
 		return errStorage
@@ -636,8 +690,11 @@ func (s *session) rejectAs(sender string, e *smtp.SMTPError) error {
 // shutdown, outside any session, so it has its own deadline.
 func (s *Server) writeRefusal(r refusal, n int) {
 	text := "failures=" + strconv.Itoa(n)
-	if r.kind == KindRejected {
+	switch r.kind {
+	case KindRejected:
 		text = "reason=" + r.reason + " rejected=" + strconv.Itoa(n)
+	case KindRateLimited:
+		text = "limit=" + r.reason + " limited=" + strconv.Itoa(n)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -689,13 +746,13 @@ func (b *budget) inUse() int64 {
 func (s *session) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.from, s.hasFrom, s.params, s.to = "", false, store.Params{}, nil
+	s.from, s.hasFrom, s.params, s.to, s.audit = "", false, store.Params{}, nil, store.MailAudit{}
 }
 
 func (s *session) Logout() error { return nil }
 
 // accept processes and stores one mail. It returns the new id.
-func (s *Server) accept(sender, from string, to []string, params store.Params, raw []byte) (string, error) {
+func (s *Server) accept(sender, from string, to []string, params store.Params, audit store.MailAudit, raw []byte) (string, error) {
 	now := s.opts.Now()
 	mailID := id.NewAt(now)
 	msg := message.Process(raw)
@@ -706,7 +763,7 @@ func (s *Server) accept(sender, from string, to []string, params store.Params, r
 
 	m := store.NewMail{
 		ID: mailID, ReceivedAt: now, Sender: sender, EnvelopeFrom: from, Recipients: to,
-		MessageID: msg.MessageID, Ref: msg.Ref, Raw: sealed, Size: len(msg.Message), Params: params,
+		MessageID: msg.MessageID, Ref: msg.Ref, Raw: sealed, Size: len(msg.Message), Params: params, Audit: audit,
 	}
 	known := make(map[string]bool)
 	for _, t := range s.opts.Targets {
