@@ -12,6 +12,13 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ### Added
 
+- A Statistics page in the UI (`/stats`): mails received per bucket by their state now, as stacked bars drawn on the
+  server, for the last hour, 6 hours, 24 hours, 7 days, 30 days or a custom range in UTC, filtered by target and
+  sending application; totals, success rate, latency p50 and p95, and tables per target (with down time) and per
+  application (with refused logins, commands and rate-limit refusals).
+- `GET /v1/stats` for `admin` API tokens with the same counts as JSON.
+- Migration 10 adds two indexes for the statistics; counted hours are kept in memory (at most about 8 MiB).
+
 - Sender keys: `postwerk gen-sender NAME` prints a random key (`pwk_<id>_<secret>`, the application's SMTP password)
   and its senders-file line, which holds only a SHA-256 of the key. One key per application, two at once for a
   rotation without downtime. Password lines from 1.0 keep working.

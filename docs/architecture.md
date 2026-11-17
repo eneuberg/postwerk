@@ -27,7 +27,7 @@ internal/report       event cursor loop per sink, the stdout and Sentry-protocol
 internal/httpapi      health endpoints on the health listener (H1)
 internal/watch        Postwerk's own signals: free space of the data volume, age of each target's queue, unusual sender volume (H10, A10, A11, D67)
 internal/fold         counts repeated occurrences, one record per key and window (the API's and ingress's refusal events)
-internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, address masking (U10–U12, U15)
+internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, statistics, address masking (U10–U12, U15, U26)
 internal/resolve      the admin actions on a delivery for the UI and the JSON API: close and resend, their input and availability (H11–H13)
 internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts, close and resend forms (H3, U1–U25)
 internal/api          the JSON query API on its own listener: bearer tokens, limits, events, JSON, close and resend (H2, H4–H13)
@@ -90,7 +90,7 @@ never a stale lock. Where `flock` is not built (`lock_other.go`, Windows and oth
 Open does not wait and `cmd/postwerk` logs a warning. `cmd/postwerk` opens the health listener before the store:
 `/healthz` answers during the wait, and `/readyz` fails until the store, the workers and the other listeners run.
 
-Tables (version 9):
+Tables (version 10):
 
 | Table | Holds | Notes |
 |---|---|---|
@@ -120,7 +120,8 @@ be kept per recipient) and adds `events.recipient`. `0005_ui.sql` adds partial i
 adds `delivery_recipients.resolution` with a check that it matches the status (`confirmed` only with `handed_off`,
 `given_up` only with `failed`). `0008_sender_keys.sql` adds `senders`, `sender_keys` and `sender_usage`.
 `0009_mail_audit.sql` adds the audit columns of `mails` (NULL for older rows) and indexes on `(sender, received_at)`
-and `key_id`.
+and `key_id`. `0010_stats.sql` adds two covering indexes for the statistics (D75): `mails (received_at, sender, id)`
+and `events (kind, time)`.
 
 All tables are `STRICT`. The schema lives in `internal/store/migrations/NNNN_name.sql`, embedded in the binary; a
 migration runs in its own transaction together with `PRAGMA user_version = N`. A database with a newer version than the
@@ -388,6 +389,21 @@ what a reader may see: `query.Full` (the UI, and API tokens with role `admin`) r
 tokens with role `read`, the zero value) returns `j•••@e•••.com` and masks the `Message-ID` (`query.MaskMessageID`),
 and a pseudonymized mail returns no address at all. No function returns the stored message.
 
+**Statistics** (D73–D75, `query.Stats`, `store.Stats`). A mail counts in the bucket of its received time with the
+state it has now, by the same rule as the lists (required targets, or the filtered target); a delivery per target
+likewise. Retries, `delivery.rejected`, `delivery.not_allowed` and the folded ingress refusals (`failures=`,
+`rejected=`, `limited=`) count at their event time, and a target's down time runs from `target.down` to
+`target.recovered` (`store.TargetTransitions`). Buckets are aligned to multiples of their width since the Unix epoch,
+so in UTC. The store reads one hour per transaction: it streams the recipients of the hour's mails in the order of
+the index `mails_stats`, so a mail's rows come together, and counts them in Go with `statusCounts.summary`, the rule
+behind `Summarize`. An hour that is over is kept in memory, per width below an hour and per filter, until an event
+with the id of one of its mails arrives: every change of a recipient's status writes such an event in the same
+transaction, so the event log is the cache's change log. Each call first reads the events since the last one
+(`seq` above the last seen; more than 200,000 drop the cache), drops the hours they touch, and drops hours older than
+the shorter retention, because retention deletes records without an event. At most 250,000 counts (about 8 MiB; 90 days take about 160,000) are
+kept; the least recently used hours go first. Latency is kept as a histogram with steps of 100 ms below 2 s up to an
+hour above 10 h, and p50 and p95 are read from it, rounded down.
+
 `internal/ui` is one `http.Handler` on the admin listener (`ui.NewServer` sets the timeouts). An outer layer sets the
 security headers on every response, refuses unknown `Host` headers and bounds the body; Go's
 `http.CrossOriginProtection` refuses cross-site `POST`s; every page needs a session, and every `POST` the session's
@@ -537,5 +553,11 @@ starts from the newest of its events in the event log (`store.LastOf`), so a res
   events and a removed key ending its session; `cmd/postwerk` runs the whole program with `POSTWERK_SENDER_KEYS=both`:
   a file key, a password, a rotated database sender, a revoked key (`535`), the policy refusals and the audit of every
   stored mail, with no key on stdout.
+- Statistics: a known dataset checks every count by bucket, target and sender, including mails received on either
+  side of a bucket edge, a mail whose retry falls into the next bucket, optional targets per the state rule, a
+  delivery an admin closed, and the down time; a second test changes old hours and checks that the cache follows.
+  The chart test renders ranges from 1 to 123 million mails and checks that no axis label overlaps another or leaves
+  the drawing. `STATS_BENCH_PER_DAY=50000 go test ./internal/store -run TestStatsPerformance` measures the store on a
+  generated database (D75).
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.

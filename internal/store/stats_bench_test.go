@@ -212,6 +212,7 @@ func TestStatsPerformance(t *testing.T) {
 		t.Logf("%-20s %9d mails  uncached %8s  cached %6s  after changes in 24 h %6s  one hour %5s", c.name, n,
 			cold.Round(time.Millisecond), warm.Round(time.Millisecond), changed.Round(time.Millisecond), hour.Round(time.Millisecond))
 	}
+	t.Logf("cache: %d cells in %d hours", s.stats.cells, len(s.stats.entries))
 	plan(t, s)
 }
 

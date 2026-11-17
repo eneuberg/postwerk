@@ -1060,3 +1060,78 @@ The old logo, an envelope fanning out to three dots, used the teal that D70 reti
 graphite tile: one line branches twice into three, each ending in a lamp. It shows what Postwerk does (one mail, one
 copy per target, a state for each) in the panel's own language, holds at 16 px, works on light and dark backgrounds,
 and has a one-colour version (`docs/logo-mono.svg`). It avoids envelopes, horns and railway company marks.
+
+## D73 Statistics count mails by received time with their state now; events by their own time
+
+The owner wants to see throughput and outcomes over hours and days, in the UI and for other tools. Two ways to put a
+mail in a bar were possible: when it arrived, or when something happened to it.
+
+- **A mail counts in the bucket it was received in, with the state it has now**, derived by the rule of the lists
+  (requirement D17, decision D24: the required targets; at the target when filtered). The bars then add up to the mails received, every mail is
+  in exactly one bar, and a bar answers "of what came in then, how much arrived?", the question after an incident.
+  The price: the newest bars still change while their mails are delivered, and a mail closed by an admin days later
+  changes an old bar. Counting hand-offs by their own time would show the target's pace better, but a mail retried
+  across midnight would count in two days, and the bars would add up to nothing.
+- **Events count at their own time**: retries, `delivery.rejected`, `delivery.not_allowed`, the folded ingress
+  refusals (with the counts in their text) and the down time of a target from `target.down` to `target.recovered`.
+  They are not states of a mail, and a refusal has no mail at all. Rejected and not-allowed recipients are events
+  because the status table keeps only `failed` and `skipped`.
+- **Success rate** = handed off ÷ (handed off + partial + failed + unknown). Skipped mails expected no hand-off,
+  mails in flight have no outcome yet; an unknown one counts against it until someone closes it, because nobody knows
+  it arrived. Shown rounded down, so 99.96 % never reads as 100 %.
+- **Latency** is per delivery, from acceptance to the `250` for the last recipient the relay handed off, so it
+  includes retries and outages: what the sending application experiences. Deliveries an admin closed are left out
+  (a person's decision is no latency). It is kept as a histogram with coarse steps, and the percentiles are read
+  from it, rounded down.
+- **Counts only.** No address, no ref, no content; sender and target names are configuration. So the page writes no
+  audit event, and the API only its usual `api.request`.
+
+## D74 Ranges: presets plus a custom range in UTC, buckets by the range, capped by retention
+
+- **Presets** of 1 h, 6 h, 24 h, 7 d and 30 d cover "right now", "today" and "this month"; a custom range takes a day
+  or a day and time. The UI form is a plain `GET` (U9: no JavaScript), so a view is a link.
+- **Bucket width follows the span**: the narrowest of 1, 2, 5, 10, 15, 30 minutes, 1, 2, 3, 6 or 12 hours that gives at
+  most 72 bars, a day from two weeks, a week from 200 days. The presets get 1 min, 5 min, 30 min, 3 h and a day.
+  Every width divides an hour or is a multiple of it, which the store's hourly reads need (D75).
+- **UTC only, aligned to the epoch.** Buckets start at multiples of their width since 1970 UTC; the page and the
+  API name the zone. A server-side page without JavaScript cannot know the reader's zone, and an operator comparing
+  with logs and events (all UTC) wants the same clock. The range is extended back to the start of its first bucket.
+- **Capped by retention.** Records and events go after `RECORD_RETENTION` and `EVENT_RETENTION`; a range that starts
+  earlier is cut at the shorter one and the page says so, instead of showing empty bars as if nothing had been sent.
+  A range wholly before it is refused.
+
+## D75 Hourly reads, counted in Go, cached until the event log says otherwise
+
+The store has one connection (D6): a statistics read holds up ingress and the workers for as long as it runs. A month
+at 50,000 mails a day is 1.5 million mails.
+
+- **One hour per transaction.** Each read is short (about 6 ms for an hour at 50,000 mails a day), so a long range
+  never blocks the relay for more than that at a time.
+- **Rows streamed, counted in Go.** The recipients of the hour's mails come in the order of a covering index
+  (`mails_stats`: received time, sender, id), so a mail's rows are together, and Go counts them with the same
+  function as `Summarize`. Measured on the modernc SQLite driver, this is three times faster than grouping in SQL
+  (a materialized CTE with three `GROUP BY`s), and the state rule exists once more neither in SQL nor in Go.
+- **Finished hours are cached in memory, and the event log invalidates them.** Every change of a recipient's status
+  is written with an event that names the mail (D7), so before each read the store takes the events since the last
+  one, finds their mails' hours and drops those. Retention deletes records and events without such an event, so
+  hours older than the shorter retention are never kept. An hour that has not ended is always read. A rollup table
+  kept up to date by every writer would survive a restart, but it would add a write to the hot path of every status
+  change, and the cache needs none.
+- **Bounded.** 25 to 75 counts per hour (32 bytes each; 162,000 for 90 days in the benchmark below), at most
+  250,000 (about 8 MiB), the least recently used hours dropped first.
+- **Indexes** (`0010_stats.sql`): the covering `mails (received_at, sender, id)` and `events (kind, time)` for the
+  counted kinds and the target transitions.
+
+Measured on generated databases of 90 days (`STATS_BENCH_PER_DAY=… go test ./internal/store -run
+TestStatsPerformance`, one container on a laptop):
+
+| Mails a day | Range | Not cached yet | Cached | After a day of changes | Longest transaction |
+|---|---|---|---|---|---|
+| 1,000 | 30 d / 90 d | 0.2 s / 0.6 s | 1 ms / 4 ms | 7 ms / 11 ms | 1 ms |
+| 10,000 | 24 h / 30 d / 90 d | 37 ms / 1.3 s / 3.9 s | 2–8 ms | 35–39 ms | 2 ms |
+| 50,000 (5.7 GiB) | 24 h / 7 d / 30 d / 90 d | 0.3 s / 2.0 s / 8.5 s / 31 s | 7–15 ms | 0.16 s | 6–15 ms |
+
+"Not cached yet" is the first view of a range after a start, with the database in the page cache; from disk the
+first 30 days at 50,000 a day took 16.6 s. "After a day of changes": an event about a mail in each of the last 24
+hours, so those hours are counted again. Even the slowest first view never holds the connection longer than one
+hour's read.

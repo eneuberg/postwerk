@@ -177,15 +177,50 @@ both name it. How the UI looks, and why: [design-system.md](design-system.md).
 | Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
 | Mail | `GET /mails/{id}` | on top the id, the overall status, received time, sending application, number of recipients and size, and a route to each target with its status; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline, the day shown once; beside it (below on narrow screens) the record: ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored, the recipients. Opening it writes `ui.view` |
 | Close, resend | `POST /mails/{id}/targets/{target}/close`, `POST /mails/{id}/targets/{target}/resend` | on success back to the mail page with a notice; when refused, the mail page with the reason at that target |
+| Statistics | `GET /stats` | throughput and outcomes over a range (section 5.1) |
 | Settings | `GET /settings`, `POST /settings/accounts` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
 | Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
 | Logout | `POST /logout` | |
 
-The navigation is Overview, Mails, Settings. The old account addresses `GET /accounts` and `GET /accounts/{name}`
+The navigation is Overview, Mails, Statistics, Settings. The old account addresses `GET /accounts` and `GET /accounts/{name}`
 redirect to their pages under `/settings`; the query of a redirected request is dropped.
 
 The state filter and every status shown are the derived summaries of architecture.md (`queued`, `sending`,
 `unknown`, `handed_off`, `failed`, `partial`, `skipped`); with a target filter they are the state at that target.
+
+### 5.1 Statistics
+
+`GET /stats` answers "how much went through, and how much of it arrived?" (D73–D75). It has its own place in the
+navigation, so it is one click from every page; the overview stays a picture of now.
+
+- **Range and filters** are one `GET` form, so a view can be bookmarked and needs no JavaScript: a preset (last
+  hour, 6 hours, 24 hours, 7 days, 30 days; 24 hours without a choice) or "From and to below" with a day
+  (`2026-11-17`) or a day and time (`2026-11-17 08:00`) in UTC; a day alone as "to" includes that day. After a preset
+  the fields show the range counted, ready to change. A target and a sending application narrow it. A range that
+  starts before what retention keeps (the shorter of `POSTWERK_RECORD_RETENTION` and `POSTWERK_EVENT_RETENTION`) is
+  cut there, and the page says so.
+- **Buckets** follow the range: 1 minute for an hour, 5 minutes for 6 hours, 30 minutes for 24 hours, 3 hours for
+  7 days, a day for 30 days; a custom range gets the narrowest width with at most 72 bars, a day from two weeks, a
+  week from 200 days. All times are UTC and say so.
+- **Summary**: mails received (in flight, skipped), handed off (partial), failed (unknown, rejected recipients; the
+  number links to the failed mails of those days), the success rate, and the latency p95 with p50.
+- **Throughput**: stacked bars of the mails received per bucket by their state now (handed off, partial, failed,
+  unknown, in flight, skipped), drawn on the server as inline SVG and filled by class from the design tokens, so
+  they follow light and dark. A count above zero is at least 2 units high, so one failure among thousands shows.
+  Both axes take their ticks from one scale; the time labels are spaced by their width and never overlap. A tinted
+  band marks the time a target was down. Each bar has a tooltip (`<title>`), the chart a `<title>` and `<desc>`, and
+  "The chart as a table" below it lists every bar. On phones a narrower drawing with fewer labels replaces it.
+- **By target**: deliveries by their state at that target (optional targets too), rejected recipients, retries,
+  success rate, p50 and p95, and the time it was down. **By sending application**: mails by their state, and failed
+  logins, refused commands and rate-limit refusals; failed logins with a name no sender has are one row,
+  "unknown name".
+
+What counts how: a mail in the bar of its received time with the state it has now, so the last bars change while
+mails are delivered. Retries, rejected recipients, recipients outside an allow-list, ingress refusals and down time
+count when they happened. The success rate is handed off divided by handed off, partial, failed and unknown; skipped
+and in-flight mails are left out, an unknown one counts against it until someone closes it. Latency runs from
+acceptance to the target's `250` for the last recipient of a delivery the relay handed off; deliveries an admin
+closed are left out. Counts only: the page shows no address and no content, and opening it writes no event.
 
 **Addresses** are shown in full: recipients and the envelope sender. After pseudonymization nobody sees them; the page
 says "pseudonymized". A search by address still finds the mail through the keyed hash (K3).
@@ -227,7 +262,7 @@ provider by its `X-Postwerk-Id` (Mailjet: the custom id). Found: close as confir
 |---|---|
 | `internal/store` | the SQL for every read (lists, counts, events of a mail) and for the accounts table; still the only package that speaks SQL |
 | `internal/resolve` | close and resend for the UI and the API: input checks, what is possible for a delivery, the store's change and the wake signal for the workers |
-| `internal/query` | read logic on top of the store: overview, list, search, mail detail, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
+| `internal/query` | read logic on top of the store: overview, list, search, mail detail, statistics, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
 | `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates, the stylesheet, the logo and the typeface (with its licence, `static/OFL.txt`) embedded with `embed`, served from a fixed list and rendered with `html/template` |
 | `internal/auth` | token file parsing, password rules and the equal-cost checker, on top of the sender password hashes |
 

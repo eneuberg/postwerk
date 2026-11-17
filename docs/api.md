@@ -42,6 +42,7 @@ Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
 | `GET /v1/mails/{id}` | yes, addresses and the `Message-ID` masked (`j•••@e•••.com`, `<4711@s•••.com>`) | yes, in full |
 | `GET /v1/mails` (list with filters) | no (`403`) | yes |
 | `GET /v1/overview` (per target) | no (`403`) | yes |
+| `GET /v1/stats` (counts over a range) | no (`403`) | yes |
 | `POST /v1/mails/{id}/targets/{target}/close` | no (`403`) | yes |
 | `POST /v1/mails/{id}/targets/{target}/resend` | no (`403`) | yes |
 
@@ -194,6 +195,62 @@ configured has no `state`. `down` means the target rejected the login (`down_rea
 last seen up again (or Postwerk started). The state is held in memory, so after a restart every target is `up` until
 the first attempt says otherwise.
 
+### Statistics: `GET /v1/stats` (admin)
+
+Counts over a range of time, as the UI's Statistics page shows them (D73–D75, [ui.md](ui.md#51-statistics)). URL
+parameters, each at most once, none required:
+
+| Parameter | Value |
+|---|---|
+| `range` | `1h`, `6h`, `24h` (the default), `7d`, `30d`, or `custom` |
+| `from`, `to` | with `range=custom` (or without `range`): `YYYY-MM-DD`, `YYYY-MM-DDThh:mm[:ss]` or `YYYY-MM-DD hh:mm[:ss]` in UTC, or RFC 3339 with an offset. `from` is required; `to` defaults to now, and a day alone as `to` includes that day. `from` or `to` beside a preset is a `400` |
+| `target` | only deliveries to this target; a mail's state is its state there |
+| `sender` | only mails and events of this sending application (its login, never an address) |
+
+The range starts no earlier than the shorter of the record and event retention (`clamped` says it was cut there,
+`retained_from` where), and is extended back to a whole bucket: buckets are aligned to multiples of
+`bucket_seconds` since the Unix epoch, in UTC. A range that ends before what retention keeps, or starts in the
+future, is a `400`.
+
+```json
+{
+  "now": "2026-11-17T12:20:00Z",
+  "range": "24h",
+  "from": "2026-11-16T12:00:00Z",
+  "to": "2026-11-17T12:20:00Z",
+  "timezone": "UTC",
+  "bucket_seconds": 1800,
+  "retained_from": "2026-08-19T12:20:00Z",
+  "clamped": false,
+  "totals": {"total": 372, "handed_off": 365, "partial": 1, "failed": 2, "unknown": 2, "in_flight": 2, "skipped": 0,
+             "rejected": 0, "not_allowed": 0, "retries": 22, "success_rate": 0.9864},
+  "latency": {"deliveries": 365, "p50_ms": 1800, "p95_ms": 16000},
+  "ingress": {"auth_failed": 17, "rejected": 0, "rate_limited": 0},
+  "buckets": [{"start": "2026-11-16T12:00:00Z", "total": 15, "handed_off": 15, "…": "as in totals",
+               "ingress": {"auth_failed": 0, "rejected": 0, "rate_limited": 0}}],
+  "targets": [{"target": "mailjet", "configured": true, "optional": false, "total": 372, "…": "as in totals",
+               "latency": {"deliveries": 365, "p50_ms": 1800, "p95_ms": 16000}, "down_seconds": 1500, "down_now": false,
+               "outages": [{"from": "2026-11-16T14:00:00Z", "to": "2026-11-16T14:25:00Z", "open": false}]}],
+  "senders": [{"sender": "shop", "total": 178, "…": "as in totals", "ingress": {"auth_failed": 0, "rejected": 0, "rate_limited": 0}}]
+}
+```
+
+- `total` and the states count **mails** received in the bucket or range, by the state they have now (over the
+  required targets, or at `target`); in `targets` they count **deliveries** at that target, optional ones included.
+  `in_flight` is `queued` or `sending`.
+- `rejected` (recipients refused for good, `delivery.rejected`), `not_allowed` (recipients outside an allow-list),
+  `retries` and `ingress` count events at the time they happened. In `totals`, `buckets` and `senders` they count for
+  required targets only (or `target`).
+- `success_rate` is `handed_off / (handed_off + partial + failed + unknown)`, `null` when that is 0.
+- `latency`: from acceptance to the target's `250` for the last recipient of a delivery the relay handed off, over
+  the required targets (per target in `targets`); deliveries an admin closed are left out. Percentiles are rounded
+  down to their step (100 ms below 2 s, 500 ms below 10 s, 1 s below a minute, then 10 s, 1 min, 10 min, 1 h).
+- `down_seconds` and `outages`: the times the target was down within the range, from `target.down` to
+  `target.recovered`; `open` when it is still down at `to`.
+- A sender `""` holds failed logins with a name that no sender has.
+
+The response holds counts only. Like every request it writes `api.request` (`stats status=200 results=0`).
+
 ### Close and resend: `POST /v1/mails/{id}/targets/{target}/close`, `…/resend` (admin)
 
 An admin's decision on one delivery (the mail at one target), for what Postwerk cannot finish alone, typically an
@@ -268,7 +325,7 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 
 | Status | `error` | When |
 |---|---|---|
-| 400 | `bad_request` | invalid JSON, unknown field, more than one value, invalid `by` or filter, empty query, URL parameters on a `POST`, a body on a `GET` |
+| 400 | `bad_request` | invalid JSON, unknown field, more than one value, invalid `by`, filter or range, empty query, URL parameters on a `POST`, a body on a `GET` |
 | 401 | `unauthorized` | missing, malformed or wrong token; with `WWW-Authenticate: Bearer realm="postwerk"` |
 | 403 | `forbidden` | the role may not use the endpoint |
 | 403 | `host_not_allowed`, `browser_refused` | `Host` not in `POSTWERK_API_HOSTS`; a request with `Origin` or `Sec-Fetch-*` headers |

@@ -313,6 +313,8 @@ func TestParseStatsRange(t *testing.T) {
 			From: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)}},
 		{from: "2026-11-01T08:30", to: "2026-11-01T09:00:30", want: StatsRange{
 			From: time.Date(2026, 11, 1, 8, 30, 0, 0, time.UTC), To: time.Date(2026, 11, 1, 9, 0, 30, 0, time.UTC)}},
+		{from: " 2026-11-01 08:30 ", to: "2026-11-01 09:00", want: StatsRange{
+			From: time.Date(2026, 11, 1, 8, 30, 0, 0, time.UTC), To: time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)}},
 		{from: "2026-11-01T08:30:00+02:00", want: StatsRange{From: time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)}},
 		{from: "2026-11-02", to: "2026-11-01", bad: true},
 		{from: "2026-11-01T10:00", to: "2026-11-01T10:00", bad: true},

@@ -143,6 +143,9 @@ The page is at most `--page` (78 rem) wide.
 - **Forms.** Labels above fields; fields with a strong border that turns graphite on hover and focus. Primary button
   graphite (`--ink`), secondary outlined, danger in the failed red. A disabled button is grey with its reason next to
   it. Resolve options are `<details>` that open on a click, so the page needs no JavaScript.
+- **Throughput chart** (statistics). Stacked bars of mails by state, filled with the `-lamp` tokens (in flight with
+  `--line-strong`), grid lines `--chart-grid`, axis `--chart-axis`, labels in the label face in `--muted`; the time a
+  target was down is a band in `--failed-bg` with a `--failed-lamp` mark on top. Neutral summary values get no lamp.
 - **Notices.** A tinted box in the colour of what it reports: ok, error, warning.
 - **Empty states** say what the empty place means and what to do: "No mail matches this filter. Reset the filter."
 - **Focus.** A 2 px graphite (light in the dark) outline with 2 px offset on every control; a skip link to the
