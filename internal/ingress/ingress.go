@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
+	"net/mail"
 	"slices"
 	"strconv"
 	"strings"
@@ -607,6 +609,7 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 func (s *session) Data(r io.Reader) error {
 	s.mu.Lock()
 	sender, from, params, to, audit := s.sender, s.from, s.params, slices.Clone(s.to), s.audit
+	policy := s.principal.Policy
 	ok := s.sender != "" && s.hasFrom && len(s.to) > 0
 	s.mu.Unlock()
 	if sender == "" {
@@ -665,7 +668,13 @@ func (s *session) Data(r io.Reader) error {
 		return errNoStorage
 	}
 
-	mailID, err := s.srv.accept(sender, from, to, params, audit, raw)
+	msg := message.Process(raw)
+	// The visible sender is bound by the same patterns as MAIL FROM (D81).
+	if !fromHeaderAllowed(policy, msg.From, params.SMTPUTF8) {
+		return s.rejectAs(sender, errFromDenied)
+	}
+
+	mailID, err := s.srv.accept(sender, from, to, params, audit, msg)
 	if err != nil {
 		s.srv.opts.Logger.Error("storing mail failed, replied 451", "sender", sender, "err", err)
 		return errStorage
@@ -751,11 +760,11 @@ func (s *session) Reset() {
 
 func (s *session) Logout() error { return nil }
 
-// accept processes and stores one mail. It returns the new id.
-func (s *Server) accept(sender, from string, to []string, params store.Params, audit store.MailAudit, raw []byte) (string, error) {
+// accept stores one mail, processed by message.Process. It returns the new
+// id.
+func (s *Server) accept(sender, from string, to []string, params store.Params, audit store.MailAudit, msg message.Result) (string, error) {
 	now := s.opts.Now()
 	mailID := id.NewAt(now)
-	msg := message.Process(raw)
 	sealed, err := s.opts.Sealer.Seal(mailID, msg.Message)
 	if err != nil {
 		return "", err
@@ -796,6 +805,39 @@ func (s *Server) accept(sender, from string, to []string, params store.Params, a
 		}
 	}
 	return mailID, nil
+}
+
+// headerFrom parses the From: header field. Only the addresses are used, so
+// encoded words in a display name are not converted from their charset: an
+// unknown charset must not make a mail with an allowed address unparseable.
+var headerFrom = mail.AddressParser{WordDecoder: &mime.WordDecoder{
+	CharsetReader: func(_ string, r io.Reader) (io.Reader, error) { return r, nil },
+}}
+
+// fromHeaderAllowed reports whether the From: header fields of a message may
+// be sent under policy (D81). Without from patterns they always may. With
+// them there must be exactly one From: field, it must parse as an address
+// list (a group's members count, an empty group does not), and every address
+// in it must pass the checks MAIL FROM passes: validAddress, SMTPUTF8 for a
+// non-ASCII address, and the patterns. The display name is never looked at.
+func fromHeaderAllowed(policy senders.Policy, fields []string, smtputf8 bool) bool {
+	if len(policy.From()) == 0 {
+		return true
+	}
+	if len(fields) != 1 {
+		return false
+	}
+	list, err := headerFrom.ParseList(fields[0])
+	if err != nil || len(list) == 0 {
+		return false
+	}
+	for _, a := range list {
+		if a.Address == "" || !validAddress(a.Address) || (!smtputf8 && !isASCII(a.Address)) ||
+			!policy.AllowsFrom(a.Address) {
+			return false
+		}
+	}
+	return true
 }
 
 // validAddress checks an envelope address: at most 320 bytes, at most one

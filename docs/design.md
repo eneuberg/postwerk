@@ -327,7 +327,7 @@ Kinds written today:
 | `delivery.closed` | info | an admin closed this recipient; `actor`, text `resolution=… was=… via=ui\|api` and the note, redacted |
 | `delivery.resend` | info | an admin queued this recipient again; `actor`, text `was=… via=…` |
 | `ingress.auth_failed` | warn | failed `AUTH` attempts, counted: at most one event per sender and minute with `failures=<n>`; `sender` only if the name is in the senders file. Never the password |
-| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients`, `line_too_long` or `from_not_allowed` (`550 5.7.1`, the sender's policy), with `rejected=<n>`; at most one event per sender, reason and minute. Never an address. A `SIZE=` over the limit at `MAIL` is refused by the SMTP library and not counted (D51) |
+| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients`, `line_too_long` or `from_not_allowed` (`550 5.7.1`, the sender's policy, envelope or `From:` header), with `rejected=<n>`; at most one event per sender, reason and minute. Never an address. A `SIZE=` over the limit at `MAIL` is refused by the SMTP library and not counted (D51) |
 | `ingress.rate_limited` | warn | commands of a logged-in sender refused by its rate limit (`451 4.7.1`): `limit=max_per_minute` or `max_rcpt_per_hour`, with `limited=<n>`; at most one event per sender, limit and minute |
 | `sender.created`, `sender.rotated`, `sender.revoked`, `sender.policy_changed` | info | a sender in the database was created, got a second key, had a key revoked or its policy changed; `actor` and `sender`, text `key=<id>` or the policy as counts (`from_patterns=2 max_per_minute=60 max_rcpt_per_hour=0`), never a pattern or a key |
 | `sender.volume_high` | error | a sender sent far more than usual in the last hour (section 13, "Sender keys"); `sender`, text `mails_last_hour=… hourly_average=… factor=…` or `max=…`; at most once per sender and hour |
@@ -509,8 +509,9 @@ One sender per application, so a leaked credential can be traced to it and revok
   and revoked under Settings in the UI or through the API, for example from CI; [ui.md](ui.md#7-sender-keys),
   [api.md](api.md#sender-keys-admin)), or both (`POSTWERK_SENDER_KEYS`). A name is in one place only. 1.0 password
   lines keep working. A sender is never deleted; revoking all its keys switches it off (D76).
-- **Policy per sender.** Allowed envelope senders (`550 5.7.1` otherwise), messages per minute and recipients per
-  hour (`451 4.7.1` otherwise, so the application retries). Without a policy a sender may do anything, as in 1.0.
+- **Policy per sender.** Allowed sender addresses, in the envelope and the `From:` header (`550 5.7.1` otherwise),
+  messages per minute and recipients per hour (`451 4.7.1` otherwise, so the application retries). Without a policy
+  a sender may do anything, as in 1.0.
 - **Audit per mail.** The key id and its source, the client address, TLS version and cipher, the `EHLO` name and the
   `AUTH` mechanism are stored with the mail and shown with it; `mail.accepted` carries key and client.
 - **Signals.** Refusals are counted as `ingress.auth_failed`, `ingress.rejected` and `ingress.rate_limited`;

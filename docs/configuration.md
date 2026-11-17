@@ -91,13 +91,13 @@ shop:policy from=*@shop.example.com,noreply@example.com max_per_minute=60 max_rc
 
   | Key | Meaning |
   |---|---|
-  | `from=` | Comma-separated envelope sender (`MAIL FROM`) patterns, compared in lower case with shell-style `*`, `?` and `[…]`, for example `*@shop.example.com`. `<>` allows the null sender. Another sender gets `550 5.7.1` at `MAIL` and counts as `ingress.rejected reason=from_not_allowed`. At most 32 patterns. |
+  | `from=` | Comma-separated sender address patterns, compared in lower case with shell-style `*`, `?` and `[…]`, for example `*@shop.example.com`. They bind both the envelope sender (`MAIL FROM`) and every address in the message's `From:` header. `<>` allows the null sender (envelope only). Another envelope sender gets `550 5.7.1` at `MAIL`; a `From:` header with an address outside the patterns, no `From:`, two `From:` fields or one that does not parse gets `550 5.7.1` at the end of `DATA`, and nothing is stored. Both count as `ingress.rejected reason=from_not_allowed`. At most 32 patterns. |
   | `max_per_minute=` | Messages per minute, counted at `MAIL`; over it `451 4.7.1` (the application retries). `0`: no limit. |
   | `max_rcpt_per_hour=` | Recipients per hour, counted at `RCPT`; over it `451 4.7.1`. `0`: no limit. |
 
-  Set `from=` for every sender in production: without it, a leaked key can use any envelope sender the provider
-  accepts for your account. `from=` checks `MAIL FROM` only, not the `From:` header of the message; restrict the
-  header sender at the provider too (verified senders or domains). The limits are counted in memory per sender (both
+  Set `from=` for every sender in production: without it, a leaked key can use any sender address the provider
+  accepts for your account, in the envelope and in the visible `From:`. Restrict the senders at the provider as well
+  (verified senders or domains). Other header fields such as `Sender:` or `Reply-To:` are not checked. The limits are counted in memory per sender (both
   keys share them) and start full after a restart.
 - **Reload.** The file is re-read every 30 s and compared by content, so a Kubernetes Secret update reaches a running
   Postwerk without a restart. A valid file is used from the next login and writes `senders.reloaded`; an invalid one

@@ -381,7 +381,7 @@ for a file sender, a removed one, and every sender when the database is off. `re
 (`ingress.rejected`) and rate-limit refusals (`ingress.rate_limited`).
 
 **Create: `POST /v1/senders`.** A new sender in the database with its first key; `policy` and `expires_at` are
-optional (no policy: any envelope sender, no limits; no expiry: the key does not expire). Set `from` in production.
+optional (no policy: any sender address, no limits; no expiry: the key does not expire). Set `from` in production.
 
 ```http
 POST /v1/senders HTTP/1.1

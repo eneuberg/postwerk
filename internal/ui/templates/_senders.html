@@ -12,7 +12,7 @@
 
 {{define "policysummary"}}
 {{if .Removed}}<span class="muted small-inline">in no source</span>{{else}}
-{{with .Policy.From}}<span class="mono break small-inline">{{join . ", "}}</span>{{else}}<span class="tag tag-warn" title="No from= patterns: a leaked key can send as any address">any envelope sender</span>{{end}}
+{{with .Policy.From}}<span class="mono break small-inline">{{join . ", "}}</span>{{else}}<span class="tag tag-warn" title="No from= patterns: a leaked key can send as any address">any sender address</span>{{end}}
 <br><span class="muted small-inline">{{limits .Policy}}</span>
 {{end}}
 {{end}}
@@ -30,9 +30,9 @@
 {{define "policyfields"}}
 <fieldset class="policy-fields">
   <legend>Policy <span class="muted">(what the application may do)</span></legend>
-  <label for="policy-from">Allowed envelope senders</label>
+  <label for="policy-from">Allowed sender addresses</label>
   <textarea id="policy-from" name="from" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="policy-from-note">{{.From}}</textarea>
-  <p id="policy-from-note" class="muted small-inline">One pattern per line, for example <span class="mono">*@shop.example.com</span> or <span class="mono">noreply@example.com</span>; <span class="mono">&lt;&gt;</span> allows the null sender. Empty: any address, which a leaked key could misuse. Set it in production.</p>
+  <p id="policy-from-note" class="muted small-inline">One pattern per line, for example <span class="mono">*@shop.example.com</span> or <span class="mono">noreply@example.com</span>; They bind <span class="mono">MAIL FROM</span> and every address in the <span class="mono">From:</span> header; <span class="mono">&lt;&gt;</span> allows the null sender. Empty: any address, which a leaked key could misuse. Set it in production.</p>
   <div class="field-pair">
     <div>
       <label for="policy-per-minute">Messages per minute</label>

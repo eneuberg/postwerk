@@ -329,7 +329,7 @@ not change the design until they are accepted there.
     *Suggestion:* optional per-sender list of allowed envelope-from addresses or domains. This is an envelope check and
     stays content-blind. The provider's own domain checks remain the second line.
     *Status:* built in 1.1: `from=` in each sender's policy, `550 5.7.1` otherwise, together with rate limits per
-    sender and one key per application (D62–D64).
+    sender and one key per application (D62–D64). The same patterns bind the `From:` header (D81).
 
 14. **Bounces and envelope sender are not described.** The design does not say that Postwerk sends no bounce mails
     (DSN) to senders, or which envelope sender it passes to the target.

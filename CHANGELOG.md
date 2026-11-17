@@ -74,7 +74,10 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 - The statistics cache also counts its entries: requests for ever new sender or target names (which need not
   exist) cached an empty entry per hour of the range each and grew the memory without limit (D80).
-- Docs: a policy's `from=` checks the envelope sender only, not the `From:` header; restrict that at the provider.
+- A policy's `from=` patterns also bind the message's `From:` header: every address in it must match, and a missing,
+  doubled or unparseable `From:` is refused (`550 5.7.1` at the end of `DATA`, nothing stored,
+  `ingress.rejected reason=from_not_allowed`), so a leaked key cannot show another sender (D81). Without `from=`
+  nothing changes.
 
 ## [1.0.0] - 2026-11-17
 

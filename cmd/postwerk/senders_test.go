@@ -160,7 +160,7 @@ func TestServeSenderKeys(t *testing.T) {
 		if err != nil {
 			return "", err
 		}
-		io.WriteString(w, "Subject: x\r\n\r\nhi\r\n")
+		io.WriteString(w, "From: "+from+"\r\nSubject: x\r\n\r\nhi\r\n")
 		resp, err := w.CloseWithResponse()
 		if err != nil {
 			return "", err

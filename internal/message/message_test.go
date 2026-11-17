@@ -236,3 +236,19 @@ func TestFieldsSize(t *testing.T) {
 		t.Fatalf("FieldsSize = %d", got)
 	}
 }
+
+// Every From field of the header is returned, unfolded; one in the body is not.
+func TestProcessFrom(t *testing.T) {
+	in := "from: a@example.test\r\n" +
+		"Subject: x\r\n" +
+		"From : \"Shop\"\r\n <b@example.test>\r\n" +
+		"\r\n" +
+		"From: c@example.test\r\n"
+	res := Process([]byte(in))
+	if want := []string{"a@example.test", `"Shop" <b@example.test>`}; !slices.Equal(res.From, want) {
+		t.Fatalf("From = %q, want %q", res.From, want)
+	}
+	if res := Process([]byte("Subject: x\r\n\r\nbody\r\n")); res.From != nil {
+		t.Fatalf("From without a field = %q", res.From)
+	}
+}

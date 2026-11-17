@@ -123,7 +123,7 @@ func TestSenderKeysList(t *testing.T) {
 	for _, want := range []string{
 		`id="senders"`, `href="/settings/senders/app"`, ">senders file<", `href="/settings/senders/billing"`, ">database<",
 		`href="/settings/senders/gone"`, ">removed<", "*@app.example.test", "60 messages per minute",
-		"any envelope sender", sh.fileKeyID, "1 failed recipient", `href="/mails?sender=gone"`, "New sender…",
+		"any sender address", sh.fileKeyID, "1 failed recipient", `href="/mails?sender=gone"`, "New sender…",
 	} {
 		if !strings.Contains(page.body, want) {
 			t.Errorf("settings lack %q", want)

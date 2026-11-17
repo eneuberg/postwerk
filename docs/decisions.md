@@ -964,6 +964,7 @@ damage that matters, volume the one that shows. Postwerk sees both before anythi
   1.0 line has no policy and keeps working.
 - **`550 5.7.1` at `MAIL`.** Permanent, because retrying cannot help; counted as `ingress.rejected
   reason=from_not_allowed` (D51), the patterns never in an event (they look like addresses).
+- **The `From:` header** is bound by the same patterns since D81.
 
 ## D64 Rate limits in memory, `451 4.7.1`, counted at `MAIL` and `RCPT`
 
@@ -1197,3 +1198,24 @@ cache without limit; only an admin can make them, but a stolen admin token or a 
 memory of the relay. Each entry now counts as four counts besides its own (about what its key and map slot cost), so
 the bound of 250,000 (about 8 MiB) holds whatever the filters, and the least recently used hours are dropped first as
 before. A normal 90-day view adds under 9,000 to its count.
+
+## D81 The `from=` patterns bind the `From:` header too
+
+D63 checked `from=` against `MAIL FROM` only. Recipients see the `From:` header, not the envelope, so a leaked key
+restricted to `noreply@example.com` could still show any address as the sender: the phishing D63 is meant to stop.
+
+- **The same patterns, no second list.** An operator who allows `*@shop.example.com` means the sender the recipient
+  sees. A separate header list would be one more setting that can disagree with the first. The matcher is the same
+  (`Policy.AllowsFrom`: lower case, `path.Match`, the case-folding rule of D60), and each address passes the checks a
+  `MAIL FROM` passes first: one `@`, no quotes, spaces or control characters, SMTPUTF8 for non-ASCII. `<>` stays an
+  envelope pattern; a `From:` header always has an address.
+- **Every address, nothing else.** The field is parsed as an address list (`net/mail`): each mailbox must match, a
+  group counts by its members, an empty group does not count. The display name and comments are never looked at, so
+  `"ok@example.com" <evil@example.org>` is judged by `evil@example.org`; encoded words in the display name are not
+  converted, so an unknown charset cannot make an allowed mail unparseable. `Sender:` and `Reply-To:` are not checked.
+- **Fail closed when patterns are set.** No `From:`, two `From:` fields (any case) or one that does not parse is
+  refused: a recipient's client might show any of them. Without patterns nothing is checked, as before.
+- **At the end of `DATA`, before the `250`.** The header is only known then. The reply and the count are those of a
+  refused `MAIL FROM` (`550 5.7.1`, `ingress.rejected reason=from_not_allowed`), and nothing is stored. The fields are
+  read by `message.Process`, which already reads `Message-ID` and Postwerk's own fields; the body is never parsed, so
+  Postwerk stays content-blind in the sense of D3.

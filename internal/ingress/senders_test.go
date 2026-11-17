@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -214,4 +215,91 @@ func keySession(t *testing.T, ke *keyEnv) *textproto.Conn {
 // plain is the AUTH PLAIN response for name and password.
 func plain(name, password string) string {
 	return base64.StdEncoding.EncodeToString([]byte("\x00" + name + "\x00" + password))
+}
+
+// The From: header is bound by the same patterns as MAIL FROM (D81).
+func TestFromHeaderAllowed(t *testing.T) {
+	policy, err := senders.ParsePolicy("from=*@example.test,noreply@shop.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		fields   []string
+		smtputf8 bool
+		want     bool
+	}{
+		{"match", []string{"a@example.test"}, false, true},
+		{"display name", []string{`Shop <noreply@shop.test>`}, false, true},
+		{"case", []string{`"Shop" <NoReply@Shop.TEST>`}, false, true},
+		{"encoded-word display name", []string{"=?utf-8?q?M=C3=BCller?= <a@example.test>"}, false, true},
+		{"unknown charset in display name", []string{"=?x-unknown?q?abc?= <a@example.test>"}, false, true},
+		{"comment", []string{"a@example.test (Shop)"}, false, true},
+		{"several allowed", []string{"a@example.test, Shop <noreply@shop.test>"}, false, true},
+		{"group of allowed", []string{"team: a@example.test, b@example.test;"}, false, true},
+		{"mismatch", []string{"evil@other.test"}, false, false},
+		{"address in display name", []string{`"ok@example.test" <evil@other.test>`}, false, false},
+		{"address in comment", []string{"evil@other.test (ok@example.test)"}, false, false},
+		{"one of several not allowed", []string{"a@example.test, evil@other.test"}, false, false},
+		{"group with one not allowed", []string{"team: a@example.test, evil@other.test;"}, false, false},
+		{"empty group", []string{"undisclosed-recipients:;"}, false, false},
+		{"missing", nil, false, false},
+		{"empty", []string{""}, false, false},
+		{"duplicate", []string{"a@example.test", "b@example.test"}, false, false},
+		{"unparseable", []string{"a@example.test <"}, false, false},
+		{"quoted local part with @", []string{`"evil@other.test"@example.test`}, false, false},
+		{"subdomain", []string{"a@evil.example.test.other.test"}, false, false},
+		{"kelvin sign", []string{"noreply@shop.testK"}, true, false},
+		{"non-ASCII without SMTPUTF8", []string{"ä@example.test"}, false, false},
+		{"non-ASCII with SMTPUTF8", []string{"ä@example.test"}, true, true},
+	} {
+		if got := fromHeaderAllowed(policy, tc.fields, tc.smtputf8); got != tc.want {
+			t.Errorf("%s: %q allowed = %v, want %v", tc.name, tc.fields, got, tc.want)
+		}
+	}
+	// Without from patterns nothing is checked, as before.
+	for _, fields := range [][]string{nil, {"evil@other.test"}, {"a", "b"}} {
+		if !fromHeaderAllowed(senders.Policy{}, fields, false) {
+			t.Errorf("no patterns: %q refused", fields)
+		}
+	}
+}
+
+// A From: header outside the patterns is refused at the end of DATA, with
+// the reply and event of a refused MAIL FROM, and nothing is stored.
+func TestFromHeaderRefusedAtData(t *testing.T) {
+	ke := startWithKeys(t, "keyed:policy from=*@example.test")
+	c := dial(t, ke.addr)
+	if err := c.Auth(sasl.NewPlainClient("", "keyed", ke.key)); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		"From: \"a@example.test\" <evil@other.test>\r\nSubject: hi\r\n\r\nbody\r\n",
+		"Subject: no From\r\n\r\nFrom: a@example.test\r\n",
+		"From: a@example.test\r\nFROM: b@example.test\r\n\r\nbody\r\n",
+	} {
+		_, err := sendMsg(c, "a@example.test", []string{"x@example.test"}, body)
+		var se *smtp.SMTPError
+		if !errors.As(err, &se) || se.Code != 550 || se.EnhancedCode != (smtp.EnhancedCode{5, 7, 1}) {
+			t.Fatalf("%q: %v, want 550 5.7.1", body, err)
+		}
+		if err := c.Reset(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mails, err := ke.store.ListMails(context.Background(), store.MailFilter{Limit: 10}); err != nil || len(mails) != 0 {
+		t.Fatalf("stored %d mails (%v)", len(mails), err)
+	}
+	// An allowed header goes through on the same connection.
+	if _, err := sendMsg(c, "a@example.test", []string{"x@example.test"}, msg); err != nil {
+		t.Fatal(err)
+	}
+	ke.srv.refused.Close()
+	got := refusalEvents(t, ke.store)
+	if want := []string{"ingress.rejected keyed reason=from_not_allowed rejected=3"}; !slices.Equal(got, want) {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+	if strings.Contains(ke.logs.String(), "other.test") {
+		t.Fatal("an address reached the log")
+	}
 }

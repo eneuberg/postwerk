@@ -29,7 +29,7 @@
     <div{{if not $s.Recent.Rejected}} class="zero"{{end}}><dt><span class="lamp lamp-unknown" aria-hidden="true"></span> Refused commands</dt><dd class="num">{{group $s.Recent.Rejected}}</dd></div>
     <div{{if not $s.Recent.RateLimited}} class="zero"{{end}}><dt><span class="lamp lamp-unknown" aria-hidden="true"></span> Rate-limited</dt><dd class="num">{{group $s.Recent.RateLimited}}</dd></div>
   </dl>
-  <p class="muted small">Refused logins: wrong or revoked keys for this name. Refused commands: an envelope sender outside the policy, too large, too many recipients. Rate-limited: over a limit of the policy, answered with 451.</p>
+  <p class="muted small">Refused logins: wrong or revoked keys for this name. Refused commands: a sender address (envelope or <span class="mono">From:</span>) outside the policy, too large, too many recipients. Rate-limited: over a limit of the policy, answered with 451.</p>
 </section>
 
 {{if $s.Removed}}
@@ -116,7 +116,7 @@
 <section class="card" id="policy" aria-labelledby="policy-h">
   <h2 id="policy-h">Policy</h2>
   <dl class="facts facts-list">
-    <div><dt>Envelope senders</dt><dd>{{with $s.Policy.From}}<ul class="patterns">{{range .}}<li class="mono break">{{.}}</li>{{end}}</ul>{{else}}<span class="tag tag-warn">any envelope sender</span> <span class="muted small-inline">A leaked key could send as any address the provider accepts.</span>{{end}}</dd></div>
+    <div><dt>Sender addresses</dt><dd>{{with $s.Policy.From}}<ul class="patterns">{{range .}}<li class="mono break">{{.}}</li>{{end}}</ul>{{else}}<span class="tag tag-warn">any sender address</span> <span class="muted small-inline">A leaked key could send as any address the provider accepts.</span>{{end}}</dd></div>
     <div><dt>Messages</dt><dd>{{with $s.Policy.MaxPerMinute}}{{group .}} per minute{{else}}<span class="muted">no limit</span>{{end}}</dd></div>
     <div><dt>Recipients</dt><dd>{{with $s.Policy.MaxRecipientsPerHour}}{{group .}} per hour{{else}}<span class="muted">no limit</span>{{end}}</dd></div>
   </dl>

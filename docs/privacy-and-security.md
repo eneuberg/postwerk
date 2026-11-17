@@ -355,9 +355,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
 - **Sender keys.** `postwerk gen-sender` and managed senders make random keys (256 bits) stored as SHA-256 of the
   secret part (D62); a key works only for its own sender, can expire, and a revoked key stops at the next `MAIL` of
   an open session. Prefer keys to passwords: one per application, traceable in every mail record. A policy's `from=`
-  checks the envelope sender (`MAIL FROM`) only; the `From:` header of the message is not checked, so a leaked key
-  restricted to `noreply@example.com` can still put another address of the same or any domain into `From:`. Restrict
-  the header sender at the provider as well (verified senders or domains).
+  binds the envelope sender (`MAIL FROM`) and every address in the `From:` header (D81), so a leaked key restricted
+  to `noreply@example.com` cannot show another address as the visible sender. `Sender:`, `Reply-To:` and the display
+  name are not checked; restrict the senders at the provider as well (verified senders or domains).
 - **Statistics.** The counted hours kept in memory are bounded by their counts and their number, so requests with
   ever new filter values cannot grow the cache (D80).
 - **Sender passwords.** The senders file holds PBKDF2-SHA256 hashes (`postwerk hash-password`, 600,000 iterations;

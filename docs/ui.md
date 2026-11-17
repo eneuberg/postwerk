@@ -274,11 +274,11 @@ every source is listed, by name:
   the application probably fails to log in), `no active key` (every key revoked: switched off), `removed`.
 - **Keys:** the id of each key that is not revoked, its state and a warning a week before it expires; the number of
   revoked keys. A key id is not secret: it names the key in mail records, events and logs.
-- **Policy:** the allowed envelope senders (a warning when any is allowed) and the two limits.
+- **Policy:** the allowed sender addresses, envelope and `From:` (a warning when any is allowed) and the two limits.
 - **Last login** of any credential (noted once a minute), and the **last 24 hours**: mails (a link to them), failed
   recipients, refused logins, refused commands and rate-limit refusals.
 
-**A new sender** (only with `POSTWERK_SENDER_KEYS` `db` or `both`): its name, the policy (envelope sender patterns,
+**A new sender** (only with `POSTWERK_SENDER_KEYS` `db` or `both`): its name, the policy (sender address patterns,
 one per line; messages per minute; recipients per hour; empty means no restriction) and an optional last day of the
 key. The answer is a page with the key in a read-only field to select and copy, the key id and expiry, and the SMTP
 settings for the application (user name, the key as password, STARTTLS, `AUTH PLAIN`, the SMTP port). **The key is

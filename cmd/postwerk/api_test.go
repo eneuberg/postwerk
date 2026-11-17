@@ -256,7 +256,7 @@ func TestServeSenderAPI(t *testing.T) {
 	if err := sc.Auth(sasl.NewPlainClient("", "ci-app", key)); err != nil {
 		t.Fatalf("login with the new key: %v", err)
 	}
-	if err := sc.SendMail("noreply@example.test", []string{"r@example.test"}, strings.NewReader("Subject: x\r\n\r\nhi\r\n")); err != nil {
+	if err := sc.SendMail("noreply@example.test", []string{"r@example.test"}, strings.NewReader("From: noreply@example.test\r\nSubject: x\r\n\r\nhi\r\n")); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if err := sc.Mail("someone@elsewhere.test", nil); err == nil {

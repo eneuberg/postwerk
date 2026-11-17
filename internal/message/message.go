@@ -45,13 +45,17 @@ type Result struct {
 	// Skip holds the lower-cased names from all X-Postwerk-Skip fields,
 	// without duplicates, in order of appearance.
 	Skip []string
+	// From holds the value of each From field, unfolded and trimmed, in
+	// order of appearance; ingress checks it against the sender's policy
+	// (D81).
+	From []string
 	// Message is the input without any X-Postwerk-* field.
 	Message []byte
 }
 
-// Process reads Message-ID, X-Postwerk-Ref and X-Postwerk-Skip from the header
-// section of raw and removes every X-Postwerk-* field, including its folded
-// continuation lines. Lines may end in CRLF or LF. The header section ends at
+// Process reads Message-ID, From, X-Postwerk-Ref and X-Postwerk-Skip from the
+// header section of raw and removes every X-Postwerk-* field, including its
+// folded continuation lines. Lines may end in CRLF or LF. The header section ends at
 // the first empty line; a message without one is all header.
 func Process(raw []byte) Result {
 	var res Result
@@ -80,6 +84,8 @@ func Process(raw []byte) Result {
 			return false // removed from the message
 		case lower == "message-id" && res.MessageID == "":
 			res.MessageID = cleanMessageID(value)
+		case lower == "from":
+			res.From = append(res.From, value)
 		}
 		return true
 	})
