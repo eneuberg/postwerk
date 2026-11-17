@@ -318,7 +318,7 @@ Kinds written today:
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list |
 | `delivery.unsupported` | error (warn if optional) | the mail needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; not sent |
 | `delivery.too_large` | error (warn if optional) | the message is larger than the `SIZE` the target offers; not sent |
-| `target.down` | error (warn if optional) | the target rejected the login (`535`) or could not be reached; sending stops until a probe succeeds (section 3); no mail id. Rejected login: code `535` and text `auth: <reply>` (in Sentry `smtp_code` and `smtp_text`); unreachable: text `unreachable: <error>`, with a code if the target answered one |
+| `target.down` | error (warn if optional) | the target rejected the login (`535`) or could not be reached; sending stops until a probe succeeds (section 3); no mail id. Rejected login: code `535` and text `auth: <reply>` (`smtp.code` and `smtp.text` on stdout, `smtp_code` and `smtp_text` in Sentry); unreachable: text `unreachable: <error>`, with a code if the target answered one |
 | `target.recovered` | info | a probe succeeded and sending resumes; text `<reason>, down for <duration>` |
 | `tls.reloaded` | info | a renewed STARTTLS certificate is served |
 | `tls.reload_failed` | error | a changed certificate or key file did not load; the old certificate stays |
