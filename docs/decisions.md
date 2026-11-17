@@ -722,9 +722,14 @@ application that swallows the error loses mail silently.
 - **No password, no address.** The sender is named only if the login name is in the senders file, otherwise it is
   empty, so a password typed into the name field never reaches an event, and the open windows stay bounded by the
   file. Recipients and envelope senders are never in the event.
-- **What is not counted.** A `SIZE=` above the limit at `MAIL` is answered by the SMTP library before Postwerk sees
-  the command; a too large message sent without `SIZE=` is counted. The recipient limit moved from the library to
-  Postwerk (same reply, `452 4.5.3`) so that it is counted.
+- **What is not counted.** A `SIZE=` above the limit at `MAIL` is answered by the SMTP library (`go-smtp` 0.26)
+  with `552 5.3.4 Max message size exceeded` before Postwerk sees the command; a too large message sent without
+  `SIZE=` or with a false one is counted. Moving the check into Postwerk would need a library change: the one
+  setting that makes the library refuse it is also the number offered as `SIZE` in `EHLO` and the limit on `DATA`
+  and `BDAT`, and turning it off would offer `SIZE` without a number. Nor can the reply be seen from outside the
+  library: after STARTTLS the connection carries only ciphertext, and its debug output is one stream for all
+  connections. The sender gets the `552` all the same. The recipient limit moved from the library to Postwerk
+  (same reply, `452 4.5.3`) so that it is counted.
 
 ## D52 `/readyz` means "can take and keep mail"; what needs a person reaches the default filter
 

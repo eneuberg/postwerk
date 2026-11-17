@@ -505,6 +505,9 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	}
 	var p store.Params
 	if opts != nil {
+		// The library answers a SIZE= over srv.MaxMessageBytes itself
+		// (552 5.3.4) before Mail runs, so this is not reached and the
+		// refusal is not counted (D51). It stays in case that changes.
 		if opts.Size > s.srv.opts.MaxMessageBytes {
 			return s.reject(errTooBig)
 		}

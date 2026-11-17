@@ -326,7 +326,7 @@ Kinds written today:
 | `delivery.closed` | info | an admin closed this recipient; `actor`, text `resolution=… was=… via=ui\|api` and the note, redacted |
 | `delivery.resend` | info | an admin queued this recipient again; `actor`, text `was=… via=…` |
 | `ingress.auth_failed` | warn | failed `AUTH` attempts, counted: at most one event per sender and minute with `failures=<n>`; `sender` only if the name is in the senders file. Never the password |
-| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients` or `line_too_long`, with `rejected=<n>`; at most one event per sender, reason and minute. Never an address |
+| `ingress.rejected` | warn | commands of a logged-in sender refused: `reason=too_large`, `bad_address`, `needs_smtputf8`, `too_many_recipients` or `line_too_long`, with `rejected=<n>`; at most one event per sender, reason and minute. Never an address. A `SIZE=` over the limit at `MAIL` is refused by the SMTP library and not counted (D51) |
 | `queue.stale` | error (warn if optional) | the oldest mail queued for a target has waited longer than `POSTWERK_QUEUE_STALE_AFTER` (15 min); once per change (section 9.1) |
 | `queue.recovered` | info | no mail for that target waits longer than that any more |
 | `disk.low` | error | the data volume has less free space than `POSTWERK_MIN_FREE_BYTES` (64 MiB); new mail gets `452` and `/readyz` fails |
