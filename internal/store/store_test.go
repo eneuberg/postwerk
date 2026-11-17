@@ -431,3 +431,23 @@ func TestParamsStored(t *testing.T) {
 		t.Fatal("BODY=BINARYMIME was stored")
 	}
 }
+
+// Schema reports the migrations Open applied, for the start log: all of
+// them on a new database, none on one that is up to date.
+func TestSchemaReportsMigrations(t *testing.T) {
+	files, err := fs.Glob(migrationFS, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s := open(t, dir, Options{})
+	v, applied := s.Schema()
+	if v != len(files) || len(applied) != len(files) || applied[0] != "0001_init" {
+		t.Fatalf("new database: schema %d, applied %q", v, applied)
+	}
+	s.Close()
+	v, applied = open(t, dir, Options{}).Schema()
+	if v != len(files) || len(applied) != 0 {
+		t.Fatalf("reopened: schema %d, applied %q", v, applied)
+	}
+}

@@ -126,6 +126,10 @@ type Store struct {
 	// writeErr holds the last write that failed for lack of space or
 	// storage, until a write succeeds (Writable).
 	writeErr atomic.Pointer[error]
+	// schema is the schema version after Open; migrated the migrations
+	// Open applied, by file name.
+	schema   int
+	migrated []string
 }
 
 // Options for Open.
@@ -192,6 +196,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// Schema returns the schema version of the database and the migrations
+// Open applied to reach it (empty if it was up to date), for the start log.
+func (s *Store) Schema() (version int, applied []string) {
+	return s.schema, slices.Clone(s.migrated)
+}
+
 // Ping checks that the database answers.
 func (s *Store) Ping(ctx context.Context) error {
 	var one int
@@ -238,6 +248,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if current > len(files) {
 		return fmt.Errorf("store: database schema version %d is newer than this Postwerk (knows %d)", current, len(files))
 	}
+	s.schema = current
 	for i, name := range files {
 		version := i + 1
 		if n, err := strconv.Atoi(strings.SplitN(path.Base(name), "_", 2)[0]); err != nil || n != version {
@@ -260,6 +271,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("store: migration %s: %w", name, err)
 		}
+		s.schema = version
+		s.migrated = append(s.migrated, strings.TrimSuffix(path.Base(name), ".sql"))
 	}
 	return nil
 }

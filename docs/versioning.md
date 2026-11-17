@@ -65,7 +65,8 @@ newer one. To go back, restore a backup taken before the upgrade, together with 
 4. Replace the running instance. Only one process may use the SQLite file, so the old one stops before the new one
    starts: the `Recreate` strategy in Kubernetes (the chart's default), `docker compose up -d` with Compose. The SMTP
    port is closed for a few seconds; senders retry, and mails already accepted wait in the store.
-5. Check the start log: no errors, no new warnings.
+5. Check the start log: `database migrated` names the schema version and the migrations applied (`database schema
+   up to date` if there were none); no errors, no new warnings.
 
 Mails that were queued before the upgrade are delivered by the new version.
 

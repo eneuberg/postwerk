@@ -255,6 +255,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if err != nil {
 		return err
 	}
+	if schema, applied := st.Schema(); len(applied) > 0 {
+		logger.Info("database migrated", "schema", schema, "applied", applied)
+	} else {
+		logger.Info("database schema up to date", "schema", schema)
+	}
 	sinks := []report.Sink{report.NewStdout(eventOut, cfg.Instance)}
 	sentryLog := "off"
 	if cfg.Sentry != nil {
