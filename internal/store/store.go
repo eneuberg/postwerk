@@ -123,6 +123,8 @@ var ErrNotSending = errors.New("store: not in sending state")
 type Store struct {
 	db   *sql.DB
 	opts Options
+	// lock is the open lock file; its flock is held until Close (D61).
+	lock *os.File
 	// writeErr holds the last write that failed for lack of space or
 	// storage, until a write succeeds (Writable).
 	writeErr atomic.Pointer[error]
@@ -145,14 +147,34 @@ type Options struct {
 	// (POSTWERK_SECURE_DELETE=off). By default deleted content is
 	// overwritten with zeros.
 	InsecureDelete bool
+	// LockWait is how long Open waits for another process to let go of
+	// the data lock (D61) before it returns ErrLocked; 0 does not wait.
+	LockWait time.Duration
+	// OnLockWait, if set, is called while Open waits for the data lock:
+	// at once and then every few seconds, with the time waited so far and
+	// what the holder wrote into the lock file.
+	OnLockWait func(waited time.Duration, holder string)
 }
 
 // Open opens or creates the database at path, applies the pragmas, checks
 // that they took effect and runs pending migrations.
-func Open(ctx context.Context, path string, opts Options) (*Store, error) {
+//
+// Before it touches the database, Open takes an exclusive lock on the file
+// LockPath(path) (D61), waiting up to opts.LockWait while another process
+// holds it. Close releases it; so does the end of the process.
+func Open(ctx context.Context, path string, opts Options) (s *Store, err error) {
 	if path == "" || strings.ContainsAny(path, "?#") || strings.HasPrefix(path, "file:") {
 		return nil, errors.New("store: invalid database path (no '?', '#' or file: prefix)")
 	}
+	lock, err := acquireLock(ctx, path, opts.LockWait, opts.OnLockWait)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			lock.Close()
+		}
+	}()
 	// Create the file with owner-only permissions; SQLite gives its WAL
 	// and shared-memory files the same mode.
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
@@ -181,7 +203,7 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
 
-	s := &Store{db: db, opts: opts}
+	s = &Store{db: db, opts: opts, lock: lock}
 	if err := s.checkPragmas(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -193,8 +215,15 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+// Close closes the database, then releases the data lock.
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.lock != nil {
+		s.lock.Close()
+		s.lock = nil
+	}
+	return err
+}
 
 // Schema returns the schema version of the database and the migrations
 // Open applied to reach it (empty if it was up to date), for the start log.

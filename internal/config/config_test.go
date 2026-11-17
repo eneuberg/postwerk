@@ -87,7 +87,7 @@ func TestMinimalDefaults(t *testing.T) {
 	}
 	if c.SMTPListen != ":2525" || c.HTTPListen != "127.0.0.1:8080" || c.DataPath != "/data/postwerk.db" ||
 		c.Hostname != "postwerk" || c.MaxMessageBytes != 15728640 || c.MaxRecipients != 50 ||
-		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.Instance != "" ||
+		c.RetryWindow != 24*time.Hour || c.ShutdownTimeout != 100*time.Second || c.DataLockWait != 150*time.Second || c.Instance != "" ||
 		c.TLSCertificate != nil || !c.AllowInsecureAuth || c.Senders == nil || c.MaxConnections != 100 ||
 		c.MaxInflightBytes != 256<<20 || c.QueueStaleAfter != 15*time.Minute || c.QueueStaleRepeat != 0 ||
 		c.MinFreeBytes != 64<<20 {
@@ -162,6 +162,7 @@ func TestFullConfig(t *testing.T) {
 		"POSTWERK_MAX_RECIPIENTS=10",
 		"POSTWERK_RETRY_WINDOW=12h",
 		"POSTWERK_SHUTDOWN_TIMEOUT=40s",
+		"POSTWERK_DATA_LOCK_WAIT=0",
 		"POSTWERK_INSTANCE=prod-1",
 		"POSTWERK_OTEL_ENDPOINT=",
 		"POSTWERK_SENTRY_DSN=",
@@ -187,7 +188,7 @@ func TestFullConfig(t *testing.T) {
 	}
 	if c.SMTPListen != "0.0.0.0:2526" || c.HTTPListen != ":9090" || c.DataPath != "/var/lib/pw.db" ||
 		c.Hostname != "relay.example.test" || c.MaxMessageBytes != 1<<20 || c.MaxRecipients != 10 ||
-		c.RetryWindow != 12*time.Hour || c.ShutdownTimeout != 40*time.Second || c.Instance != "prod-1" ||
+		c.RetryWindow != 12*time.Hour || c.ShutdownTimeout != 40*time.Second || c.DataLockWait != 0 || c.Instance != "prod-1" ||
 		c.TLSCertificate == nil || c.AllowInsecureAuth || c.MaxConnections != 7 ||
 		c.MaxInflightBytes != 2<<20 || c.Admin.Listen != "[::1]:9091" || c.Admin.Tokens == nil ||
 		!reflect.DeepEqual(c.Admin.Hosts, []string{"relay.example.test"}) {
@@ -327,6 +328,7 @@ func TestErrors(t *testing.T) {
 		{"events before max age", []string{"POSTWERK_EVENT_RETENTION=5d"}, "POSTWERK_RAW_MAX_AGE (168h0m0s) must not be longer than POSTWERK_EVENT_RETENTION"},
 		{"negative window", []string{"POSTWERK_RETRY_WINDOW=-1h"}, "POSTWERK_RETRY_WINDOW"},
 		{"bad shutdown", []string{"POSTWERK_SHUTDOWN_TIMEOUT=0s"}, "POSTWERK_SHUTDOWN_TIMEOUT"},
+		{"bad lock wait", []string{"POSTWERK_DATA_LOCK_WAIT=-1s"}, "POSTWERK_DATA_LOCK_WAIT"},
 		{"bad bool", []string{"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=yes"}, "POSTWERK_SMTP_ALLOW_INSECURE_AUTH: expected true or false"},
 		{"insecure rule", []string{"POSTWERK_SMTP_ALLOW_INSECURE_AUTH=false"}, "ingress needs TLS for AUTH"},
 		{"cert without key", []string{"POSTWERK_SMTP_TLS_CERT_FILE=/run/secrets/senders"}, "must be set together"},
@@ -554,6 +556,10 @@ func TestParseDurationOverflow(t *testing.T) {
 func TestShutdownDefaultFitsGracePeriod(t *testing.T) {
 	if DefaultShutdownTimeout <= 90*time.Second || DefaultShutdownTimeout >= 120*time.Second {
 		t.Fatalf("DefaultShutdownTimeout = %v", DefaultShutdownTimeout)
+	}
+	// A new start waits longer than the old process may take to stop (D61).
+	if DefaultDataLockWait <= 120*time.Second {
+		t.Fatalf("DefaultDataLockWait = %v", DefaultDataLockWait)
 	}
 }
 

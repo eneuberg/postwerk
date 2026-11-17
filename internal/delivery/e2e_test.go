@@ -1259,6 +1259,7 @@ func TestQueueResumesAtOnce(t *testing.T) {
 	third := h.send([]string{canary}, testMsg)
 	testutil.Eventually(t, timeout, "target down again", func() bool { return len(h.targetEvents("mailjet", store.KindTargetDown)) == 2 })
 	h.stop()
+	h.store.Close() // as at a real stop; the next start needs the data lock (D61)
 	mj.set(func(b *behavior) { b.authFail = false })
 	h2 := startPostwerk(t, targets, harnessOpts{rootCAs: &cert, backoff: time.Hour, dbPath: dbPath, sealer: sealer})
 	h2.waitStatus(third, "mailjet", store.HandedOff)

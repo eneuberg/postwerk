@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -246,13 +247,51 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 	if err != nil {
 		return err
 	}
+	// The health listener opens first: /healthz answers while Postwerk
+	// waits for the data lock and starts up, so a liveness probe does not
+	// kill it for waiting; /readyz fails until ready is set below (D61).
+	var ready atomic.Pointer[httpapi.Ready]
+	httpSrv := httpapi.New(cfg.HTTPListen, func(ctx context.Context) error {
+		r := ready.Load()
+		if r == nil {
+			return errors.New("starting")
+		}
+		return (*r)(ctx)
+	})
+	httpL, err := net.Listen("tcp", cfg.HTTPListen)
+	if err != nil {
+		return fmt.Errorf("http listener: %w", err)
+	}
+	serveErr := make(chan error, 4)
+	go func() {
+		if err := httpSrv.Serve(httpL); !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+	// Every return before the shutdown below closes it; after the
+	// shutdown, Close does nothing more.
+	defer httpSrv.Close()
+
+	if !store.LockSupported {
+		logger.Warn("no data lock on this platform: make sure only one Postwerk uses the database", "data", cfg.DataPath)
+	}
 	var rep *report.Reporter
 	st, err := store.Open(ctx, cfg.DataPath, store.Options{
 		OnEvent:           func() { rep.Wake() },
 		PurgeRawOnHandoff: cfg.RawKeepAfterHandoff == 0,
 		InsecureDelete:    !cfg.SecureDelete,
+		LockWait:          cfg.DataLockWait,
+		OnLockWait: func(waited time.Duration, holder string) {
+			logger.Warn("database in use by another process, waiting for it to stop",
+				"lock", store.LockPath(cfg.DataPath), "holder", holder,
+				"waited", waited.Round(time.Second).String(), "wait", cfg.DataLockWait.String())
+		},
 	})
 	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			logger.Info("stopped while waiting for the database")
+			return nil
+		}
 		return err
 	}
 	if schema, applied := st.Schema(); len(applied) > 0 {
@@ -332,33 +371,10 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		MaxConnections: cfg.MaxConnections, MaxInflightBytes: cfg.MaxInflightBytes, Wake: mgr.Wake, Logger: logger,
 		Space: disk,
 	})
-	// Ready means Postwerk can take and keep mail: the store answers and
-	// can be written, the volume is above its reserve, the workers run. A
-	// target that is down does not count: a restart cannot fix a provider,
-	// and the mails wait in the queue for it (D52).
-	httpSrv := httpapi.New(cfg.HTTPListen, func(ctx context.Context) error {
-		if err := st.Ping(ctx); err != nil {
-			return err
-		}
-		if err := disk.Ready(); err != nil {
-			return err
-		}
-		if !mgr.Running() {
-			return errors.New("delivery workers not running")
-		}
-		return nil
-	})
-
 	smtpL, err := net.Listen("tcp", cfg.SMTPListen)
 	if err != nil {
 		st.Close()
 		return fmt.Errorf("smtp listener: %w", err)
-	}
-	httpL, err := net.Listen("tcp", cfg.HTTPListen)
-	if err != nil {
-		smtpL.Close()
-		st.Close()
-		return fmt.Errorf("http listener: %w", err)
 	}
 	var adminSrv *http.Server
 	var adminL net.Listener
@@ -382,7 +398,6 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			adminL, err = net.Listen("tcp", cfg.Admin.Listen)
 		}
 		if err != nil {
-			httpL.Close()
 			smtpL.Close()
 			st.Close()
 			return fmt.Errorf("admin listener: %w", err)
@@ -394,7 +409,6 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		if adminL != nil {
 			adminL.Close()
 		}
-		httpL.Close()
 		smtpL.Close()
 		st.Close()
 		return fmt.Errorf("api listener: %w", err)
@@ -418,13 +432,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		go apiTLS.Run(runCtx)
 	}
 
-	serveErr := make(chan error, 4)
 	go func() { serveErr <- ing.Serve(smtpL) }()
-	go func() {
-		if err := httpSrv.Serve(httpL); !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-		}
-	}()
 	var adminAddr net.Addr
 	adminLog := "off"
 	if adminSrv != nil {
@@ -459,6 +467,23 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 		"smtp_tls", cfg.TLSCertificate != nil, "insecure_auth", cfg.AllowInsecureAuth,
 		"store_encryption", sealer.Encrypting(), "pseudonymize_after", cfg.PseudonymizeAfter.String(),
 		"min_free_bytes", cfg.MinFreeBytes, "queue_stale_after", cfg.QueueStaleAfter.String())
+	// Ready means Postwerk can take and keep mail: the store answers and
+	// can be written, the volume is above its reserve, the workers run. A
+	// target that is down does not count: a restart cannot fix a provider,
+	// and the mails wait in the queue for it (D52).
+	var readyFn httpapi.Ready = func(ctx context.Context) error {
+		if err := st.Ping(ctx); err != nil {
+			return err
+		}
+		if err := disk.Ready(); err != nil {
+			return err
+		}
+		if !mgr.Running() {
+			return errors.New("delivery workers not running")
+		}
+		return nil
+	}
+	ready.Store(&readyFn)
 	if listening != nil {
 		listening(smtpL.Addr(), httpL.Addr(), adminAddr, apiAddr)
 	}
@@ -530,6 +555,8 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 			logger.Warn("admin listener shutdown incomplete", "err", err)
 		}
 	}
+	// Closing the store releases the data lock (D61), after the final
+	// export: a process waiting for it starts on a database nobody writes.
 	if err := st.Close(); err != nil {
 		logger.Warn("closing the store failed", "err", err)
 	}

@@ -54,6 +54,10 @@ const (
 	// finishes. The orchestrator's grace period must be longer still, for
 	// example terminationGracePeriodSeconds: 120 in Kubernetes.
 	DefaultShutdownTimeout = 100 * time.Second
+	// DefaultDataLockWait is how long a start waits for another process
+	// to let go of the database (D61): longer than the grace period of
+	// 120 s, so an old pod that is still shutting down can finish.
+	DefaultDataLockWait = 150 * time.Second
 	// DefaultQueueStaleAfter: a target whose oldest queued mail waits
 	// longer is reported as stale (D49). Password resets and login codes
 	// commonly expire after 15 to 30 minutes.
@@ -220,7 +224,9 @@ type Config struct {
 	MaxInflightBytes        int64
 	RetryWindow             time.Duration
 	ShutdownTimeout         time.Duration
-	Instance                string
+	// DataLockWait: see DefaultDataLockWait; 0 does not wait.
+	DataLockWait time.Duration
+	Instance     string
 	// QueueStaleAfter: see DefaultQueueStaleAfter; 0 turns the check off.
 	QueueStaleAfter time.Duration
 	// QueueStaleRepeat: queue.stale again after this time while a target
@@ -412,6 +418,7 @@ const (
 	envMaxInflightBytes  = "POSTWERK_MAX_INFLIGHT_BYTES"
 	envRetryWindow       = "POSTWERK_RETRY_WINDOW"
 	envShutdownTimeout   = "POSTWERK_SHUTDOWN_TIMEOUT"
+	envDataLockWait      = "POSTWERK_DATA_LOCK_WAIT"
 	envInstance          = "POSTWERK_INSTANCE"
 	envTargets           = "POSTWERK_TARGETS"
 	envQueueStaleAfter   = "POSTWERK_QUEUE_STALE_AFTER"
@@ -449,7 +456,7 @@ var laterPhase = []string{"POSTWERK_OTEL_ENDPOINT", "POSTWERK_WEBHOOK_URL"}
 var globalVars = []string{
 	envSMTPListen, envHTTPListen, envData, envSendersFile, envTLSCertFile, envTLSKeyFile,
 	envAllowInsecureAuth, envHostname, envMaxMessageBytes, envMaxRecipients, envMaxConnections, envMaxInflightBytes, envRetryWindow,
-	envShutdownTimeout, envInstance, envTargets, envQueueStaleAfter, envQueueStaleRepeat, envMinFreeBytes,
+	envShutdownTimeout, envDataLockWait, envInstance, envTargets, envQueueStaleAfter, envQueueStaleRepeat, envMinFreeBytes,
 	envStoreKeyFile, envStoreEncryption, envHashKeyFile, envSecureDelete,
 	envRawKeepAfterHandoff, envRawKeepAfterFailure, envRawMaxAge, envPseudonymizeAfter,
 	envRecordRetention, envEventRetention,
@@ -524,6 +531,7 @@ func Load(environ []string, readFile ReadFile) (*Config, error) {
 	}
 	c.RetryWindow = l.duration(envRetryWindow, DefaultRetryWindow, false)
 	c.ShutdownTimeout = l.duration(envShutdownTimeout, DefaultShutdownTimeout, false)
+	c.DataLockWait = l.duration(envDataLockWait, DefaultDataLockWait, true)
 	c.QueueStaleAfter = l.duration(envQueueStaleAfter, DefaultQueueStaleAfter, true)
 	c.QueueStaleRepeat = l.duration(envQueueStaleRepeat, 0, true)
 	if c.QueueStaleRepeat > 0 && c.QueueStaleRepeat < time.Minute {
