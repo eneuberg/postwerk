@@ -342,7 +342,7 @@ notified is set in the Sentry-compatible tool. The free-space check is under [Li
 | Variable | Default | Allowed | What it does |
 |---|---|---|---|
 | `POSTWERK_QUEUE_STALE_AFTER` | `15m` (**recommended**) | `0` (off) or a duration | When the oldest mail queued for a target is older than this, `queue.stale` is written (error, warn for an optional target), with the number of queued mails and the oldest age; `queue.recovered` (info) when it no longer is. Checked every minute. 15 minutes is longer than the first five retries (about 18 minutes of backoff start within it, so a short blip passes) and about as long as a password reset or login code stays useful. `0` turns it off, with a warning. |
-| `POSTWERK_QUEUE_STALE_REPEAT` | `0` (once per change) | `0` or at least `1m` | Write `queue.stale` again at this interval while the target stays stale. For alert rules that fire on new events only; GlitchTip and Sentry group the repeats into the same issue. |
+| `POSTWERK_QUEUE_STALE_REPEAT` | `0` (once per change) | `0` or at least `1m` | Write `queue.stale` again at this interval while the target stays stale. Each repeat lands in the same issue: a Sentry alert that triggers on events (throttled per issue) notifies again; GlitchTip (7.0) notifies only if the issue was resolved in between ([kubernetes.md](kubernetes.md#73-alert-rules)). |
 
 ## Other
 
@@ -396,7 +396,8 @@ non-empty value stops the start.
       `POSTWERK_RECORD_RETENTION`.
 - [ ] **Sentry or GlitchTip** (if used): DSN in a secret file, `https://`, `POSTWERK_INSTANCE` set so alerts name the
       instance; the error tracker's own retention and access fit the data it receives. Alert rules set for the kinds
-      that need a person ([design.md](design.md#91-alerting)), and the pod's readiness watched by the platform.
+      that need a person ([design.md](design.md#91-alerting)), someone who resolves handled issues (GlitchTip
+      notifies once per issue until then), and the pod's readiness watched by the platform.
 - [ ] **Data volume** larger than the reserve (`POSTWERK_MIN_FREE_BYTES`, 64 MiB) plus the queue you expect during
       the longest provider outage you plan for.
 - [ ] Start log checked: no warnings about file permissions, encryption or pseudonymization.

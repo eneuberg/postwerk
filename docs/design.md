@@ -372,7 +372,8 @@ changes, not one per check, and leaves grouping, repeating, escalation and pagin
   `POSTWERK_QUEUE_STALE_AFTER`, `queue.recovered` when none is. It measures age, not reachability (that is
   `target.down`, D45), so it catches a provider outage, rotated credentials, a rate limit and a `4xx` that keeps
   coming back alike. Optional:
-  `POSTWERK_QUEUE_STALE_REPEAT` writes `queue.stale` again while it lasts, for tools that only notify on new events.
+  `POSTWERK_QUEUE_STALE_REPEAT` writes `queue.stale` again while it lasts. The repeat lands in the same issue, so it
+  only reminds where a rule fires on events of an open issue (below).
 - **Data volume full** (D50). Below the reserve `POSTWERK_MIN_FREE_BYTES`, ingress answers `452 4.3.1` before it
   stores anything, `/readyz` fails and `disk.low` is written; the reserve keeps room for that event, the export
   cursor and the writes of mails already accepted.
@@ -392,9 +393,21 @@ What to route where, with the default `POSTWERK_SENTRY_MIN_LEVEL=error`:
 | sender's team (needs `warn`) | `ingress.auth_failed`, `ingress.rejected`, `delivery.rejected` | the sending application has a wrong password, sends what Postwerk refuses, or a user mistyped an address; that application got the error too, or can fix it |
 | nobody | `info` events (`target.recovered` too), `delivery.retry`, `warn` events of optional targets | retries are normal; a lasting problem becomes `queue.stale` |
 
-Recovery events (`queue.recovered`, `disk.ok`, `target.recovered`) are `info`: they reach the log and the event stream, not Sentry, and
-the issue is resolved in the tool. Postwerk cannot report its own absence: watch the pod (its readiness, restarts)
-with the platform's monitoring. Rule examples for GlitchTip: [kubernetes.md](kubernetes.md#73-alert-rules).
+How far the tools follow this table (rules and click paths: [kubernetes.md](kubernetes.md#73-alert-rules)):
+
+- **Sentry** can route it as it stands: an alert can filter on the `kind` tag and on the event level, and its
+  throttling limits how often it acts per issue (from Sentry's documentation, not tested here).
+- **GlitchTip** (tested with 7.0.0) cannot. A project alert matches every issue of the project; it filters by
+  environment only, not by tag or level, so `kind` cannot split page from ticket, and with `warn` the retries and the
+  senders' kinds reach the same alert. It notifies **once per issue**, and again only after the issue was resolved
+  and gets a new event. An issue left open stays silent: a second outage, a second failed mail, every
+  `POSTWERK_QUEUE_STALE_REPEAT` repeat. With GlitchTip, keep `error`, send every new issue to one watched channel, and
+  page from a place that can filter: a webhook into your alerting, or a log rule on Postwerk's stdout.
+
+Recovery events (`queue.recovered`, `disk.ok`, `target.recovered`) are `info`: they reach the log and the event
+stream, not Sentry, and Postwerk does not resolve the issue (GlitchTip 7.0 does not either). Resolve it by hand once
+the recovery shows, so that the next occurrence notifies again. Postwerk cannot report its own absence: watch the pod (its readiness, restarts) with
+the platform's monitoring, or point an uptime check at `/readyz` (GlitchTip has one; kubernetes.md section 7.3).
 
 ## 10. Query API
 
