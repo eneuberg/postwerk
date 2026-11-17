@@ -137,6 +137,11 @@ queue:
 # Postwerk's own shutdown deadline; the grace period must be longer.
 shutdownTimeout: 100s
 terminationGracePeriodSeconds: 120
+# How long a starting pod waits for an old one to let go of the database
+# (POSTWERK_DATA_LOCK_WAIT, D61). A deleted or evicted pod is replaced
+# before it has stopped, Recreate or not; keep this longer than the grace
+# period.
+dataLockWait: 150s
 
 # Encryption at rest. Recommended: "on".
 storeEncryption: "on"

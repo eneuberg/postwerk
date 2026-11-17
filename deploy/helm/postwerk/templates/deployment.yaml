@@ -8,7 +8,9 @@ metadata:
     {{- include "postwerk.labels" . | nindent 4 }}
 spec:
   # One SQLite file, one writer: never more than one replica, and the old
-  # pod is gone before the new one starts.
+  # pod is gone before the new one starts. A deleted or evicted pod is
+  # replaced at once, though; then the data lock makes the new one wait
+  # (dataLockWait, D61).
   replicas: 1
   strategy:
     type: Recreate
@@ -166,6 +168,8 @@ spec:
               value: {{ .Values.queue.staleRepeat | toString | quote }}
             - name: POSTWERK_SHUTDOWN_TIMEOUT
               value: {{ .Values.shutdownTimeout | quote }}
+            - name: POSTWERK_DATA_LOCK_WAIT
+              value: {{ .Values.dataLockWait | toString | quote }}
             - name: POSTWERK_RETRY_WINDOW
               value: {{ .Values.retryWindow | quote }}
             - name: POSTWERK_RAW_KEEP_AFTER_HANDOFF
@@ -293,12 +297,15 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
+          # The health listener opens first, before the data lock (D61):
+          # /healthz answers while the pod waits for an old one and runs
+          # recovery and a retention pass, so liveness never kills a pod
+          # for waiting; /readyz fails until it can take mail, so the
+          # Service sends it nothing until then.
           startupProbe:
             httpGet:
               path: /healthz
               port: http
-            # Start-up runs recovery and a retention pass before the
-            # listeners open; allow two minutes.
             periodSeconds: 2
             failureThreshold: 60
           livenessProbe:
