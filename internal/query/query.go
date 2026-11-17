@@ -75,6 +75,10 @@ type Options struct {
 	// Senders are the senders of every enabled source (the registry);
 	// nil lists only the senders seen in the store.
 	Senders senders.Source
+	// RecordRetention and EventRetention are the configured retention
+	// periods; the statistics start no earlier than the shorter one. Zero:
+	// unknown (no limit).
+	RecordRetention, EventRetention time.Duration
 	// Now returns the current time; nil means time.Now.
 	Now func() time.Time
 }

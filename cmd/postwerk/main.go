@@ -820,7 +820,8 @@ func warnUnconfiguredTargets(ctx context.Context, st *store.Store, targets []con
 // configured targets, which of them are optional, and the targets' health
 // from the delivery workers (D45).
 func queryOptions(cfg *config.Config, st *store.Store, mgr *delivery.Manager, reg *senders.Registry) query.Options {
-	o := query.Options{Store: st, Hasher: hasher(cfg), Senders: reg}
+	o := query.Options{Store: st, Hasher: hasher(cfg), Senders: reg, RecordRetention: cfg.RecordRetention,
+		EventRetention: cfg.EventRetention}
 	for _, t := range cfg.Targets {
 		o.Targets = append(o.Targets, t.Name)
 		if t.Optional {

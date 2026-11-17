@@ -132,6 +132,8 @@ type Store struct {
 	// Open applied, by file name.
 	schema   int
 	migrated []string
+	// stats caches the counts of hours that are over (stats.go).
+	stats statsCache
 }
 
 // Options for Open.
@@ -1041,20 +1043,32 @@ func MailStatus(ds []Delivery, optional func(target string) bool) Status {
 // summarizeCounts is Summarize over counts per status; total is the number
 // of recipients. stateSQL (read.go) is the same rule in SQL.
 func summarizeCounts(n map[Status]int, total int) Status {
+	return statusCounts{n[Queued], n[Sending], n[HandedOff], n[Failed], n[Unknown], n[Skipped]}.summary(total)
+}
+
+// statusCounts counts recipients per stored status, in the order of
+// statusIndex.
+type statusCounts [6]int
+
+// statusIndex is the position of each stored status in statusCounts.
+var statusIndex = map[Status]int{Queued: 0, Sending: 1, HandedOff: 2, Failed: 3, Unknown: 4, Skipped: 5}
+
+// summary is the rule of Summarize; total is the number of recipients.
+func (n statusCounts) summary(total int) Status {
 	switch {
 	case total == 0:
 		return ""
-	case n[Sending] > 0:
+	case n[1] > 0:
 		return Sending
-	case n[Queued] > 0:
+	case n[0] > 0:
 		return Queued
-	case n[Unknown] > 0:
+	case n[4] > 0:
 		return Unknown
-	case n[Skipped] == total:
+	case n[5] == total:
 		return Skipped
-	case n[Failed] == 0:
+	case n[3] == 0:
 		return HandedOff
-	case n[HandedOff] == 0:
+	case n[2] == 0:
 		return Failed
 	}
 	return Partial
