@@ -81,7 +81,8 @@ type StatsRange struct {
 
 // statsTimeLayouts are the forms a custom From or To may take, all UTC
 // unless they carry an offset.
-var statsTimeLayouts = []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", time.DateOnly}
+var statsTimeLayouts = []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02 15:04:05",
+	"2006-01-02 15:04", time.DateOnly}
 
 // ParseStatsRange reads the range parameters: a preset (range=24h), or a
 // custom range (range=custom, or no range) with from and optionally to. A
@@ -122,6 +123,7 @@ func ParseStatsRange(rng, from, to string, strict bool) (StatsRange, error) {
 }
 
 func parseStatsTime(s string, end bool) (time.Time, error) {
+	s = strings.TrimSpace(s)
 	if len(s) > 40 {
 		return time.Time{}, fmt.Errorf("too long")
 	}

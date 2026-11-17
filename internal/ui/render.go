@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -111,6 +112,15 @@ var funcs = template.FuncMap{
 	"levelClass":  func(l store.Level) string { return "lv-" + string(l) },
 	"resolution":  func(r store.Resolution) string { return strings.ReplaceAll(string(r), "_", " ") },
 	"board":       newBoard,
+	"count":       formatCount,
+	"compact":     formatCompact,
+	"rate":        formatRate,
+	"latency":     formatLatency,
+	"duration":    formatDuration,
+	"width":       formatWidth,
+	"f1":          func(x float64) string { return strconv.FormatFloat(x, 'f', 1, 64) },
+	"plus":        func(a, b float64) float64 { return a + b },
+	"period":      formatPeriod,
 	"mix":         newMix,
 	"day":         dayOf,
 	"clock":       clockOf,

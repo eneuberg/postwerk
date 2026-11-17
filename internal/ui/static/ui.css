@@ -627,3 +627,40 @@ textarea.key-field {
   body { background: #fff; }
   .card, .line, .board { border-color: #999; }
 }
+
+/* Statistics (D73–D75): the range form, the summary, the throughput chart */
+.stats-filters {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--sp-3) var(--sp-4); align-items: end;
+}
+.stats-filters label { margin-top: 0; }
+.stats-filters input[type="text"] { font-variant-numeric: tabular-nums lining-nums; }
+.stats-note { grid-column: 1 / -1; margin: 0; }
+.stats-board { grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+.stats-board .board-value { font-size: 1.5rem; }
+.board-sub { margin: 0; font-size: var(--fs-sm); }
+.lamp-none { visibility: hidden; }
+.chart-legend { list-style: none; margin: 0 0 var(--sp-3); padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); }
+.chart-legend li { display: inline-flex; align-items: center; gap: .4em; font: 500 var(--fs-sm)/1.3 var(--font-label); color: var(--muted); }
+.legend-down { display: inline-block; width: .9em; height: .7em; background: var(--failed-bg); border: 1px solid color-mix(in srgb, var(--failed-fg) 45%, transparent); }
+.chart { margin: 0 0 var(--sp-3); }
+.chart-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-narrow { display: none; }
+.chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-axis { stroke: var(--chart-axis); stroke-width: 1.5; }
+.chart-label { fill: var(--muted); font-family: var(--font-label); font-weight: 500; font-variant-numeric: tabular-nums lining-nums; }
+.chart-down { fill: var(--failed-bg); }
+.chart-down-mark { fill: var(--failed-lamp); }
+.chart-bar:hover .seg { opacity: .8; }
+.chart-table summary { cursor: pointer; font-weight: 600; padding: var(--sp-1) 0; }
+.chart-table[open] summary { margin-bottom: var(--sp-2); }
+table.stats-table { min-width: 52rem; }
+table.stats-table th[scope="row"] { font: 400 var(--fs-table)/1.4 var(--font); color: var(--text); white-space: nowrap; border-bottom: 1px solid var(--line); padding-top: .5rem; }
+table.stats-table tbody tr:last-child th { border-bottom: none; }
+table.stats-table th[scope="row"] .tag { margin-left: var(--sp-1); }
+table.stats-table td a { font-weight: 600; }
+
+@media (max-width: 40rem) {
+  .chart-wide { display: none; }
+  .chart-narrow { display: block; }
+  .stats-board .board-value { font-size: 1.25rem; }
+}

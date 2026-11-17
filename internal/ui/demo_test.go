@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eneuberg/postwerk/internal/auth"
+	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -34,6 +35,16 @@ func TestDemo(t *testing.T) {
 	h := newHarnessWithHasher(t, hs, func(o *Options) { o.Now = time.Now; o.Instance = "staging" })
 	h.clock.t = time.Now()
 	now := time.Now().Truncate(time.Second)
+	// The statistics: 30 days of traffic, capture optional, the default
+	// retention, and the worker's view of the targets.
+	h.ui.opts.Query = query.New(query.Options{Store: h.st, Hasher: hs, Targets: []string{"mailjet", "capture"},
+		Optional: []string{"capture"}, RecordRetention: 90 * 24 * time.Hour, EventRetention: 90 * 24 * time.Hour, Now: time.Now,
+		Health: func() []query.TargetHealth {
+			return []query.TargetHealth{{Target: "mailjet", Since: now.Add(-20 * time.Hour)}, {Target: "capture", Since: now.Add(-30 * 24 * time.Hour)}}
+		}})
+	began := time.Now()
+	seedTraffic(t, h.st, now)
+	t.Logf("seeded in %s", time.Since(began).Round(time.Second))
 	ok := []store.Status{store.HandedOff}
 	senders := []string{"auth-service", "shop", "billing", "shop", "auth-service"}
 	for i := range 96 {

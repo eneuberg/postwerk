@@ -19,6 +19,7 @@
     <nav aria-label="Main">
       <a href="/"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a>
       <a href="/mails"{{if eq .Nav "mails"}} aria-current="page"{{end}}>Mails</a>
+      <a href="/stats"{{if eq .Nav "stats"}} aria-current="page"{{end}}>Statistics</a>
       <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
     </nav>
     <form class="who" method="post" action="/logout">

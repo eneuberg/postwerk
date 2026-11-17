@@ -234,7 +234,7 @@ func TestSettingsPages(t *testing.T) {
 	for _, l := range links {
 		names = append(names, l[1])
 	}
-	if !slices.Equal(names, []string{"Overview", "Mails", "Settings"}) {
+	if !slices.Equal(names, []string{"Overview", "Mails", "Statistics", "Settings"}) {
 		t.Errorf("navigation: %v", names)
 	}
 	for _, want := range []string{`href="/settings" aria-current="page"`, "<h1>Settings</h1>", "Your account",

@@ -1,0 +1,207 @@
+{{define "chart"}}
+<svg class="chart-svg {{.ID}}" viewBox="0 0 {{f1 .W}} {{f1 .H}}" role="img" aria-labelledby="{{.ID}}-title {{.ID}}-desc" focusable="false">
+  <title id="{{.ID}}-title">{{.Title}}</title>
+  <desc id="{{.ID}}-desc">{{.Desc}}</desc>
+  {{range .Bands}}<g><title>{{.Title}}</title><rect class="chart-down" x="{{f1 .X}}" y="{{f1 $.PlotY}}" width="{{f1 .W}}" height="{{f1 $.PlotH}}"/><rect class="chart-down-mark" x="{{f1 .X}}" y="{{f1 $.PlotY}}" width="{{f1 .W}}" height="4"/></g>{{end}}
+  {{range .YTicks}}<line class="chart-grid" x1="{{f1 $.PlotX}}" x2="{{f1 (plus $.PlotX $.PlotW)}}" y1="{{f1 .Y}}" y2="{{f1 .Y}}"/><text class="chart-label" x="{{f1 .X}}" y="{{f1 .Y}}" dy="0.32em" text-anchor="{{.Anchor}}" font-size="{{f1 $.Font}}">{{.Label}}</text>{{end}}
+  {{range .Bars}}{{if .Segs}}<g class="chart-bar"><title>{{.Title}}</title>{{range .Segs}}<rect class="seg seg-{{.Class}}" x="{{f1 .X}}" y="{{f1 .Y}}" width="{{f1 .W}}" height="{{f1 .H}}"/>{{end}}</g>{{end}}{{end}}
+  <line class="chart-axis" x1="{{f1 .PlotX}}" x2="{{f1 (plus .PlotX .PlotW)}}" y1="{{f1 .Bottom}}" y2="{{f1 .Bottom}}"/>
+  {{range .XTicks}}<line class="chart-axis" x1="{{f1 .X}}" x2="{{f1 .X}}" y1="{{f1 $.Bottom}}" y2="{{f1 (plus $.Bottom 4)}}"/><text class="chart-label" x="{{f1 .X}}" y="{{f1 .Y}}" text-anchor="{{.Anchor}}" font-size="{{f1 $.Font}}">{{.Label}}</text>{{end}}
+</svg>
+{{end}}
+
+{{define "content"}}
+{{$v := .Data}}{{$s := $v.S}}
+<div class="page-head">
+  <h1>Statistics</h1>
+  {{if not $v.Error}}<p class="muted">{{when $s.From}} to {{when $s.To}}, one bar per {{width $s.Width}}.</p>{{end}}
+</div>
+
+<form class="card stats-filters" method="get" action="/stats" aria-label="Range and filters">
+  <div>
+    <label for="f-range">Range</label>
+    <select id="f-range" name="range">
+      {{range $v.Ranges}}<option value="{{.Value}}"{{if eq .Value $v.Range}} selected{{end}}>{{.Label}}</option>{{end}}
+    </select>
+  </div>
+  <div>
+    <label for="f-from">From (UTC)</label>
+    <input id="f-from" type="text" name="from" value="{{$v.From}}" placeholder="2026-11-17 08:00" autocomplete="off" spellcheck="false" maxlength="40">
+  </div>
+  <div>
+    <label for="f-to">To (UTC)</label>
+    <input id="f-to" type="text" name="to" value="{{$v.To}}" placeholder="2026-11-17 12:00" autocomplete="off" spellcheck="false" maxlength="40">
+  </div>
+  <div>
+    <label for="f-target">Target</label>
+    <select id="f-target" name="target">
+      <option value="">All targets</option>
+      {{range $v.Targets}}<option value="{{.}}"{{if eq . $v.Target}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+  <div>
+    <label for="f-sender">Sending application</label>
+    <select id="f-sender" name="sender">
+      <option value="">All applications</option>
+      {{range $v.Senders}}<option value="{{.}}"{{if eq . $v.Sender}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+  <div class="filter-actions">
+    <button type="submit">Show</button>
+    {{if or $v.Filtered (ne $v.Range "24h")}}<a href="/stats">Reset</a>{{end}}
+  </div>
+  <p class="small muted stats-note">From and to count only with “From and to below”: a day (2026-11-17) or a day and time (2026-11-17 08:00), in UTC. A day alone as “to” includes that day.</p>
+</form>
+
+{{with $v.Error}}<p class="notice notice-error" role="alert">{{.}}</p>{{else}}
+
+{{if $s.Clamped}}<p class="notice notice-warn" role="status">Postwerk keeps mail records for {{period $s.RecordRetention}} and events for {{period $s.EventRetention}}, so this range starts at {{when $s.Retained}}; anything older is deleted.</p>{{end}}
+
+<ul class="board stats-board" aria-label="Summary">
+  <li class="board-part">
+    <span class="lamp lamp-none" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">{{if $s.Target}}Mails to {{$s.Target}}{{else}}Mails received{{end}}</p>
+      <p class="board-value num">{{count $s.Totals.Total}}</p>
+      <p class="board-sub muted">{{count $s.Totals.InFlight}} in flight, {{count $s.Totals.Skipped}} skipped</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-handed_off" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Handed off</p>
+      <p class="board-value num">{{count $s.Totals.HandedOff}}</p>
+      <p class="board-sub muted">{{count $s.Totals.Partial}} partial</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-{{if $s.Totals.Failed}}failed{{else}}handed_off{{end}}" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Failed</p>
+      <p class="board-value num">{{if and $s.Totals.Failed (not $s.Sender)}}<a href="/mails?state=failed{{with $s.Target}}&amp;target={{.}}{{end}}&amp;from={{$v.ListFrom}}&amp;to={{$v.ListTo}}">{{count $s.Totals.Failed}}</a>{{else}}{{count $s.Totals.Failed}}{{end}}</p>
+      <p class="board-sub muted">{{count $s.Totals.Unknown}} unknown, {{count $s.Totals.Rejected}} recipients rejected</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-none" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Success rate</p>
+      <p class="board-value num">{{rate $s.Totals}}</p>
+      <p class="board-sub muted">of {{count $s.Totals.Settled}} settled</p>
+    </div>
+  </li>
+  <li class="board-part">
+    <span class="lamp lamp-none" aria-hidden="true"></span>
+    <div>
+      <p class="board-label">Latency, p95</p>
+      <p class="board-value num">{{latency $s.Latency}}</p>
+      <p class="board-sub muted">{{if $s.Latency.Count}}p50 {{duration $s.Latency.P50}}, {{count $s.Latency.Count}} deliveries{{else}}nothing handed off{{end}}</p>
+    </div>
+  </li>
+</ul>
+
+<section class="card" aria-labelledby="chart-h">
+  <div class="card-head">
+    <h2 id="chart-h">Throughput</h2>
+    <p class="muted">Mails received per {{width $s.Width}}{{with $s.Target}} with a delivery to {{.}}{{end}}{{with $s.Sender}} from {{.}}{{end}}, by their state now. Times in UTC.</p>
+  </div>
+  {{if $s.Empty}}
+  <p class="empty">No mail was received in this range and nothing was refused. Choose a longer range{{if $v.Filtered}} or <a href="{{$v.URL "target" ""}}">fewer filters</a>{{end}}.</p>
+  {{else}}
+  <ul class="chart-legend" aria-label="Legend">
+    <li><span class="st st-handed_off">handed off</span></li>
+    <li><span class="st st-partial">partial</span></li>
+    <li><span class="st st-failed">failed</span></li>
+    <li><span class="st st-unknown">unknown</span></li>
+    <li><span class="st st-queued">in flight</span></li>
+    <li><span class="st st-skipped">skipped</span></li>
+    {{if $v.Wide.Bands}}<li><span class="legend-down" aria-hidden="true"></span> target down</li>{{end}}
+  </ul>
+  <div class="chart">
+    {{template "chart" $v.Wide}}
+    {{template "chart" $v.Narrow}}
+  </div>
+  <details class="chart-table">
+    <summary>The chart as a table</summary>
+    <div class="table-wrap">
+    <table class="stats-table">
+      <thead><tr><th scope="col">From (UTC)</th><th scope="col" class="r">Mails</th><th scope="col" class="r">Handed off</th><th scope="col" class="r">Partial</th><th scope="col" class="r">Failed</th><th scope="col" class="r">Unknown</th><th scope="col" class="r">In flight</th><th scope="col" class="r">Skipped</th><th scope="col" class="r">Retries</th><th scope="col" class="r">Refused at ingress</th></tr></thead>
+      <tbody>
+      {{range $s.Buckets}}
+      <tr>
+        <th scope="row" class="num nowrap">{{day .Start}} {{clock .Start}}</th>
+        <td class="r num">{{count .Total}}</td><td class="r num">{{count .HandedOff}}</td><td class="r num">{{count .Partial}}</td>
+        <td class="r num">{{count .Failed}}</td><td class="r num">{{count .Unknown}}</td><td class="r num">{{count .InFlight}}</td>
+        <td class="r num">{{count .Skipped}}</td><td class="r num">{{count .Retries}}</td><td class="r num">{{count .Ingress.Total}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {{end}}
+</section>
+
+{{if not $s.Empty}}
+<section class="card" aria-labelledby="targets-h">
+  <div class="card-head">
+    <h2 id="targets-h">By target</h2>
+    <p class="muted">Deliveries (a mail at one target) by their state at that target, optional targets included. Retries and rejected recipients count when they happened.</p>
+  </div>
+  <div class="table-wrap">
+  <table class="stats-table">
+    <thead><tr><th scope="col">Target</th><th scope="col" class="r">Deliveries</th><th scope="col" class="r">Handed off</th><th scope="col" class="r">Partial</th><th scope="col" class="r">Failed</th><th scope="col" class="r" title="Recipients the target refused for good (delivery.rejected)">Rejected</th><th scope="col" class="r">Unknown</th><th scope="col" class="r">In flight</th><th scope="col" class="r" title="Skipped by X-Postwerk-Skip or the target's allow-list">Skipped</th><th scope="col" class="r">Retries</th><th scope="col" class="r">Success</th><th scope="col" class="r">p50</th><th scope="col" class="r">p95</th><th scope="col" class="r">Down</th></tr></thead>
+    <tbody>
+    {{range $s.Targets}}
+    <tr>
+      <th scope="row"><a href="{{$v.URL "target" .Target}}">{{.Target}}</a>{{if .Optional}} <span class="tag">optional</span>{{end}}{{if not .Configured}} <span class="tag tag-warn">not configured</span>{{end}}</th>
+      <td class="r num">{{count .Total}}</td>
+      <td class="r num">{{count .HandedOff}}</td>
+      <td class="r num">{{count .Partial}}</td>
+      <td class="r num">{{if and .Failed (not $s.Sender)}}<a href="/mails?state=failed&amp;target={{.Target}}&amp;from={{$v.ListFrom}}&amp;to={{$v.ListTo}}">{{count .Failed}}</a>{{else}}{{count .Failed}}{{end}}</td>
+      <td class="r num">{{count .Rejected}}</td>
+      <td class="r num">{{if and .Unknown (not $s.Sender)}}<a href="/mails?state=unknown&amp;target={{.Target}}&amp;from={{$v.ListFrom}}&amp;to={{$v.ListTo}}">{{count .Unknown}}</a>{{else}}{{count .Unknown}}{{end}}</td>
+      <td class="r num">{{count .InFlight}}</td>
+      <td class="r num">{{count .Skipped}}</td>
+      <td class="r num">{{count .Retries}}</td>
+      <td class="r num">{{rate .Counts}}</td>
+      <td class="r num">{{if .Latency.Count}}{{duration .Latency.P50}}{{else}}—{{end}}</td>
+      <td class="r num">{{latency .Latency}}</td>
+      <td class="r num nowrap">{{if .Down}}<span class="health health-down" title="{{range $i, $o := .Outages}}{{if $i}}; {{end}}{{clock $o.From}}–{{clock $o.To}}{{end}}"><span class="lamp lamp-failed" aria-hidden="true"></span>{{ago .Down}}{{if .DownNow}}, now{{end}}</span>{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="senders-h">
+  <div class="card-head">
+    <h2 id="senders-h">By sending application</h2>
+    <p class="muted">Mails by their state{{if $s.Target}} at {{$s.Target}}{{else}} over the required targets{{end}}; refusals at ingress when they happened.</p>
+  </div>
+  {{if $s.Senders}}
+  <div class="table-wrap">
+  <table class="stats-table">
+    <thead><tr><th scope="col">Application</th><th scope="col" class="r">Mails</th><th scope="col" class="r">Handed off</th><th scope="col" class="r">Partial</th><th scope="col" class="r">Failed</th><th scope="col" class="r">Rejected</th><th scope="col" class="r">Unknown</th><th scope="col" class="r">In flight</th><th scope="col" class="r">Skipped</th><th scope="col" class="r">Retries</th><th scope="col" class="r">Success</th><th scope="col" class="r" title="Failed logins (ingress.auth_failed)">Login failed</th><th scope="col" class="r" title="Refused commands (ingress.rejected)">Refused</th><th scope="col" class="r" title="Over the sender's rate limit (ingress.rate_limited)">Rate limited</th></tr></thead>
+    <tbody>
+    {{range $s.Senders}}
+    <tr>
+      <th scope="row">{{if .Sender}}<a href="{{$v.URL "sender" .Sender}}">{{.Sender}}</a>{{else}}<span class="muted" title="Logins with a name no sender has">unknown name</span>{{end}}</th>
+      <td class="r num">{{count .Total}}</td><td class="r num">{{count .HandedOff}}</td><td class="r num">{{count .Partial}}</td>
+      <td class="r num">{{count .Failed}}</td><td class="r num">{{count .Rejected}}</td><td class="r num">{{count .Unknown}}</td>
+      <td class="r num">{{count .InFlight}}</td><td class="r num">{{count .Skipped}}</td><td class="r num">{{count .Retries}}</td>
+      <td class="r num">{{rate .Counts}}</td>
+      <td class="r num">{{count .Ingress.AuthFailed}}</td><td class="r num">{{count .Ingress.Rejected}}</td><td class="r num">{{count .Ingress.RateLimited}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="empty">No application sent mail in this range.</p>{{end}}
+</section>
+
+<p class="small muted">A mail counts in the bar of the time it was received, with the state it has now; the success rate is the share handed off of the mails that are handed off, partial, failed or unknown. Latency runs from acceptance to the target's reply for the last recipient the relay handed off, rounded down (0.1 s below 2 s); deliveries an admin closed are left out. Retries, rejected recipients, refusals at ingress and down time count at the time they happened. Counts only: no address and no content.</p>
+{{end}}
+{{end}}
+{{end}}

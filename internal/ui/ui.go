@@ -187,6 +187,7 @@ func New(opts Options) (*UI, error) {
 	mux.HandleFunc("POST /login", u.login)
 	mux.HandleFunc("POST /logout", u.authed(u.logout))
 	u.pageRoutes(mux)
+	u.statsRoutes(mux)
 	u.settingsRoutes(mux)
 	u.senderRoutes(mux)
 
