@@ -338,8 +338,14 @@ Then install the chart with `tls.certManager.enabled=true` and `issuerRef.name=i
 ConfigMap in each client namespace, by hand or with cert-manager's trust-manager (a `Bundle` with
 `useDefaultCAs: true` plus the internal CA), and mount it into the client.
 
-- **Go clients:** `SSL_CERT_FILE` replaces the system root file, so point it at a bundle that holds **both** the public
-  roots and the internal CA, or the application loses access to every public TLS endpoint:
+- **Go clients** (GoTrue, for example): on Linux, Go builds its roots from one bundle file (the first of its list
+  that exists, starting with `/etc/ssl/certs/ca-certificates.crt`) **plus** every file in the certificate directories
+  (`/etc/ssl/certs` and `/etc/pki/tls/certs`). `SSL_CERT_FILE` replaces only the bundle file, `SSL_CERT_DIR` (a
+  `:`-separated list) only the directories; the other half is still read (`crypto/x509/root.go`, checked with Go
+  1.27). So `SSL_CERT_FILE` pointing at the internal CA alone keeps the public roots only as long as the image has
+  them in `/etc/ssl/certs`, as Debian, Alpine and distroless images do; with both variables set, or in a `scratch`
+  image, the client trusts nothing but what you point at. The setting that works in every image is a bundle that
+  holds **both** the public roots and the internal CA:
 
   ```yaml
   env:
@@ -352,7 +358,9 @@ ConfigMap in each client namespace, by hand or with cert-manager's trust-manager
       configMap: {name: ca-bundle}           # e.g. from a trust-manager Bundle
   ```
 
-  `SSL_CERT_DIR` works too (Go reads every file in the listed directories), with the same rule.
+  Adding only the internal CA also works: mount it into a directory of its own and set `SSL_CERT_DIR` to that
+  directory; the image's bundle file still supplies the public roots. Never mount over `/etc/ssl/certs` itself: that
+  hides the image's roots. To check what a client trusts, test one public and one internal TLS endpoint from the pod.
 - **Other runtimes:** Node.js `NODE_EXTRA_CA_CERTS` (adds to the built-in roots), Python `SSL_CERT_FILE` or the
   library's CA option, Java a trust store, PHP `openssl.cafile`. Turning certificate checks off is not an option: it
   sends the password to whoever answers.
