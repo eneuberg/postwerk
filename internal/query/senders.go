@@ -35,6 +35,66 @@ type SenderKey struct {
 	LastUsed time.Time
 }
 
+// KeyState is what a key can do now.
+type KeyState string
+
+// Key states.
+const (
+	KeyActive  KeyState = "active"
+	KeyExpired KeyState = "expired"
+	KeyRevoked KeyState = "revoked"
+)
+
+// State says whether the key can log in now, and if not, why.
+func (k SenderKey) State() KeyState {
+	switch {
+	case !k.RevokedAt.IsZero():
+		return KeyRevoked
+	case !k.Active:
+		return KeyExpired
+	}
+	return KeyActive
+}
+
+// SenderState is whether a sender can log in now.
+type SenderState string
+
+// Sender states.
+const (
+	// SenderActive: it has an active key or a password.
+	SenderActive SenderState = "active"
+	// SenderExpired: no active credential, and at least one key only
+	// expired (not revoked); the application probably fails to log in.
+	SenderExpired SenderState = "key_expired"
+	// SenderOff: every key is revoked (D76: how a sender is switched off).
+	SenderOff SenderState = "no_active_key"
+	// SenderRemoved: in no source any more, shown for its recent activity.
+	SenderRemoved SenderState = "removed"
+)
+
+// State says whether the sender can log in now.
+func (o SenderOverview) State() SenderState {
+	if o.Removed {
+		return SenderRemoved
+	}
+	if o.Password {
+		return SenderActive
+	}
+	expired := false
+	for _, k := range o.Keys {
+		switch k.State() {
+		case KeyActive:
+			return SenderActive
+		case KeyExpired:
+			expired = true
+		}
+	}
+	if expired {
+		return SenderExpired
+	}
+	return SenderOff
+}
+
 // SenderOverview is one sender with its keys and what it did in the last
 // RecentWindow.
 type SenderOverview struct {
@@ -145,4 +205,18 @@ func (s *Service) senders(ctx context.Context, only string) ([]SenderOverview, e
 		out = append(out, *o)
 	}
 	return out, nil
+}
+
+// SenderNames returns the names of the senders of every enabled source, by
+// name, for a filter's choices. It reads no store.
+func (s *Service) SenderNames() []string {
+	if s.opts.Senders == nil {
+		return nil
+	}
+	list := s.opts.Senders.List()
+	out := make([]string, 0, len(list))
+	for _, snd := range list {
+		out = append(out, snd.Name)
+	}
+	return out
 }

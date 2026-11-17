@@ -126,3 +126,28 @@ func TestSenders(t *testing.T) {
 		t.Fatalf("detail audit %+v %v", d.Audit, err)
 	}
 }
+
+func TestSenderStates(t *testing.T) {
+	now := time.Now()
+	active := SenderKey{ID: "a", Active: true}
+	expired := SenderKey{ID: "e", ExpiresAt: now.Add(-time.Hour)}
+	revoked := SenderKey{ID: "r", RevokedAt: now}
+	for _, c := range []struct {
+		o    SenderOverview
+		want SenderState
+	}{
+		{SenderOverview{Keys: []SenderKey{revoked, active}}, SenderActive},
+		{SenderOverview{Password: true, Keys: []SenderKey{revoked}}, SenderActive},
+		{SenderOverview{Keys: []SenderKey{revoked, expired}}, SenderExpired},
+		{SenderOverview{Keys: []SenderKey{revoked}}, SenderOff},
+		{SenderOverview{}, SenderOff},
+		{SenderOverview{Removed: true}, SenderRemoved},
+	} {
+		if got := c.o.State(); got != c.want {
+			t.Errorf("%+v: %s, want %s", c.o, got, c.want)
+		}
+	}
+	if active.State() != KeyActive || expired.State() != KeyExpired || revoked.State() != KeyRevoked {
+		t.Fatal("key states")
+	}
+}
