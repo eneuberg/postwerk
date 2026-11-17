@@ -521,7 +521,7 @@ func TestNoContentOrQueryLeak(t *testing.T) {
 			}
 		}
 	}
-	for _, p := range []string{"/v1/mails", "/v1/overview"} {
+	for _, p := range []string{"/v1/mails", "/v1/overview", "/v1/stats?range=30d", "/v1/stats?range=custom&from=2026-09-01"} {
 		all = append(all, h.do("GET", p, adminBearer, "").body)
 	}
 	for _, b := range all {

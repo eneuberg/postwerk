@@ -20,6 +20,7 @@ func (a *API) routes(mux *http.ServeMux) {
 	// Lists, for admin tokens only (H6).
 	mux.Handle("/v1/mails", a.handle(endpoint{name: "mails", method: http.MethodGet, admin: true, fn: a.mails}))
 	mux.Handle("/v1/overview", a.handle(endpoint{name: "overview", method: http.MethodGet, admin: true, fn: a.overview}))
+	mux.Handle("/v1/stats", a.handle(endpoint{name: "stats", method: http.MethodGet, admin: true, fn: a.stats}))
 	// Changes, for admin tokens only (D53–D55).
 	mux.Handle("/v1/mails/{id}/targets/{target}/close",
 		a.handle(endpoint{name: "close", method: http.MethodPost, admin: true, fn: a.closeDelivery}))
