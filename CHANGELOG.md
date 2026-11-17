@@ -10,6 +10,15 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ## [Unreleased]
 
+### Changed
+
+- The UI has a new design ([docs/design-system.md](docs/design-system.md)): colour only for state, each status a lamp
+  with its own shape and its word, a summary on top of the overview, a route to each target and a timeline on a
+  mail's page, mail lists as blocks on phones. Pages, forms and addresses are unchanged.
+- The UI embeds the Barlow typeface (SIL Open Font License 1.1) and its Content-Security-Policy gains
+  `font-src 'self'`. Nothing is loaded from outside.
+- New logo: one track branching into three, each ending in a lamp.
+
 ### Fixed
 
 - A second Postwerk on the same database can no longer run alongside the first. `kubectl delete pod` and evictions
