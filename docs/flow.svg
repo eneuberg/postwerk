@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-labelledby="t d">
   <title id="t">Postwerk mail flow, reports and audit lookup</title>
-  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI; the query API is planned.</desc>
+  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI and through the query API.</desc>
   <style>
     .card   { fill: #f3f5f1; stroke: #cdd2cc; }
     .box    { fill: #ffffff; stroke: #8f9791; stroke-width: 1.2; }
@@ -325,15 +325,13 @@
   <text class="txt" x="616" y="289">monitoring (alerts)</text>
   <text class="muted" x="616" y="305">e.g. GlitchTip</text>
 
-  <!-- audit / lookup (planned) -->
+  <!-- audit / lookup -->
   <rect class="box" x="20" y="264" width="170" height="56" rx="7"/>
   <rect class="hl hlQ" x="20" y="264" width="170" height="56" rx="7"/>
   <circle class="icon" cx="40" cy="288" r="6"/>
   <path class="icon" d="M44.5 292.5 l5 5"/>
   <text class="txt" x="60" y="289">audit / lookup</text>
   <text class="muted" x="60" y="305">query API, UI</text>
-  <rect class="pill" x="136" y="257" width="46" height="15" rx="7.5"/>
-  <text class="small" x="159" y="268" text-anchor="middle">planned</text>
   <text class="note askq" x="20" y="252">what happened to mail X?</text>
 
   <!-- moving dots -->

@@ -85,6 +85,9 @@ purple, come close for protanopia, and there the shapes (circle against square, 
 The word is always there as well.
 
 Health of a target uses the same lamps: up is a lit circle in the handed-off green, down a square in the failed red.
+Sender keys too (D79): an active key or sender is the lit circle, an expired key the amber diamond (the application
+probably fails to log in), a revoked key or a sender with every key revoked the calm bar of skipped. A key that expires
+within a week gets an amber tag.
 
 For charts (inline SVG, filled by class, never by a `style` attribute because of the CSP): fill with the
 `-lamp` tokens, `--line-strong` for queued; gridlines `--chart-grid`, axes `--chart-axis`.
@@ -136,10 +139,12 @@ The page is at most `--page` (78 rem) wide.
   aligned and tabular, a faint hover. On phones the mail list and the recipient tables become one block per row.
 - **Status.** `.st` is a lamp and a word; `.st-sm` in tight places, `.st-lg` with a tint and border at the head of a
   page or delivery.
-- **Tags** (`.tag`): bordered, not filled: optional, not configured, tokens file, closed.
+- **Tags** (`.tag`): bordered, not filled: optional, not configured, tokens file, senders file, database, closed.
 - **Timeline** (events). Time on the left, a mark on a vertical line, the level, the event kind, where it happened
   (target, recipient, attempt) and the reply. The day is shown once and again when it changes. Info marks are empty
   rings, warnings amber diamonds, errors red squares.
+- **A key shown once.** A read-only field in monospace on the sunken surface with a graphite border, wrapping the
+  whole key, under a warning notice that it is not shown again; nothing to click, the operator selects and copies.
 - **Forms.** Labels above fields; fields with a strong border that turns graphite on hover and focus. Primary button
   graphite (`--ink`), secondary outlined, danger in the failed red. A disabled button is grey with its reason next to
   it. Resolve options are `<details>` that open on a click, so the page needs no JavaScript.

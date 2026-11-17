@@ -108,12 +108,18 @@ The file holds hashes only, but it is still a secret file: a copy allows offline
 
 ### Senders in the database
 
-With `db` or `both`, senders are created in the UI and through the API with an `admin` role (*planned*: the pages
-and endpoints are being built on the sender module; until they are released, keep senders in the file). A new sender
-gets its first key at once; a second key can be added for a rotation, and each key can be revoked on its own,
+With `db` or `both`, senders are created under **Settings → Sender keys** in the UI ([ui.md](ui.md#7-sender-keys))
+and through the API with an `admin` token ([api.md](api.md#sender-keys-admin)), for example from a CI pipeline. A new
+sender gets its first key at once; a second key can be added for a rotation, and each key can be revoked on its own,
 effective at once. Each key may have an expiry. Every change is an event with the actor (`sender.created`,
 `sender.rotated`, `sender.revoked`, `sender.policy_changed`). Keys are stored as the SHA-256 of their secret part,
-never the key; the key is shown once when it is made. The policy is the same as in the file.
+never the key; the key is shown once, in the answer that made it. The policy is the same as in the file. Senders are
+not deleted: revoking all keys switches one off, and its name stays taken (D76).
+
+Which to use: `file` for GitOps, where every sender is a line in a Secret that is reviewed like code; `db` when people
+or pipelines create keys on demand, like the API keys of a mail provider; `both` to keep the file's senders while
+adding new ones in the database. With `both`, a sender lives in one source only: the UI and the API show file senders
+read-only, and a database sender cannot take a name from the file.
 
 ## Admin listener and UI
 

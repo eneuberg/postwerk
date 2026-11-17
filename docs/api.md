@@ -2,9 +2,10 @@
 
 A small JSON API for other applications inside the cluster, such as a support tool: "what happened to the mail for
 this address, this id or this ref?". One can look up what happened to a given mail; nobody can read all mails through
-it with a `read` token. An `admin` token can also close or resend a delivery (section 3, "Close and resend"); nothing
-else changes through the API. It never returns message content. Requirements: H2, H4–H13 in
-[requirements.md](requirements.md#http); reasons: decisions D32–D34 and D53–D55 in [decisions.md](decisions.md).
+it with a `read` token. An `admin` token can also close or resend a delivery (section 3, "Close and resend") and manage
+the sender keys (section 3, "Sender keys"), for example from a CI pipeline; nothing else changes through the API. It
+never returns message content. Requirements: H2, H4–H16 in [requirements.md](requirements.md#http); reasons: decisions
+D32–D34, D53–D55 and D76–D78 in [decisions.md](decisions.md).
 
 ## 1. Turning it on
 
@@ -45,6 +46,8 @@ Every request sends it as `Authorization: Bearer support-tool.Xb3k…`.
 | `GET /v1/stats` (counts over a range) | no (`403`) | yes |
 | `POST /v1/mails/{id}/targets/{target}/close` | no (`403`) | yes |
 | `POST /v1/mails/{id}/targets/{target}/resend` | no (`403`) | yes |
+| `GET /v1/senders`, `GET /v1/senders/{name}` | no (`403`) | yes |
+| `POST /v1/senders`, `…/rotate`, `…/keys/{id}/revoke`, `…/revoke-all`, `PUT …/policy` | no (`403`) | yes |
 
 A `read` token can only answer "what happened to this mail?": every search is an exact match on one id, ref,
 Message-ID or address, and there is no listing. After pseudonymization nobody sees an address (`"state":
@@ -151,10 +154,22 @@ Recipients are numbered by their position in the envelope, from 0, as in the eve
 At most 500 events are returned. An unknown id gets `404`. Every detail returned is an `api.view` event with the
 token name and the mail id (section 5).
 
+For an `admin` token the detail also has `audit`, where the mail came from (D65); a field that was not recorded is
+left out, and mails from before 1.1 have none:
+
+```json
+"audit": {"key_id": "k3x7q2m4abcd", "key_source": "db", "client_ip": "10.42.0.17", "tls_version": "TLS 1.3",
+          "tls_cipher": "TLS_AES_128_GCM_SHA256", "ehlo": "shop-7d9f", "auth_mechanism": "PLAIN"}
+```
+
+`key_source` is `file` or `db`; without `key_id` the sender logged in with a password line. The `mail.accepted` event
+names the key and the client in its text for both roles.
+
 ### List: `GET /v1/mails` (admin)
 
-Filters as URL parameters, each at most once: `state`, `target`, `from` and `to` (days, `YYYY-MM-DD`, UTC), `page`
-(from 1, 50 mails per page, newest first). Filters never hold an address.
+Filters as URL parameters, each at most once: `state`, `target`, `sender` (a sender's name), `key_id` (the mails sent
+with one key), `from` and `to` (days, `YYYY-MM-DD`, UTC), `page` (from 1, 50 mails per page, newest first). Filters
+never hold an address.
 
 ```json
 {"page": 1, "has_next": false, "mails": [{"id": "pw_01JD3W8K2M4N6P8Q0R2S4T6V8X", "…": "as in search"}]}
@@ -319,6 +334,123 @@ decided.
 | 409 | `message_removed` | resend after the stored message was removed |
 | 409 | `target_not_configured` | resend to a target that is no longer configured (close it instead) |
 
+### Sender keys (admin)
+
+The applications that send through Postwerk and their keys (D62–D67): each logs in to SMTP with its name as the user
+and a key `pwk_<id>_<secret>` as the password. The API reads every sender of every source and changes the senders kept
+in the database (`POSTWERK_SENDER_KEYS` `db` or `both`, [configuration.md](configuration.md#senders)); senders in
+the senders file are read-only here and answer `409 file_sender`. Every change is an event with the token name as
+`actor` (section 5), written in the transaction that makes it. Senders are not deleted (D76): `revoke-all` switches
+one off. The same as in the UI ([ui.md](ui.md#7-sender-keys)).
+
+**List: `GET /v1/senders`, one: `GET /v1/senders/{name}`.** Every sender by name, and the ones that are in no source
+any more but were active in the last 24 hours (`"state": "removed"`, no `source`). Never a key or a digest.
+
+```json
+{
+  "since": "2026-11-14T12:00:00Z",
+  "managed": true,
+  "senders": [
+    {
+      "name": "shop",
+      "source": "db",
+      "state": "active",
+      "read_only": false,
+      "policy": {"from": ["*@shop.example.com"], "max_per_minute": 60, "max_rcpt_per_hour": 0},
+      "password": false,
+      "keys": [
+        {"id": "p9r2t5w6efgh", "state": "active", "created_at": "2026-11-15T09:00:00Z", "created_by": "ci",
+         "last_used_at": "2026-11-15T11:59:00Z"},
+        {"id": "k3x7q2m4abcd", "state": "revoked", "created_at": "2026-10-01T08:00:00Z", "created_by": "alice",
+         "revoked_at": "2026-11-15T10:00:00Z", "revoked_by": "ci"}
+      ],
+      "last_used_at": "2026-11-15T11:59:00Z",
+      "created_at": "2026-10-01T08:00:00Z", "created_by": "alice",
+      "updated_at": "2026-11-15T10:00:00Z", "updated_by": "ci",
+      "recent": {"mails": 412, "failed_recipients": 3, "auth_failures": 0, "rejected": 1, "rate_limited": 0}
+    }
+  ]
+}
+```
+
+`managed` says whether senders can be created through the API. A sender's `state` is `active` (a key or a password
+line can log in), `key_expired` (only expired keys), `no_active_key` (every key revoked) or `removed`; a key's is
+`active`, `expired` or `revoked`. Keys are newest first; `last_used_at` is written once a minute. `read_only` is true
+for a file sender, a removed one, and every sender when the database is off. `recent` covers the last 24 hours (since
+`since`): mails, their failed recipients, refused logins (`ingress.auth_failed`), refused commands
+(`ingress.rejected`) and rate-limit refusals (`ingress.rate_limited`).
+
+**Create: `POST /v1/senders`.** A new sender in the database with its first key; `policy` and `expires_at` are
+optional (no policy: any envelope sender, no limits; no expiry: the key does not expire). Set `from` in production.
+
+```http
+POST /v1/senders HTTP/1.1
+Authorization: Bearer ci.Xb3k…
+Content-Type: application/json
+
+{"name": "shop", "policy": {"from": ["*@shop.example.com"], "max_per_minute": 60}, "expires_at": "2027-11-15T00:00:00Z"}
+```
+
+`201` with the key. **It is in this response only** (D77): Postwerk keeps its SHA-256, and no event or log line holds
+it. Store it as the application's secret at once; a lost key is replaced by a rotation, not read again.
+
+```json
+{"sender": "shop", "key_id": "p9r2t5w6efgh", "key": "pwk_p9r2t5w6efgh_…52 characters…", "expires_at": "2027-11-15T00:00:00Z"}
+```
+
+**Rotate: `POST /v1/senders/{name}/rotate`**, body `{}` or `{"expires_at": "…"}`: a second key, `201` as above. A
+sender has at most two active keys (`409 too_many_keys`); revoke the old one once the application uses the new one.
+
+**Revoke a key: `POST /v1/senders/{name}/keys/{id}/revoke`**, body `{}`: the key stops working at once; a connection
+that logged in with it is refused at its next `MAIL`. **Revoke all: `POST /v1/senders/{name}/revoke-all`**, body
+`{}`: every key that is not revoked yet, one event each; the answer has `"revoked": [ids]` and the `sender`. A
+rotation switches the sender on again.
+
+**Policy: `PUT /v1/senders/{name}/policy`** with the whole policy, which replaces the old one:
+`{"from": ["*@shop.example.com", "<>"], "max_per_minute": 60, "max_rcpt_per_hour": 2000}`. A field left out is empty or
+`0`: no restriction. Patterns are compared in lower case with `*`, `?` and `[…]`; `<>` is the null sender; at most 32.
+
+Revoke and policy answer `200` with the sender as in `GET /v1/senders/{name}`.
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `invalid_name` | not 1 to 64 of `a-z 0-9 . _ -`, starting with a letter or digit |
+| 400 | `invalid_policy` | a pattern without exactly one `@`, with spaces or commas, more than 32 patterns, a limit out of range |
+| 400 | `invalid_expiry` | `expires_at` not in the future |
+| 400 | `bad_request` | invalid JSON, an unknown field, `expires_at` not RFC 3339 |
+| 404 | `not_found` | no such sender, or the sender has no key with this id |
+| 409 | `name_taken` | the name is in use, in the database or the senders file |
+| 409 | `too_many_keys` | the sender has two active keys |
+| 409 | `already_revoked` | the key is revoked already |
+| 409 | `nothing_to_revoke` | `revoke-all` on a sender whose keys are all revoked |
+| 409 | `file_sender` | the sender is in the senders file: change the file |
+| 409 | `db_off` | `POSTWERK_SENDER_KEYS=file`: senders cannot be created or changed through the API |
+
+**In a CI pipeline.** A job that provisions an application creates its sender once and stores the key as the
+application's secret; a scheduled job rotates it. With an `admin` token in `POSTWERK_TOKEN`:
+
+```sh
+API=https://postwerk.mail.svc:8082
+auth=(-H "Authorization: Bearer $POSTWERK_TOKEN" -H "Content-Type: application/json")
+
+# create the sender and put its key into a Kubernetes Secret, never into the job's log
+curl -fsS "${auth[@]}" "$API/v1/senders" \
+  -d '{"name":"shop","policy":{"from":["*@shop.example.com"],"max_per_minute":60}}' |
+  jq -r .key | kubectl -n shop create secret generic shop-smtp --from-file=password=/dev/stdin
+
+# rotate: add a key, roll it out, then revoke the old one
+old=$(curl -fsS "${auth[@]}" "$API/v1/senders/shop" | jq -r '.keys[] | select(.state=="active") | .id')
+curl -fsS "${auth[@]}" "$API/v1/senders/shop/rotate" -d '{}' | jq -r .key |
+  kubectl -n shop create secret generic shop-smtp --from-file=password=/dev/stdin --dry-run=client -o yaml |
+  kubectl apply -f -
+kubectl -n shop rollout restart deploy/shop && kubectl -n shop rollout status deploy/shop
+curl -fsS "${auth[@]}" "$API/v1/senders/shop/keys/$old/revoke" -d '{}' > /dev/null
+```
+
+`curl -f` fails the job on any error status; a `409 name_taken` on a second run means the sender exists already.
+Use `--cacert` for the API's certificate. The application logs in as user `shop` with the key as password, over
+STARTTLS.
+
 ### Errors
 
 Every error is `{"error": "<code>", "message": "<text>"}`:
@@ -329,10 +461,10 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | 401 | `unauthorized` | missing, malformed or wrong token; with `WWW-Authenticate: Bearer realm="postwerk"` |
 | 403 | `forbidden` | the role may not use the endpoint |
 | 403 | `host_not_allowed`, `browser_refused` | `Host` not in `POSTWERK_API_HOSTS`; a request with `Origin` or `Sec-Fetch-*` headers |
-| 404 | `not_found` | no such endpoint, mail or delivery |
+| 404 | `not_found` | no such endpoint, mail, delivery, sender or key |
 | 405 | `method_not_allowed` | wrong method (with `Allow`) |
 | 413 | `too_large` | body over 4 KiB |
-| 409 | see above | a close or resend that is not possible now |
+| 409 | see above | a close, resend or sender change that is not possible now |
 | 415 | `unsupported_media_type` | a `POST` without `Content-Type: application/json` (UTF-8) |
 | 429 | `rate_limited` | over a rate limit; with `Retry-After` in seconds |
 | 503 | `unavailable` | the request could not be written to the event log; with `Retry-After` |
@@ -364,6 +496,8 @@ Every error is `{"error": "<code>", "message": "<text>"}`:
 | `api.view` | info | `actor`: the token name, `mail_id`: the mail whose detail was returned; no text. Written instead of `api.request` for a successful `GET /v1/mails/{id}`, like the UI's `ui.view` |
 | `api.forbidden` | warn | `actor`: the token name; `text`: the endpoint |
 | `delivery.closed`, `delivery.resend` | info | `actor`: the token name, `mail_id`, `target` and the recipient's position; `text`: `resolution=… was=… via=api` and the note (close), `was=… via=api` (resend). Written instead of `api.request` for a close or resend that succeeded, in the same transaction as the change; a refused one is an `api.request` with its status |
+| `sender.created`, `sender.rotated`, `sender.revoked` | info | `actor`: the token name, `sender`; `text`: `key=<id>`, never the key. Written instead of `api.request` for a change that succeeded, in the same transaction; `revoke-all` writes one `sender.revoked` per key |
+| `sender.policy_changed` | info | `actor`, `sender`; `text`: `from_patterns=<n> max_per_minute=<n> max_rcpt_per_hour=<n>`, never the patterns |
 | `api.auth_failed` | warn | `actor`: the name only if it is in the tokens file, otherwise empty; `text`: `failures=<n>`, the missing, malformed or wrong tokens of that actor in one minute. At most one per actor and minute (D42) |
 
 Never the search term, a ref, a Message-ID or an address; a mail id only in `api.view`, for a mail that was returned
@@ -379,5 +513,6 @@ or resend is, because it changes the mail's state.
 ## 6. Code
 
 `internal/api` holds the handler, the checks and the JSON shapes, on top of `internal/query` (the same read logic and
-masking as the UI) and `internal/resolve` (the same close and resend as the UI). `postwerk gen-api-token` is in `cmd/postwerk`; the listener and its TLS (`internal/tlsreload`) are
-set up there too.
+masking as the UI), `internal/resolve` (the same close and resend as the UI) and the `senders.Store` interface (the same
+sender changes as the UI; `nil` with `POSTWERK_SENDER_KEYS=file`). `postwerk gen-api-token` is in `cmd/postwerk`; the
+listener and its TLS (`internal/tlsreload`) are set up there too.

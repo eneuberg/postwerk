@@ -28,7 +28,7 @@ file, no root, no special cluster permissions, no inbound port from the internet
 | Component | Responsibility | Status | Library |
 |---|---|---|---|
 | Ingress | SMTP server, `AUTH PLAIN` per sender, size and recipient limits, STARTTLS | built | `github.com/emersion/go-smtp`, `github.com/emersion/go-sasl` |
-| Senders | the sending applications, their keys and policies, from the senders file and the database; login checks, rate limits, last use (section 13, "Sender keys") | built (UI pages and API endpoints planned) | standard library |
+| Senders | the sending applications, their keys and policies, from the senders file and the database; login checks, rate limits, last use (section 13, "Sender keys") | built, with the UI pages and API endpoints | standard library |
 | Store | SQLite in WAL mode, one connection, migrations embedded | built | `modernc.org/sqlite` (pure Go) |
 | Delivery | one worker per target: due deliveries out, retry with backoff, recovery at start, target down and probes after a rejected login or an unreachable target | built | `github.com/emersion/go-smtp` (client) |
 | Retention | removes raw messages, pseudonymizes addresses, expires records and events | built | standard library |
@@ -505,9 +505,10 @@ One sender per application, so a leaked credential can be traced to it and revok
   256 random bits that are shown once and stored only as their SHA-256. An application logs in with its sender name
   and the whole key. A sender has at most two active credentials, so it can move to a new key without downtime;
   revoking one leaves the other. Keys from the database may expire.
-- **Where they live.** In the senders file (declared, for GitOps; re-read every 30 s), in the database (made and
-  revoked in the UI or through the API, *planned*), or both (`POSTWERK_SENDER_KEYS`). A name is in one place only.
-  1.0 password lines keep working.
+- **Where they live.** In the senders file (declared, for GitOps; re-read every 30 s), in the database (made, rotated
+  and revoked under Settings in the UI or through the API, for example from CI; [ui.md](ui.md#7-sender-keys),
+  [api.md](api.md#sender-keys-admin)), or both (`POSTWERK_SENDER_KEYS`). A name is in one place only. 1.0 password
+  lines keep working. A sender is never deleted; revoking all its keys switches it off (D76).
 - **Policy per sender.** Allowed envelope senders (`550 5.7.1` otherwise), messages per minute and recipients per
   hour (`451 4.7.1` otherwise, so the application retries). Without a policy a sender may do anything, as in 1.0.
 - **Audit per mail.** The key id and its source, the client address, TLS version and cipher, the `EHLO` name and the
@@ -518,6 +519,8 @@ One sender per application, so a leaked credential can be traced to it and revok
   to revoke.
 - **Revocation is immediate.** A revoked, expired or removed key fails the next login and ends open sessions at
   their next `MAIL`.
+- **Shown once.** A key made in the UI or the API is in the answer to that request only (D77), never in a log, an
+  event or a later page.
 
 ## 14. Configuration
 

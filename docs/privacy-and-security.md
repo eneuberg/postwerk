@@ -79,8 +79,9 @@ to an identifiable person, directly or through other data the operator holds. Pe
 | `created_by`, `updated_by`, `revoked_by` | yes, if an account is named after a person | the UI account or API token that made the change, as in the `actor` of events |
 | `sender_usage.last_used_at` | no | one row per credential; kept while the database exists, small |
 
-These rows describe the operator's applications, not mail; they have no retention period and are removed when the
-operator removes the sender (*planned*: deleting a sender) or the database.
+These rows describe the operator's applications, not mail; they have no retention period. A sender is not deleted,
+only switched off by revoking its keys (D76), so mail records and events keep pointing at a known name and key id;
+the rows go with the database. The only possibly personal value in them is an account name in the `_by` columns.
 
 Every free text that is stored or exported goes through one redaction function: anything that looks like an address
 becomes `<redacted>`, control characters are removed, and the length is capped at 300 bytes. The reply code and the

@@ -1,10 +1,10 @@
 # Internal web UI
 
 A small web UI for people who run Postwerk: what is queued, what failed, and what happened to one mail. It changes
-its own accounts and, by an admin's decision, a delivery: close it or resend it (section 6). It never shows message
-content. This page describes how the UI is reached, how it is protected and what each page shows. Requirements:
-U1–U25 in [requirements.md](requirements.md#ui-and-admin-listener); reasons: decisions D29, D35, D36, D37 and D53–D55
-in [decisions.md](decisions.md).
+its own accounts, the sender keys kept in the database (section 7) and, by an admin's decision, a delivery: close it
+or resend it (section 6). It never shows message content. This page describes how the UI is reached, how it is
+protected and what each page shows. Requirements: U1–U31 in [requirements.md](requirements.md#ui-and-admin-listener);
+reasons: decisions D29, D35, D36, D37, D53–D55 and D76–D79 in [decisions.md](decisions.md).
 
 ## 1. How it is reached
 
@@ -156,12 +156,15 @@ other event):
 | `ui.account_deleted` | info | `actor`: who deleted it, `text`: the account's name |
 | `delivery.closed` | info | `actor`: who closed it, `mail_id`, `target`, the recipient's position; `text`: `resolution=… was=… via=ui` and the note, redacted. One per recipient |
 | `delivery.resend` | info | `actor`: who resent it, `mail_id`, `target`, position; `text`: `was=… via=ui`. One per recipient |
+| `sender.created`, `sender.rotated`, `sender.revoked` | info | `actor`: the account, `sender`: the sender's name, `text`: `key=<id>`; never the key |
+| `sender.policy_changed` | info | `actor`, `sender`; `text`: `from_patterns=<n> max_per_minute=<n> max_rcpt_per_hour=<n>`, never the patterns |
 
 On stdout and in every sink these events carry `"actor"` and `"text"` instead of an `"smtp"` object. A login, a
 search, an opened mail or an account change that cannot be written to the event log is refused, so nothing happens in
 the UI that the audit log misses. Searches are limited to 30 per minute per account; more get `429`. The timeline on a
 mail's page shows the relay's events and an admin's close and resend (with the account's name); who opened the mail is
-in the event log. A close or resend writes its events in the transaction that makes the change.
+in the event log. A close or resend, and every change of a sender, writes its events in the transaction that makes the
+change.
 
 ## 5. Pages
 
@@ -173,17 +176,19 @@ both name it. How the UI looks, and why: [design-system.md](design-system.md).
 |---|---|---|
 | Login | `GET /login`, `POST /login` | name and password or token |
 | Overview | `GET /` | a summary first: targets up or down, the queue and its oldest mail, failed and unknown recipients of the last 24 hours; then per target: up, or down since when and why (`auth`, `unreachable`; D45), whether it is optional, recipients of the last 24 hours by status, mails queued now and the age of the oldest queued; the most recent problems (mails that are `failed`, `unknown` or `partial` by their required targets) |
-| Mails | `GET /mails` | the search form; list with filters (state, target, received from and to), newest first, 50 per page |
+| Mails | `GET /mails` | the search form; list with filters (state, target, sender, key id, received from and to), newest first, 50 per page |
 | Search | `POST /mails` | the search form at the top of the Mails page: find mails by mail id, `X-Postwerk-Ref`, `Message-ID` or recipient address. The query goes in the request body only and the results come back in the same response, on the Mails page in place of the list, so it never lands in a URL, the browser history or an access log. The page says "Results for your search" and never shows the query again; a link leads back to the list. `GET /search` (the old search page) redirects to `/mails` |
-| Mail | `GET /mails/{id}` | on top the id, the overall status, received time, sending application, number of recipients and size, and a route to each target with its status; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline, the day shown once; beside it (below on narrow screens) the record: ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored, the recipients. Opening it writes `ui.view` |
+| Mail | `GET /mails/{id}` | on top the id, the overall status, received time, sending application, number of recipients and size, and a route to each target with its status; per target the derived status (including `partial`), attempts, next attempt, last reply, a table with each recipient's status, resolution and reply, and the close and resend forms (section 6); the event timeline, the day shown once; beside it (below on narrow screens) the record: ref, Message-ID, envelope sender and parameters (`BODY`, `SMTPUTF8`, `SIZE`), whether the message is still stored; **sent by**: the key id (a link to the key's mails) and where it is kept, or "password", the client address, TLS version and cipher, the `EHLO` name and the `AUTH` mechanism (D65; "not recorded" for mails from before they were kept); the recipients. The sender's name links to its page. Opening it writes `ui.view` |
 | Close, resend | `POST /mails/{id}/targets/{target}/close`, `POST /mails/{id}/targets/{target}/resend` | on success back to the mail page with a notice; when refused, the mail page with the reason at that target |
 | Statistics | `GET /stats` | throughput and outcomes over a range (section 5.1) |
-| Settings | `GET /settings`, `POST /settings/accounts` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account |
+| Settings | `GET /settings`, `POST /settings/accounts`, `POST /settings/senders` | your own account, with a link to change your password; every account with where it is kept, when and by whom it was created and last changed; the form for a new account; the **sender keys** (section 7): every sender with its source, state, keys, policy, last login and the last 24 hours, and the form for a new sender |
+| Sender | `GET /settings/senders/{name}`, `POST …/rotate`, `POST …/keys/{id}/revoke`, `POST …/revoke-all`, `POST …/policy` | one sender: its keys, policy and the last 24 hours, and for a sender in the database the forms to add a key, revoke one or all, and edit the policy (section 7) |
 | Account | `GET /settings/accounts/{name}`, `POST /settings/accounts/{name}/password`, `POST /settings/accounts/{name}/delete` | set a new password (your own: change it), delete the account; your own is linked from your name in the header |
 | Logout | `POST /logout` | |
 
-The navigation is Overview, Mails, Statistics, Settings. The old account addresses `GET /accounts` and
-`GET /accounts/{name}` redirect to their pages under `/settings`; the query of a redirected request is dropped.
+The navigation is Overview, Mails, Statistics, Settings. `GET /settings/senders` leads to the sender keys on the
+settings page. The old account addresses `GET /accounts` and `GET /accounts/{name}` redirect to their pages under
+`/settings`; the query of a redirected request is dropped.
 
 The state filter and every status shown are the derived summaries of architecture.md (`queued`, `sending`,
 `unknown`, `handed_off`, `failed`, `partial`, `skipped`); with a target filter they are the state at that target.
@@ -256,7 +261,48 @@ recipients are all final shows no actions. Every close and resend is an event wi
 The typical case: a connection broke after `DATA`, the delivery is `unknown` (policy `hold`). Look the mail up at the
 provider by its `X-Postwerk-Id` (Mailjet: the custom id). Found: close as confirmed. Not found: resend.
 
-## 7. Code
+## 7. Sender keys
+
+A sender is one application that sends through Postwerk; it logs in with its name as the user and a key as the
+password ([configuration.md](configuration.md#senders), D62–D67). Under **Settings → Sender keys** every sender of
+every source is listed, by name:
+
+- **Source:** `senders file` (read-only here) or `database` (managed here and through the API). A sender that is in no
+  source any more but sent or tried to log in within the last 24 hours is listed as `removed`, so an old key that is
+  still in use is not missed.
+- **State,** as a lamp and a word (D79): `active` (a key or password can log in), `key expired` (only expired keys:
+  the application probably fails to log in), `no active key` (every key revoked: switched off), `removed`.
+- **Keys:** the id of each key that is not revoked, its state and a warning a week before it expires; the number of
+  revoked keys. A key id is not secret: it names the key in mail records, events and logs.
+- **Policy:** the allowed envelope senders (a warning when any is allowed) and the two limits.
+- **Last login** of any credential (noted once a minute), and the **last 24 hours**: mails (a link to them), failed
+  recipients, refused logins, refused commands and rate-limit refusals.
+
+**A new sender** (only with `POSTWERK_SENDER_KEYS` `db` or `both`): its name, the policy (envelope sender patterns,
+one per line; messages per minute; recipients per hour; empty means no restriction) and an optional last day of the
+key. The answer is a page with the key in a read-only field to select and copy, the key id and expiry, and the SMTP
+settings for the application (user name, the key as password, STARTTLS, `AUTH PLAIN`, the SMTP port). **The key is
+shown on that page only** (D77): it is the response to the form, not a page one can open again, it is never in a URL,
+a session, a log line or an event, and Postwerk stores only its SHA-256. A reload posts the form again and is refused,
+because the name is taken. A lost key is replaced by a rotation, not recovered.
+
+**A sender's page** shows the same, its keys in full (created, valid until, last login, revoked, each with who did
+it) and links to its mails and to the mails of each key. For a sender in the database:
+
+- **Add a key (rotation).** A second key, shown once like the first. Put it into the application, check that its last
+  login moves, then revoke the old key; both work in the meantime. A sender has at most two active keys, so the button
+  is disabled with the reason while it has two.
+- **Revoke** one key: it stops working at once, and a connection that logged in with it is refused at its next `MAIL`.
+- **Edit the policy:** replaces the whole policy; it applies to both keys from the next mail.
+- **Revoke all keys** switches the sender off. Senders are not deleted (D76): the sender, its revoked keys and its mails
+  stay for the record, and its name stays taken. Adding a key switches it on again.
+
+Every change asks for your own current password, carries the CSRF token and is written with your name as `actor`
+(section 4), like the account changes; a wrong password counts against the login throttle. A sender from the senders
+file has no forms: its page says how to change the file (`postwerk gen-sender NAME` and its line, remove a line to
+revoke a key, the policy line), and a change posted anyway is refused with `409`.
+
+## 8. Code
 
 | Package | Holds |
 |---|---|
@@ -265,11 +311,13 @@ provider by its `X-Postwerk-Id` (Mailjet: the custom id). Found: close as confir
 | `internal/query` | read logic on top of the store: overview, list, search, mail detail, statistics, derived statuses, address masking (`query.Mask`, used by the API); the JSON API (H2, [api.md](api.md)) uses the same functions |
 | `internal/ui` | HTTP handlers, sessions, login and throttling, settings and account pages, CSRF, Host check, headers; templates, the stylesheet, the logo and the typeface (with its licence, `static/OFL.txt`) embedded with `embed`, served from a fixed list and rendered with `html/template` |
 | `internal/auth` | token file parsing, password rules and the equal-cost checker, on top of the sender password hashes |
+| `internal/senders` | the senders and their keys; the UI reads them through `internal/query` and changes the database ones through the `senders.Store` interface (`nil` with `POSTWERK_SENDER_KEYS=file`), never through a concrete source or SQL |
 
 For design work, `UI_DEMO_ADDR=127.0.0.1:18081 go test ./internal/ui -run TestDemo -timeout 30m` serves made-up data,
-logged in as `ops` (tokens file) on that port and as `alice` (database) on the next one.
+logged in as `ops` (tokens file) on that port and as `alice` (database) on the next one. It has senders in the file
+(`auth-service`) and in the database (`shop` with a rotated key, `billing`), and one removed (`newsletter`).
 
-## 8. Not built yet
+## 9. Not built yet
 
 Closing or resending a single recipient of a delivery, TLS on the admin listener itself, a check of new passwords against a list of breached passwords,
 and sessions and login limits that survive a restart.

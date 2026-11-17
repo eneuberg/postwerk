@@ -29,15 +29,15 @@ internal/watch        Postwerk's own signals: free space of the data volume, age
 internal/fold         counts repeated occurrences, one record per key and window (the API's and ingress's refusal events)
 internal/query        read logic for the UI and the JSON API: overview, lists, search, detail, statistics, address masking (U10–U12, U15, U26)
 internal/resolve      the admin actions on a delivery for the UI and the JSON API: close and resend, their input and availability (H11–H13)
-internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts, close and resend forms (H3, U1–U25)
-internal/api          the JSON query API on its own listener: bearer tokens, limits, events, JSON, close and resend (H2, H4–H13)
+internal/ui           the internal web UI on the admin listener: login and throttling, sessions, CSRF, Host check, pages, accounts, sender keys, close and resend forms (H3, U1–U31)
+internal/api          the JSON query API on its own listener: bearer tokens, limits, events, JSON, close and resend, sender keys (H2, H4–H16)
 internal/testutil     helpers for tests only (self-signed certificates, polling, buffers); never imported by code
 ```
 
 Dependency rule: `store` depends on nothing internal except `redact`, so every free text is redacted where it is
 written. The store holds no keys: messages reach it already sealed, and the retention step that pseudonymizes takes
 the hash function as a parameter. `ingress`, `delivery`, `retention` and `report` depend on `store` and the small helper
-packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `senders` depends on `store` (its rows), `auth` (PBKDF2), `filewatch` and `senders/limit`; `ingress` uses it through two interfaces it defines itself (`Authenticator`, `RateLimiter`), and `query` through `senders.Source`. `senders` imports no UI, API or ingress package. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
+packages (`config` for the `Target` and `SentryDSN` types, `auth`, `id`, `message`, `redact`, `seal`, `fold`), never on each other. `senders` depends on `store` (its rows), `auth` (PBKDF2), `filewatch` and `senders/limit`; `ingress` uses it through two interfaces it defines itself (`Authenticator`, `RateLimiter`), `query` through `senders.Source`, and `ui` and `api` through `senders.Store` and `query`. `senders` imports no UI, API or ingress package. `watch` depends on `store` only; ingress asks it for space through a one-method interface. `seal` and
 `addrhash` depend only on `keys`. `query` reads through `store` (and `addrhash` for lookups); `resolve` writes
 through `store` and reads `query`'s delivery detail; `ui` depends on `query`, `resolve`, `auth` and the store's types,
 never on `ingress` or `delivery` (a resend wakes the workers through a function `cmd/postwerk` passes in); so does `api`, and `api` never depends on `ui`. Only `cmd/postwerk` wires them together. This keeps every piece testable alone and
@@ -451,8 +451,10 @@ after its event is written, so nothing happens in the UI that the audit log miss
   name, the expiry and revocation. A password: `auth.Senders` with its equal cost and cache, at most `GOMAXPROCS`
   at once, `ErrBusy` after 5 s (ingress answers `454`). `Refresh` repeats the lookup at every `MAIL`.
 
-**For the UI and the API** (wired in `cmd/postwerk`, `senderSources`): the write side is the `*senders.DBSource`,
-`nil` when `POSTWERK_SENDER_KEYS=file`:
+**For the UI and the API** (wired in `cmd/postwerk`: `senderSources.store()` hands the `*senders.DBSource` to
+`ui.Options.Senders` and `api.Options.Senders` as a `senders.Store`, an untyped `nil` when
+`POSTWERK_SENDER_KEYS=file`; both read through `query.Service`, whose `Senders` is the registry). Neither knows a
+concrete source or speaks SQL:
 
 | Call | Does | Errors |
 |---|---|---|
@@ -463,12 +465,16 @@ after its event is written, so nothing happens in the UI that the audit log miss
 | `senders.ParsePolicy(text)`, `senders.NewPolicy(from, perMinute, rcptsPerHour)` | a policy from a form or JSON | wraps `ErrInvalidPolicy`, text safe to show |
 | `Registry.List()`, `ByName(name)` | every sender of every source, with `Source` (`file`/`db`) | |
 | `query.Service.Senders(ctx)`, `Sender(ctx, name)` | `SenderOverview`: source, policy, keys with `Active` and `LastUsed`, last use, and the last 24 h (`store.SenderActivity`: mails, failed recipients, refused logins, refused commands, rate-limit refusals); senders gone from every source but active in the window come with `Removed` | `query.ErrNoSender` |
+| `query.SenderOverview.State()`, `query.SenderKey.State()` | `active`, `key_expired`, `no_active_key`, `removed`; `active`, `expired`, `revoked`: one rule for the UI's lamps and the API's JSON | |
+| `query.Service.SenderNames()` | the names of every source, from memory, for the mail list's filter | |
+| `senders.RevokeAll(ctx, store, ids, actor)` | revokes the given keys one by one (each its own event), skips one revoked meanwhile; "switch a sender off" (D76) | the first other error, with the ids done |
 | `query.ListFilter{Sender, KeyID}` | the mail list of one sender or key | `query.ErrInvalid` |
 | `query.MailDetail.Audit` | key id and source, client address, TLS, EHLO, AUTH mechanism of one mail | |
 
 Every `Store` change writes its event with the actor in the same transaction; the caller writes nothing else.
-File senders cannot be changed through `Store`; show them as read-only, with the file line as the way to change
-them.
+File senders cannot be changed through `Store` (it answers `ErrNoSender` or `ErrNoKey` for them); the UI and the API
+check the source first and show them as read-only, with the file line as the way to change them. A new key leaves the
+process in one place only: the body of the response to the request that made it (D77).
 
 ## Signals
 
@@ -559,5 +565,12 @@ starts from the newest of its events in the event log (`store.LastOf`), so a res
   The chart test renders ranges from 1 to 123 million mails and checks that no axis label overlaps another or leaves
   the drawing. `STATS_BENCH_PER_DAY=50000 go test ./internal/store -run TestStatsPerformance` measures the store on a
   generated database (D75).
+- Sender keys in the UI and the API: every change refused without the CSRF token, without a session, with a wrong
+  password (UI) or with a `read` token (`403`, `api.forbidden`); the key on the result page and in the `201` only:
+  never on any page the crawler reaches afterwards, in the log, in an event or in the database file; file senders
+  read-only (no form, every change `409`, nothing written); the error codes of the API; the `sender.*` events with
+  the actor; the mail list by sender and key; the audit block on a mail's page and in the admin's detail.
+  `cmd/postwerk` runs the program with `POSTWERK_SENDER_KEYS=db`: a sender created through the API logs in with its
+  key and sends, and the key is not on stdout.
 - TLS tests use a self-signed certificate made in the test; the delivery package takes the trusted roots through an
   unexported option, so there is no "skip verification" setting.

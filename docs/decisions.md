@@ -1135,3 +1135,55 @@ Measured on generated databases of 90 days, in one container on a laptop
 first 30 days at 50,000 a day took 16.6 s. "After a day of changes": an event about a mail in each of the last 24
 hours, so those hours are counted again. Even the slowest first view never holds the connection longer than one
 hour's read.
+
+## D76 A sender is never deleted; "revoke all keys" switches it off
+
+The UI and the API could offer to delete a managed sender. They do not.
+
+- **The record outlives the key.** Mail records, events and the error tracker name the sender and the key id
+  (D65). A deleted sender would leave those names pointing at nothing, and a new application could take the same name
+  a week later, so "who sent this?" would have two answers. Revoked keys stay in `sender_keys` for the same reason.
+- **Switching off is what is needed.** A leaked key, an application taken out of service and a contract that ended
+  all need the same: no more logins, at once. Revoking every key does that, `Refresh` ends open sessions at their next
+  `MAIL`, and one action ("Revoke all keys", `POST /v1/senders/{name}/revoke-all`) makes it as easy as a delete. A
+  rotation switches the sender on again.
+- **One event per key.** The action revokes the keys one by one through `senders.Store.Revoke`, so it needs nothing
+  new in the store and every key has its own `sender.revoked` with the actor. Should one revoke fail, the ones before
+  it stay revoked and the answer says so; a retry revokes the rest.
+- **What stays is small and not about mail.** A sender row holds a name, a policy and who changed it
+  (privacy-and-security.md); it has no retention period. If a name ever needs to go, it goes with the database.
+
+## D77 A new key is shown once, in the response to the request that made it
+
+- **No redirect after the POST.** The usual Post/Redirect/Get would need the key on the server between the two
+  requests: in the session, a flash or a URL. Rendering the result page as the POST's own response keeps the key in one
+  place, that response body, with `Cache-Control: no-store`. A reload posts the form again (the browser asks first): a
+  create is refused because the name is taken; a rotation is refused at two active keys, and otherwise makes a key that
+  the reloaded page shows. No key is ever made without being shown.
+- **Never written anywhere.** The store keeps the SHA-256 of the secret part; events carry `key=<id>`; logs carry
+  ids. Tests search every page reachable afterwards, the log, every event, stdout and the database file for it.
+- **A read-only field to copy from.** The UI has no JavaScript (U9), so there is no copy button: a read-only text field
+  that wraps the 69 characters, with the SMTP settings (user name, the key as password, STARTTLS, `AUTH PLAIN`, the
+  port) next to it. A lost key is replaced by a rotation, never shown again.
+
+## D78 Sender endpoints in the API: admin tokens, the whole policy, codes from the senders errors
+
+- **Admin only, also for reading.** The list shows envelope sender patterns, limits, key ids and activity: what an
+  attacker would want to know about the relay. A `read` token gets `403` and `api.forbidden`, like the lists.
+- **The key in `201`, once,** as in the UI (D77). Create and rotate take an optional `expires_at` in RFC 3339; the
+  policy is the same object in create and `PUT …/policy`, and a `PUT` replaces it as a whole, so a pipeline states the
+  policy it wants instead of patching fields it cannot see.
+- **Errors by cause.** The `senders` errors map to codes a script can test: `invalid_name`, `invalid_policy`,
+  `invalid_expiry` (400), `not_found` (404), `name_taken`, `too_many_keys`, `already_revoked`, `nothing_to_revoke`
+  (409). `file_sender` (409) and `db_off` (409) say that the change belongs in the senders file.
+- **No `DELETE`** (D76). The mail list takes `sender` and `key_id`, and an admin's mail detail carries the audit block,
+  so a leaked key is traced from the API alone.
+
+## D79 Sender and key states are lamps of the existing statuses; the pages live under Settings
+
+A new feature that needs colour takes a status token (design-system.md). A key that works is lit like a handed-off
+mail (`active`); an expired one is the amber caution diamond, because the application that still holds it probably
+fails to log in; a revoked key or a sender with every key revoked is the calm bar of `skipped`, because that was a
+person's decision and needs no look. A key that expires within a week gets an amber tag. Senders are a setting of the
+relay, not a view of mail, so they are a section of the settings page with a page per sender, not another item in the
+navigation; the mail page and the mail list link to them.

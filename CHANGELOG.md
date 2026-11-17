@@ -27,7 +27,17 @@ One short line per change, written for operators. At a release, Unreleased becom
   limit `451 4.7.1` (new event `ingress.rate_limited`, warn).
 - `POSTWERK_SENDER_KEYS` (`file`, the default and 1.0's behaviour; `db`; `both`): senders can also be kept in the
   database, with create, rotate, revoke and policy changes as events with the actor (`sender.created`,
-  `sender.rotated`, `sender.revoked`, `sender.policy_changed`). The UI pages and API endpoints for them follow.
+  `sender.rotated`, `sender.revoked`, `sender.policy_changed`).
+- UI: **Settings → Sender keys** lists every sender of the file and the database with its keys, policy, last login and
+  the last 24 hours; a page per sender. Database senders are created, rotated, revoked (one key or all) and given a
+  policy there, with the admin's password; the new key is shown once, with the SMTP settings. File senders are
+  read-only. Senders are not deleted: "Revoke all keys" switches one off.
+- API: `GET /v1/senders`, `GET /v1/senders/{name}`, `POST /v1/senders` (the key in the response, once),
+  `POST /v1/senders/{name}/rotate`, `…/keys/{id}/revoke`, `…/revoke-all`, `PUT /v1/senders/{name}/policy`, for
+  `admin` tokens, with error codes such as `name_taken`, `too_many_keys`, `file_sender`. Senders can be provisioned
+  from CI (docs/api.md).
+- The mail list filters by sender and key id (UI; API: `sender`, `key_id`); a mail's page shows the key, client
+  address, TLS, `EHLO` and `AUTH` mechanism it came with, and so does an admin token's mail detail (`audit`).
 - Every mail records the key it came with, the client address, TLS version and cipher, the `EHLO` name and the
   `AUTH` mechanism; `mail.accepted` carries `source=… key=… client=…` as text. Removed with the mail record.
 - `sender.volume_high` (error) when a sender sends far more than its own average of the past week
