@@ -70,6 +70,12 @@ One short line per change, written for operators. At a release, Unreleased becom
 - The health listener opens before the store, so `/healthz` answers while Postwerk waits for the lock or runs
   recovery, and `/readyz` fails until it can take mail.
 
+### Security
+
+- The statistics cache also counts its entries: requests for ever new sender or target names (which need not
+  exist) cached an empty entry per hour of the range each and grew the memory without limit (D80).
+- Docs: a policy's `from=` checks the envelope sender only, not the `From:` header; restrict that at the provider.
+
 ## [1.0.0] - 2026-11-17
 
 The first release.

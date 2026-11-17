@@ -32,8 +32,14 @@ import (
 const StatsChunk = time.Hour
 
 // StatsCacheCells bounds the counts the cache keeps (32 bytes each); an
-// hour takes about 100, so this is a little more than 90 days.
+// hour takes about 100, so this is a little more than 90 days. An entry
+// itself counts as statsEntryCells more, so hours without any count (a
+// filter for a sender that sent nothing) are bounded too.
 const StatsCacheCells = 250_000
+
+// statsEntryCells is about what an entry costs besides its cells (key,
+// pointer, map slot), in cells.
+const statsEntryCells = 4
 
 // StatsFilter selects what Stats counts. A bucket starts at a multiple of
 // Width since the Unix epoch, so buckets are aligned in UTC.
@@ -168,7 +174,7 @@ type statsCache struct {
 	names   []string
 	nameIDs map[string]uint16
 	entries map[statsKey]*statsEntry
-	cells   int
+	cells   int   // sum of the entries' weight
 	clock   int64 // counts runs, for eviction
 }
 
@@ -183,6 +189,10 @@ type statsEntry struct {
 	cells []cell
 	used  int64
 }
+
+// weight is what an entry counts against StatsCacheCells: its cells and
+// the entry itself.
+func (e *statsEntry) weight() int { return len(e.cells) + statsEntryCells }
 
 func (c *statsCache) id(name string) (uint16, error) {
 	if id, ok := c.nameIDs[name]; ok {
@@ -204,7 +214,7 @@ func (c *statsCache) id(name string) (uint16, error) {
 func (c *statsCache) drop(gone func(statsKey) bool) {
 	for k, e := range c.entries {
 		if gone(k) {
-			c.cells -= len(e.cells)
+			c.cells -= e.weight()
 			delete(c.entries, k)
 		}
 	}
@@ -216,8 +226,12 @@ func (c *statsCache) put(k statsKey, cells []cell) {
 	if c.entries == nil {
 		c.entries = map[statsKey]*statsEntry{}
 	}
-	c.entries[k] = &statsEntry{cells: cells, used: c.clock}
-	c.cells += len(cells)
+	if old := c.entries[k]; old != nil {
+		c.cells -= old.weight()
+	}
+	e := &statsEntry{cells: cells, used: c.clock}
+	c.entries[k] = e
+	c.cells += e.weight()
 	if c.cells <= StatsCacheCells {
 		return
 	}
@@ -227,7 +241,7 @@ func (c *statsCache) put(k statsKey, cells []cell) {
 		if c.cells <= StatsCacheCells*3/4 {
 			break
 		}
-		c.cells -= len(c.entries[old].cells)
+		c.cells -= c.entries[old].weight()
 		delete(c.entries, old)
 	}
 }

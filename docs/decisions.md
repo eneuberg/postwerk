@@ -1187,3 +1187,13 @@ fails to log in; a revoked key or a sender with every key revoked is the calm ba
 person's decision and needs no look. A key that expires within a week gets an amber tag. Senders are a setting of the
 relay, not a view of mail, so they are a section of the settings page with a page per sender, not another item in the
 navigation; the mail page and the mail list link to them.
+
+## D80 The statistics cache counts its entries, not only their counts
+
+D75 bounded the cache by the counts it holds. An hour without any count is cached too, as an entry with no counts,
+and each distinct filter has its own entries: a request for a sender name that never sent (the name only has to be
+well-formed) caches one empty entry per hour of the range, 2,160 for 90 days. Requests with ever new names grew the
+cache without limit; only an admin can make them, but a stolen admin token or a script with a bug could fill the
+memory of the relay. Each entry now counts as four counts besides its own (about what its key and map slot cost), so
+the bound of 250,000 (about 8 MiB) holds whatever the filters, and the least recently used hours are dropped first as
+before. A normal 90-day view adds under 9,000 to its count.
