@@ -879,3 +879,19 @@ empty CIDR list: `networkPolicy.egress.sentry.cidrs: []` with the Sentry sink on
   the rule; an empty peer list never does.
 - **CI proves it.** Every rendered NetworkPolicy is checked for an egress rule without peers, the default for the
   two explicit CIDRs, and each empty list for a failed render.
+
+## D60 Postwerk's own header fields come first, `X-Postwerk-Id` last
+
+Postwerk writes its header fields in front of the message as received (P5). A message whose first line starts with
+white space is malformed, but a target reads that line as the continuation of the field written just before it. With
+`X-Mailjet-TrackClick: 0` last, a sender could turn it into `0 1` and so get around `MAILJET_TRACKING=off` (D47),
+which keeps password reset links out of Mailjet's click tracking; with tracking left to the account it could append
+to `X-MJ-CustomID`.
+
+- **Order, not repair.** The fields are written as `X-Mailjet-TrackOpen`, `X-Mailjet-TrackClick` (tracking off),
+  `X-MJ-CustomID` (Mailjet), then `X-Postwerk-Id`. A stray continuation can only reach `X-Postwerk-Id`, which carries
+  nothing the target acts on. The message itself stays byte for byte as received; refusing or cleaning such a message
+  would be a change of P5 for a case no honest sender produces.
+- **Allow-lists fail closed on case folding to ASCII.** A recipient with a non-ASCII character that lower-cases to an
+  ASCII one (the Kelvin sign `K` becomes `k`) is never allowed by `ALLOW_RECIPIENTS`: it would match an ASCII pattern
+  while the target receives a different address.

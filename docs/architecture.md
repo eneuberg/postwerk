@@ -253,7 +253,8 @@ target up, moves the next attempt of every queued delivery of the target to now 
 (`query.Options.Health`, wired in `cmd/postwerk`); `query` does not import `delivery`.
 
 **Mailjet tracking and CA files.** For a `STATUS=mailjet` target with `MAILJET_TRACKING=off`, `headersFor` adds
-`X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0` after `X-MJ-CustomID`, and `stripFor` removes the sender's
+`X-Mailjet-TrackOpen: 0` and `X-Mailjet-TrackClick: 0` before `X-MJ-CustomID` (`X-Postwerk-Id` is always last,
+D60), and `stripFor` removes the sender's
 fields of those names; `MaxAddedBytes` and `message.Size` count them like the other added lines (D47). A target with
 `CA_FILE` has its own `x509.CertPool` (`config.Target.RootCAs`), used instead of the system roots in `tlsConfig`
 (D48).

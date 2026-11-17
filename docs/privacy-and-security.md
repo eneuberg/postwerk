@@ -369,7 +369,9 @@ HMAC; "pseudonymize after N days" would then mean deleting the ciphertext and ke
   and carry an SBOM and build provenance; check the signature and pin the digest before you run one
   ([kubernetes.md](kubernetes.md#image), D39).
 - **Headers to recipients.** Postwerk removes every `X-Postwerk-*` header set by the sender, including `X-Postwerk-Ref`,
-  and adds only `X-Postwerk-Id` (and `X-MJ-CustomID` for Mailjet). The id reaches the recipient; it carries no personal
+  and adds only `X-Postwerk-Id` (and for Mailjet `X-MJ-CustomID`, with tracking off also `X-Mailjet-TrackOpen: 0` and
+  `X-Mailjet-TrackClick: 0`). `X-Postwerk-Id` is written last, so a malformed message that starts with a continuation
+  line cannot change the tracking switches (D60). The id reaches the recipient; it carries no personal
   data. A `Message-ID` with an internal hostname also reaches the recipient; that is the sender's choice.
 - **Capture targets in production.** A capture tool holds working password reset links. Whoever can open it can take
   over accounts. Default: no capture target in production. If one is needed for a short time: mails with credentials

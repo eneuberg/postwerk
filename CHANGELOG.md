@@ -84,6 +84,10 @@ The first release.
 - Helm chart closed by default: one replica, ClusterIP only, NetworkPolicy, non-root, read-only root file system, no
   service account token.
 - Build inputs pinned by digest; releases only from tags on `main`.
+- `X-Postwerk-Id` is written after Postwerk's other header fields, so a message that starts with a continuation line
+  cannot append to `X-Mailjet-TrackClick` and turn Mailjet tracking back on (D60).
+- `ALLOW_RECIPIENTS` refuses an address with a character that only lower-cases to ASCII (the Kelvin sign), which
+  would otherwise match an ASCII pattern (D60).
 
 [Unreleased]: https://github.com/eneuberg/postwerk/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/eneuberg/postwerk/releases/tag/v1.0.0
