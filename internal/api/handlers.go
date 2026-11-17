@@ -121,7 +121,8 @@ type listResponse struct {
 	Mails   []mailSummary `json:"mails"`
 }
 
-var listParams = map[string]bool{"state": true, "target": true, "from": true, "to": true, "page": true}
+var listParams = map[string]bool{"state": true, "target": true, "sender": true, "key_id": true, "from": true, "to": true,
+	"page": true}
 
 // mails lists mails with filters, newest first, query.PageSize per page
 // (H6, admin only). Filters never hold an address, so they may be URL
@@ -133,10 +134,11 @@ func (a *API) mails(r *http.Request, _ caller) result {
 	}
 	for k, v := range q {
 		if !listParams[k] || len(v) != 1 {
-			return failed(http.StatusBadRequest, "bad_request", "Known parameters, each once: state, target, from, to, page.")
+			return failed(http.StatusBadRequest, "bad_request",
+				"Known parameters, each once: state, target, sender, key_id, from, to, page.")
 		}
 	}
-	f := query.ListFilter{State: q.Get("state"), Target: q.Get("target")}
+	f := query.ListFilter{State: q.Get("state"), Target: q.Get("target"), Sender: q.Get("sender"), KeyID: q.Get("key_id")}
 	for _, d := range []struct {
 		name string
 		to   *time.Time
@@ -173,7 +175,7 @@ func (a *API) mails(r *http.Request, _ caller) result {
 
 // filterProblem names what was wrong, from a fixed set of texts.
 func filterProblem(err error) string {
-	for _, p := range []string{"page", "state", "target", "from is after to"} {
+	for _, p := range []string{"page", "state", "target", "sender", "key", "from is after to"} {
 		if err.Error() == query.ErrInvalid.Error()+": "+p {
 			return p
 		}

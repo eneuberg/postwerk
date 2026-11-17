@@ -6,7 +6,8 @@
 // this id, ref, Message-ID or address?" with a bearer token. A read token can
 // only look mails up, one search or one mail at a time, with addresses
 // masked; an admin token can also list mails and see the per-target
-// overview, with addresses in full. Nothing here returns message content,
+// overview, with addresses in full, and manage the sender keys. Nothing here
+// returns message content,
 // the subject or any header but Message-ID: all reads go through
 // internal/query, which never hands content out and masks by access level.
 //
@@ -37,6 +38,7 @@ import (
 	"github.com/eneuberg/postwerk/internal/fold"
 	"github.com/eneuberg/postwerk/internal/query"
 	"github.com/eneuberg/postwerk/internal/resolve"
+	"github.com/eneuberg/postwerk/internal/senders"
 	"github.com/eneuberg/postwerk/internal/store"
 )
 
@@ -100,6 +102,10 @@ type Options struct {
 	// Resolve runs the admin actions on a delivery: close and resend
 	// (admin tokens only).
 	Resolve *resolve.Service
+	// Senders creates and changes the senders kept in the database
+	// (senders.Store, admin tokens only); nil when POSTWERK_SENDER_KEYS is
+	// file. The senders themselves are read through Query.
+	Senders senders.Store
 	Tokens  Verifier
 	Events  EventLog
 	// Hosts, if not empty, are the only Host names (without port) the API
@@ -155,6 +161,7 @@ func New(opts Options) (*API, error) {
 	a.failures = fold.New(opts.AuthFailWindow, a.writeAuthFailed)
 	mux := http.NewServeMux()
 	a.routes(mux)
+	a.senderRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "No such endpoint (docs/api.md).")
 	})

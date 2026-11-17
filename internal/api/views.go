@@ -122,6 +122,20 @@ type mailDetail struct {
 	Deliveries      []delivery   `json:"deliveries"`
 	Events          []event      `json:"events"`
 	EventsTruncated bool         `json:"events_truncated"`
+	// Audit is where the mail came from (D65); only for admin tokens.
+	Audit *audit `json:"audit,omitempty"`
+}
+
+// audit is the credential and the connection a mail came with. Every field
+// is left out when it was not recorded.
+type audit struct {
+	KeyID      string `json:"key_id,omitempty"`
+	KeySource  string `json:"key_source,omitempty"`
+	ClientIP   string `json:"client_ip,omitempty"`
+	TLSVersion string `json:"tls_version,omitempty"`
+	TLSCipher  string `json:"tls_cipher,omitempty"`
+	EHLO       string `json:"ehlo,omitempty"`
+	AuthMech   string `json:"auth_mechanism,omitempty"`
 }
 
 // detail is the JSON of one mail; full is set for admin tokens.
@@ -133,6 +147,11 @@ func detail(m query.MailDetail, full bool) mailDetail {
 		Stored:       m.Stored, RawPurgedAt: optTime(m.RawPurgedAt), PseudonymizedAt: optTime(m.PseudonymizedAt),
 		Status: m.Status, Recipients: []recipient{}, Deliveries: []delivery{}, Events: []event{},
 		EventsTruncated: m.EventsTruncated,
+	}
+	if full {
+		x := m.Audit
+		d.Audit = &audit{KeyID: x.KeyID, KeySource: x.KeySource, ClientIP: x.ClientIP, TLSVersion: x.TLSVersion,
+			TLSCipher: x.TLSCipher, EHLO: x.EHLO, AuthMech: x.AuthMech}
 	}
 	for i, r := range m.Recipients {
 		d.Recipients = append(d.Recipients, recipient{Position: i, address: addr(r)})
