@@ -2,8 +2,8 @@
   <title id="title">Postwerk architecture</title>
   <desc id="desc">Senders deliver finished mails over SMTP to the ingress. The ingress stores each mail, then replies 250. Delivery fetches due mails from the store and sends one copy to each target: a provider such as Mailjet, a capture tool such as Mailpit, or any SMTP server. Provider status polls the provider's API and writes the result to the store. The reporter reads the event log and reports to stdout, OpenTelemetry, Sentry protocol and webhooks. The query API and the UI read from the store and answer over HTTP: a support tool or an admin asks whether a mail got through. Built: ingress, store, delivery, the reporter with the stdout and Sentry-protocol sinks, the query API and the UI. Planned, not built yet: provider status and the OpenTelemetry and webhook sinks.</desc>
   <style>
-    svg { --ink: #18212b; --muted: #5a6573; --accent: #0e6f68; }
-    @media (prefers-color-scheme: dark) { svg { --ink: #e5eaf0; --muted: #9aa6b3; --accent: #4cc2b3; } }
+    svg { --ink: #1c201e; --muted: #555d58; --accent: #262b28; }
+    @media (prefers-color-scheme: dark) { svg { --ink: #e4e8e3; --muted: #a0a9a2; --accent: #e4e8e3; } }
     text { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; fill: var(--ink); }
     .h { font-weight: 600; }
     .s { font-size: 11.5px; fill: var(--muted); }

@@ -1,4 +1,4 @@
-<img src="docs/logo.svg" width="72" height="72" alt="Postwerk logo: an envelope that fans out to three targets">
+<img src="docs/logo.svg" width="72" height="72" alt="Postwerk logo: a track plan where one line branches into three, each ending in a signal lamp">
 
 # Postwerk
 

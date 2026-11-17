@@ -2,51 +2,51 @@
   <title id="t">Postwerk mail flow, reports and audit lookup</title>
   <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI; the query API is planned.</desc>
   <style>
-    .card   { fill: #f6f8fa; stroke: #d0d7de; }
-    .box    { fill: #ffffff; stroke: #8c959f; stroke-width: 1.2; }
-    .core   { fill: #ffffff; stroke: #0e6f68; stroke-width: 2; }
-    .edge   { fill: none; stroke: #8c959f; stroke-width: 1.4; }
+    .card   { fill: #f3f5f1; stroke: #cdd2cc; }
+    .box    { fill: #ffffff; stroke: #8f9791; stroke-width: 1.2; }
+    .core   { fill: #ffffff; stroke: #262b28; stroke-width: 2; }
+    .edge   { fill: none; stroke: #8f9791; stroke-width: 1.4; }
     .plan   { stroke-dasharray: 5 4; }
-    .txt    { fill: #18212b; font: 500 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .title  { fill: #18212b; font: 600 16px system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .muted  { fill: #5a6573; font: 400 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .small  { fill: #5a6573; font: 500 10px system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .log    { fill: #18212b; font: 400 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .note   { fill: #18212b; font: 500 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
-    .tick   { fill: none; stroke: #0e6f68; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .icon   { fill: none; stroke: #18212b; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-    .rule   { stroke: #d0d7de; stroke-width: 1; }
-    .disk   { fill: #e6f2f1; stroke: #0e6f68; stroke-width: 1.4; }
-    .pill   { fill: #f6f8fa; stroke: #8c959f; stroke-width: 1; stroke-dasharray: 3 2; }
-    .mail   { fill: #0e6f68; }
-    .evt    { fill: #8c959f; }
-    .hl     { fill: none; stroke: #0e6f68; stroke-width: 2; opacity: 0; }
-    .scan   { fill: #0e6f68; fill-opacity: 0.08; stroke: #0e6f68; stroke-width: 1.4; opacity: 0; }
-    .bad    { fill: #cf222e; }
-    .badln  { fill: none; stroke: #cf222e; stroke-width: 2; stroke-linecap: round; }
-    .badtxt { fill: #cf222e; }
-    .badbox { fill: none; stroke: #cf222e; stroke-width: 2; }
+    .txt    { fill: #1c201e; font: 500 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .title  { fill: #1c201e; font: 600 16px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .muted  { fill: #555d58; font: 400 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .small  { fill: #555d58; font: 500 10px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .log    { fill: #1c201e; font: 400 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .note   { fill: #1c201e; font: 500 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .tick   { fill: none; stroke: #1e7340; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon   { fill: none; stroke: #1c201e; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .rule   { stroke: #cdd2cc; stroke-width: 1; }
+    .disk   { fill: #e3e6e1; stroke: #262b28; stroke-width: 1.4; }
+    .pill   { fill: #f3f5f1; stroke: #8f9791; stroke-width: 1; stroke-dasharray: 3 2; }
+    .mail   { fill: #1f5fa8; }
+    .evt    { fill: #8f9791; }
+    .hl     { fill: none; stroke: #1f5fa8; stroke-width: 2; opacity: 0; }
+    .scan   { fill: #1f5fa8; fill-opacity: 0.08; stroke: #1f5fa8; stroke-width: 1.4; opacity: 0; }
+    .bad    { fill: #b42318; }
+    .badln  { fill: none; stroke: #b42318; stroke-width: 2; stroke-linecap: round; }
+    .badtxt { fill: #b42318; }
+    .badbox { fill: none; stroke: #b42318; stroke-width: 2; }
 
     @media (prefers-color-scheme: dark) {
-      .card  { fill: #161b22; stroke: #30363d; }
-      .box   { fill: #0d1117; stroke: #6e7681; }
-      .core  { fill: #0d1117; stroke: #4cc2b3; }
-      .edge  { stroke: #6e7681; }
-      .txt, .title, .log, .note { fill: #e5eaf0; }
-      .muted, .small { fill: #9aa6b3; }
-      .tick  { stroke: #4cc2b3; }
-      .icon  { stroke: #e5eaf0; }
-      .rule  { stroke: #30363d; }
-      .disk  { fill: #12302d; stroke: #4cc2b3; }
-      .pill  { fill: #161b22; stroke: #6e7681; }
-      .mail  { fill: #4cc2b3; }
-      .evt   { fill: #6e7681; }
-      .hl    { stroke: #4cc2b3; }
-      .scan  { fill: #4cc2b3; stroke: #4cc2b3; }
-      .bad   { fill: #ff7b72; }
-      .badln { stroke: #ff7b72; }
-      .badtxt { fill: #ff7b72; }
-      .badbox { stroke: #ff7b72; }
+      .card  { fill: #232825; stroke: #3a423d; }
+      .box   { fill: #1b1f1d; stroke: #5e6862; }
+      .core  { fill: #1b1f1d; stroke: #e4e8e3; }
+      .edge  { stroke: #5e6862; }
+      .txt, .title, .log, .note { fill: #e4e8e3; }
+      .muted, .small { fill: #a0a9a2; }
+      .tick  { stroke: #5cc489; }
+      .icon  { stroke: #e4e8e3; }
+      .rule  { stroke: #3a423d; }
+      .disk  { fill: #2b312d; stroke: #e4e8e3; }
+      .pill  { fill: #232825; stroke: #5e6862; }
+      .mail  { fill: #7fb2f0; }
+      .evt   { fill: #5e6862; }
+      .hl    { stroke: #7fb2f0; }
+      .scan  { fill: #7fb2f0; stroke: #7fb2f0; }
+      .bad   { fill: #ff8a73; }
+      .badln { stroke: #ff8a73; }
+      .badtxt { fill: #ff8a73; }
+      .badbox { stroke: #ff8a73; }
     }
 
     /* 10 s loop. Round 1 (0-37 %): a mail is delivered to both targets, every
