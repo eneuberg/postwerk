@@ -2,11 +2,12 @@ apiVersion: v2
 name: postwerk
 description: Postwerk, an outbound SMTP relay that stores, forwards and tracks every mail. Cluster-internal only.
 type: application
-version: 0.1.0
+version: 1.0.0
 # The image tag the chart uses by default (image.tag). A release tag
-# v<appVersion> publishes ghcr.io/eneuberg/postwerk:<appVersion>; the
-# release workflow refuses a tag that does not match.
-appVersion: "0.1.0"
+# v<appVersion> publishes ghcr.io/eneuberg/postwerk:<appVersion>. version and
+# appVersion are both the Postwerk version (docs/versioning.md); the release
+# workflow refuses a tag that does not match both.
+appVersion: "1.0.0"
 home: https://github.com/eneuberg/postwerk
 sources:
   - https://github.com/eneuberg/postwerk

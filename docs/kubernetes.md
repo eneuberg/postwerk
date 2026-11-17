@@ -32,8 +32,8 @@ send in progress always finishes (configuration.md, section "Shutdown").
 ## 2. Before you install
 
 - **An image.** The chart uses `ghcr.io/eneuberg/postwerk` with the chart's `appVersion` as tag. Verify its signature
-  and pin it by digest (below). No version is released yet: until the first release, build your own,
-  `docker build -t registry.example.test/postwerk:dev .`, push it and set `image.repository` and `image.tag`.
+  and pin it by digest (below). For your own build, `docker build -t registry.example.test/postwerk:dev .`, push it
+  and set `image.repository` and `image.tag`.
 - **A namespace**, for example `mail`.
 - **A storage class with local block storage** (`ReadWriteOnce`). SQLite needs real file locks and `fsync`; a network
   file system such as NFS or SMB is not supported. 1 GiB is plenty for typical transactional volumes.
@@ -44,8 +44,8 @@ send in progress always finishes (configuration.md, section "Shutdown").
 ### Image
 
 Released versions are published as `ghcr.io/eneuberg/postwerk:<version>`, one for each release tag `v<version>`, for
-`linux/amd64` and `linux/arm64`, with an SBOM and a build provenance attached. No version is released yet; the
-versions and their changes are listed in [CHANGELOG.md](../CHANGELOG.md). There is no `latest` tag. Only a tag on a
+`linux/amd64` and `linux/arm64`, with an SBOM and a build provenance attached, starting with 1.0.0; the versions
+and their changes are listed in [CHANGELOG.md](../CHANGELOG.md). There is no `latest` tag. Only a tag on a
 commit of `main` is released, and every build input (actions, the Dockerfile frontend, the Go and BuildKit images) is
 pinned by digest. The image is signed keyless with [cosign](https://docs.sigstore.dev/cosign/) by the release
 workflow, so the signature names the workflow and the tag it ran for. Check it with cosign 3 or newer before you use a

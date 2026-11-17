@@ -1,7 +1,7 @@
 # Postwerk FAQ
 
-Short answers about Postwerk, a self-hosted SMTP relay for outgoing transactional email. Postwerk is in early
-development and not ready for production yet. Planned features are marked as planned.
+Short answers about Postwerk, a self-hosted SMTP relay for outgoing transactional email. Postwerk is at version
+1.0 and a young project. Planned features are marked as planned.
 
 ## Is Postwerk a mail server?
 

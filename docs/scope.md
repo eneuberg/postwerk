@@ -3,10 +3,10 @@
 What Postwerk should do, what it should not do, how it differs from other ways to send mail, and whether it fits your
 setup. It starts from the ideal and compares it with the current [design](design.md) at the end.
 
-Status: early development. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
+Status: version 1.0, a young project. The foundation is built (SMTP ingress, durable queue, per-target delivery with retries,
 event log on stdout and to Sentry or GlitchTip, retention and encryption at rest, the internal UI and the query API,
 with an admin's close and resend of a delivery); provider status and the OpenTelemetry and webhook sinks are planned.
-Nothing here is measured production behavior yet.
+Little here is measured production behavior yet.
 
 ## 1. The ideal in one paragraph
 
@@ -136,7 +136,7 @@ What it costs:
 | Per-mail status lookup | internal UI and a JSON query API by id, sender reference, `Message-ID` or address, plus the event log | log files and `postqueue` | logs |
 | Provider status after hand-off | planned, polled (Mailjet first) | no | no |
 | Error reports to monitoring | events as JSON on stdout, error events to Sentry or GlitchTip; OpenTelemetry, webhook planned | via log shipping | via log shipping |
-| Maturity | early development, foundation built, not production-ready | decades of production use | younger project |
+| Maturity | 1.0, young project, little production use yet | decades of production use | younger project |
 
 The point is not that Postfix or maddy are worse. They are complete mail servers. They solve transport, including the
 hard parts Postwerk leaves to a provider. What they do not give you out of the box is a per-mail answer to "what

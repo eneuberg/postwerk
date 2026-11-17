@@ -1,7 +1,8 @@
 # Getting started
 
-Postwerk is in early development and not ready for production yet. This page runs it on a local machine with Docker
-Compose and Mailpit, then shows the commands and settings for your own setup.
+Postwerk is at version 1.0 and a young project: try it with a capture target next to your provider and watch the
+events before you rely on it. This page runs it on a local machine with Docker Compose and Mailpit, then shows the
+commands and settings for your own setup.
 
 ## Run the example with Docker Compose and Mailpit
 
@@ -87,8 +88,8 @@ capture copy in production.
 ## Use a released image
 
 Released versions are published as `ghcr.io/eneuberg/postwerk:<version>` (`linux/amd64`, `linux/arm64`; no `latest`
-tag), signed keyless with cosign by the release workflow. No version is released yet: until the first release, build
-the image yourself as above. The versions and what changed are in [CHANGELOG.md](../CHANGELOG.md).
+tag), signed keyless with cosign by the release workflow, starting with 1.0.0. The versions and what changed are in
+[CHANGELOG.md](../CHANGELOG.md).
 
 Verify a version with cosign 3 or newer before you run it:
 

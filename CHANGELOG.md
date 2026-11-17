@@ -10,7 +10,9 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ## [Unreleased]
 
-No version has been released yet. This section lists what exists today.
+## [1.0.0] - 2026-11-17
+
+The first release.
 
 ### Added
 
@@ -57,6 +59,7 @@ No version has been released yet. This section lists what exists today.
 - STARTTLS and API certificates reloaded from their files without a restart, with `tls.*` events before they expire:
   a warning from 14 days, an error from 7 days.
 - Commands `hash-password`, `gen-key`, `gen-token`, `gen-api-token` and `version`.
+- Database migrations at start, forward only; the start log names the schema version and the migrations applied.
 - Container image from `scratch`, a Helm chart and a Docker Compose example with Mailpit.
 - Release workflow for a signed multi-platform image on GHCR with SBOM and provenance.
 
@@ -81,4 +84,5 @@ No version has been released yet. This section lists what exists today.
   service account token.
 - Build inputs pinned by digest; releases only from tags on `main`.
 
-[Unreleased]: https://github.com/eneuberg/postwerk/commits/main
+[Unreleased]: https://github.com/eneuberg/postwerk/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/eneuberg/postwerk/releases/tag/v1.0.0

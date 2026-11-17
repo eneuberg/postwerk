@@ -2,7 +2,8 @@
 
 # Postwerk
 
-**Early development: not ready for production yet.**
+**Version 1.0.** A young project: start with a capture target (such as Mailpit) next to your provider and watch the
+events before you rely on it.
 
 Postwerk is a small, self-hosted SMTP relay for outgoing transactional email, written in Go. Applications in Docker or
 Kubernetes send their mail through it instead of straight to a provider. Postwerk keeps an audit log of every mail and
@@ -13,7 +14,7 @@ tracks its delivery to each target. It runs as one binary with one SQLite file.
 To try it on your machine with Docker Compose and Mailpit, see [Getting started](docs/getting-started.md). To run it in
 a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md). Released versions
 are published as `ghcr.io/eneuberg/postwerk:<version>`, signed with cosign ([how to verify](docs/kubernetes.md#image)).
-No version is released yet; until then, build the image yourself with `docker build`.
+The first release is 1.0.0; you can also build the image yourself with `docker build`.
 
 ## Why put a relay in front of your email provider
 
@@ -56,7 +57,7 @@ and being able to say what happened to each one.
 | Copy to Mailjet and Mailpit at once | each target tracked on its own | several `deliver_to` | extra BCC recipient, not tracked |
 | Mail content on disk | encrypted, removed once handed off | plain in the queue | plain in the queue |
 | Setup | env variables, non-root, one SQLite file | own config language | `main.cf`/`master.cf`, master runs as root |
-| Maturity | early development | younger project | decades of production use |
+| Maturity | 1.0, young project | younger project | decades of production use |
 
 Use Postfix or maddy if you need to receive mail, host mailboxes or sign DKIM yourself. Full comparison and other
 options: [docs/scope.md](docs/scope.md).
