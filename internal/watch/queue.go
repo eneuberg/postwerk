@@ -18,6 +18,15 @@ const (
 // QueueInterval is how often the queues are looked at.
 const QueueInterval = time.Minute
 
+// repeatSlack is how early a repeat of queue.stale may come. The ticks are
+// QueueInterval apart, but each check reads the clock (and stores that as
+// the time of its event) a little after its tick, by a varying amount, so two
+// checks can be slightly less than QueueInterval apart. Without the slack a
+// Repeat of one interval waited for the next check: a repeat every 2 minutes
+// for POSTWERK_QUEUE_STALE_REPEAT=1m. With half an interval the repeat comes
+// with the first check at or after Repeat, however the checks drift.
+const repeatSlack = QueueInterval / 2
+
 // QueueStore is what the queue check needs from the store.
 type QueueStore interface {
 	Store
@@ -38,7 +47,8 @@ type QueueOptions struct {
 	// the check off.
 	After time.Duration
 	// Repeat, if not 0, writes queue.stale again while a target stays
-	// stale, at most this often. 0: once per change.
+	// stale, with the first check at or after this interval (repeatSlack).
+	// 0: once per change.
 	Repeat time.Duration
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -126,7 +136,7 @@ func (q *Queue) Check(ctx context.Context) error {
 		text := fmt.Sprintf("queued=%d oldest=%s after=%s", qs.Mails, Age(age), Age(q.opts.After))
 		var e store.Event
 		switch {
-		case stale && (!st.stale || q.opts.Repeat > 0 && now.Sub(st.written) >= q.opts.Repeat):
+		case stale && (!st.stale || q.opts.Repeat > 0 && now.Sub(st.written) >= q.opts.Repeat-repeatSlack):
 			level := store.Error
 			if t.Optional {
 				level = store.Warn

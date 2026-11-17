@@ -299,6 +299,56 @@ func TestQueueStale(t *testing.T) {
 	}
 }
 
+// A repeat comes with the first check at or after its interval, although the
+// checks drift by the time each one takes: with a 1m repeat, every check.
+func TestQueueStaleRepeatEveryCheck(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	st := &fakeStore{queues: map[string]store.QueueStat{
+		"mailjet": {Mails: 1, Oldest: now.Add(-time.Hour)},
+	}}
+	q, err := NewQueue(ctx, QueueOptions{Store: st, After: 15 * time.Minute, Repeat: time.Minute,
+		Now: func() time.Time { return now }, Targets: []Target{{Name: "mailjet"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		if err := q.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check() // the first queue.stale
+	// The ticks are a minute apart; each check reads the clock a little after
+	// its tick, by a varying amount.
+	delays := []time.Duration{40 * time.Millisecond, 3 * time.Millisecond, 250 * time.Millisecond, 0, 2 * time.Second}
+	tick := now
+	for i, d := range delays {
+		tick = tick.Add(QueueInterval)
+		now = tick.Add(d)
+		check()
+		if n := len(st.kinds()); n != i+2 {
+			t.Fatalf("after check %d: %d events, want %d (a repeat every check): %q", i+1, n, i+2, st.kinds())
+		}
+	}
+	// Not earlier than half an interval before it is due.
+	q, err = NewQueue(ctx, QueueOptions{Store: st, After: 15 * time.Minute, Repeat: 5 * time.Minute,
+		Now: func() time.Time { return now }, Targets: []Target{{Name: "mailjet"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(st.kinds())
+	now = now.Add(4*time.Minute + 29*time.Second)
+	check()
+	if n := len(st.kinds()); n != before {
+		t.Fatalf("repeat after 4m29s of 5m: %q", st.kinds())
+	}
+	now = now.Add(2 * time.Second)
+	check()
+	if n := len(st.kinds()); n != before+1 {
+		t.Fatalf("no repeat after 4m31s of 5m: %q", st.kinds())
+	}
+}
+
 func TestAge(t *testing.T) {
 	for d, want := range map[time.Duration]string{
 		59 * time.Second:               "0m",
