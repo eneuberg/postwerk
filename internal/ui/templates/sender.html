@@ -55,7 +55,7 @@
       <td class="c-created nowrap num">{{if .CreatedAt.IsZero}}<span class="muted">in the file</span>{{else}}{{stamp .CreatedAt}} <span class="muted">by {{.CreatedBy}}</span>{{end}}</td>
       <td class="c-exp nowrap num">{{if .ExpiresAt.IsZero}}<span class="muted">no expiry</span>{{else}}{{stamp .ExpiresAt}}{{end}}</td>
       <td class="c-used nowrap num">{{stamp .LastUsed}}</td>
-      <td class="c-rev nowrap num">{{if .RevokedAt.IsZero}}<span class="muted">—</span>{{else}}{{stamp .RevokedAt}} <span class="muted">by {{.RevokedBy}}</span>{{end}}</td>
+      <td class="c-rev nowrap num{{if .RevokedAt.IsZero}} c-none{{end}}">{{if .RevokedAt.IsZero}}<span class="muted">—</span>{{else}}{{stamp .RevokedAt}} <span class="muted">by {{.RevokedBy}}</span>{{end}}</td>
       {{if $s.Managed}}
       <td class="c-action">{{if .RevokedAt.IsZero}}
         <details class="action action-inline"{{if and (eq $v.Form "revoke") (eq $v.Key .ID)}} open{{end}}>
@@ -80,7 +80,7 @@
       <td class="c-created"><span class="muted">in the file</span></td>
       <td class="c-exp"><span class="muted">no expiry</span></td>
       <td class="c-used nowrap num">{{stamp $s.PasswordLastUsed}}</td>
-      <td class="c-rev"><span class="muted">—</span></td>
+      <td class="c-rev c-none"><span class="muted">—</span></td>
     </tr>
     {{end}}
     {{if and (not $s.Keys) (not $s.Password)}}<tr><td colspan="6" class="empty">No keys.</td></tr>{{end}}

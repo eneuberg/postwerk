@@ -11,7 +11,7 @@
 {{end}}
 
 {{define "policysummary"}}
-{{if .Removed}}<span class="muted">—</span>{{else}}
+{{if .Removed}}<span class="muted small-inline">in no source</span>{{else}}
 {{with .Policy.From}}<span class="mono break small-inline">{{join . ", "}}</span>{{else}}<span class="tag tag-warn" title="No from= patterns: a leaked key can send as any address">any envelope sender</span>{{end}}
 <br><span class="muted small-inline">{{limits .Policy}}</span>
 {{end}}

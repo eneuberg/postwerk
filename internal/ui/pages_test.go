@@ -37,7 +37,7 @@ func (h *harness) seedMail(id string, at time.Time, rcpts []string, results map[
 		ID: id, ReceivedAt: at, Sender: cmp.Or(h.sender, "shop"), EnvelopeFrom: "noreply@example.test", Recipients: rcpts,
 		MessageID: "<" + id + "@shop.example.test>", Ref: "order-" + id,
 		Raw:  []byte("Subject: Your code\r\nTo: <" + rcpts[0] + ">\r\n\r\nYour code: " + bodyMarker + "\r\n"),
-		Size: 2345,
+		Size: 2345, Audit: h.audit,
 	}
 	targets := slices.Sorted(maps.Keys(results))
 	for _, t := range targets {

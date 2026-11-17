@@ -1,5 +1,5 @@
 // Package ui serves Postwerk's internal web UI on the admin listener
-// (H3, U1–U24; docs/ui.md).
+// (H3, U1–U28; docs/ui.md).
 //
 // Every response goes through the same outer layer: strict security headers,
 // a Host check against DNS rebinding and a bound on the request body. Every

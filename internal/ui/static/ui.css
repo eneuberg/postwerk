@@ -518,7 +518,7 @@ table.keys .c-action { text-align: right; width: 1%; }
 .action-inline summary { padding: .3rem var(--sp-3); font-size: var(--fs-table); }
 .action-inline[open] { display: block; min-width: 18rem; }
 .action-inline form { padding: var(--sp-2) var(--sp-3) var(--sp-3); }
-.key-card { max-width: 48rem; }
+.key-page { max-width: 48rem; }
 .key-card label { margin-top: var(--sp-4); }
 textarea.key-field {
   display: block; min-height: 0; height: auto; resize: none; field-sizing: content;
@@ -526,7 +526,7 @@ textarea.key-field {
   padding: .7rem .75rem; border-width: 1.5px; border-color: var(--text); background: var(--surface-2);
 }
 .key-card .facts { margin-bottom: 0; }
-.done { font-weight: 600; }
+.done a { font-weight: 600; }
 
 @media (max-width: 64rem) {
   .line { grid-template-columns: 1fr 1fr; }
@@ -585,6 +585,7 @@ textarea.key-field {
   table.keys .c-used { grid-area: used; }
   table.keys .c-rev { grid-area: rev; }
   table.keys .c-action { grid-area: action; text-align: left; width: auto; }
+  table.keys .c-none { display: none; }
   table.keys .c-created::before { content: "Created "; color: var(--muted); }
   table.keys .c-exp::before { content: "Valid until "; color: var(--muted); }
   table.keys .c-used::before { content: "Last login "; color: var(--muted); }

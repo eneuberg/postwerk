@@ -5,6 +5,7 @@
   <h1>{{if $v.Rotated}}New key for <span class="mono id">{{$i.Sender}}</span>{{else}}Sender <span class="mono id">{{$i.Sender}}</span> created{{end}}</h1>
 </div>
 
+<div class="key-page">
 <section class="card key-card" aria-labelledby="key-h">
   <h2 id="key-h" class="visually-hidden">The new key</h2>
   <p class="notice notice-warn" role="status"><strong>Copy the key now.</strong> It is shown on this page only and never again: Postwerk keeps a hash of it, not the key. If it gets lost, add a new key and revoke this one.</p>
@@ -40,5 +41,6 @@
 </section>
 {{end}}
 
+</div>
 <p class="done"><a href="/settings/senders/{{$i.Sender}}">Done: go to the sender's page</a> <span class="muted">(the key is not shown there)</span></p>
 {{end}}

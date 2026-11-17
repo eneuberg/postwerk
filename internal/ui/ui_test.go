@@ -94,7 +94,8 @@ type harness struct {
 	logs   *testutil.SafeBuffer
 	tokens *countingVerifier
 	dbPath string
-	sender string // of seeded mails; default "shop"
+	sender string          // of seeded mails; default "shop"
+	audit  store.MailAudit // of seeded mails
 	// setupEvents is the number of events the harness wrote itself.
 	setupEvents int
 	// wakes counts the wake signals a resend gave the workers.
