@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/eneuberg/postwerk/internal/auth"
 	"github.com/eneuberg/postwerk/internal/keys"
@@ -170,6 +172,9 @@ func (t Target) Allowed(recipients []string) bool {
 		return true
 	}
 	for _, r := range recipients {
+		if foldsToASCII(r) {
+			return false
+		}
 		r = strings.ToLower(r)
 		ok := false
 		for _, p := range t.AllowRecipients {
@@ -183,6 +188,18 @@ func (t Target) Allowed(recipients []string) bool {
 		}
 	}
 	return true
+}
+
+// foldsToASCII reports whether s has a non-ASCII character that lower-cases
+// to an ASCII one (the Kelvin sign K becomes k). Such an address would match
+// an ASCII pattern while the target receives a different address.
+func foldsToASCII(s string) bool {
+	for _, r := range s {
+		if r >= utf8.RuneSelf && unicode.ToLower(r) < utf8.RuneSelf {
+			return true
+		}
+	}
+	return false
 }
 
 // Config is the validated configuration.

@@ -439,7 +439,7 @@ func TestAllErrorsTogether(t *testing.T) {
 }
 
 func TestAllowed(t *testing.T) {
-	tg := Target{AllowRecipients: []string{"*@example.test", "qa-*@corp.test"}}
+	tg := Target{AllowRecipients: []string{"*@example.test", "qa-*@corp.test", "kate@mail.test"}}
 	tests := []struct {
 		rcpts []string
 		want  bool
@@ -449,6 +449,9 @@ func TestAllowed(t *testing.T) {
 		{[]string{"a@example.test", "real@customer.test"}, false},
 		{[]string{"a@sub.example.test"}, false},
 		{[]string{"qa@corp.test"}, false},
+		{[]string{"KATE@mail.test"}, true},
+		// The Kelvin sign lower-cases to "k", but the target gets it as is.
+		{[]string{"\u212aate@mail.test"}, false},
 	}
 	for _, tt := range tests {
 		if got := tg.Allowed(tt.rcpts); got != tt.want {
