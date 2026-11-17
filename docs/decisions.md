@@ -669,8 +669,12 @@ default Sentry filter does not see.
   without a page; about as long as a password reset link or a login code is useful, so it fires while the mail still
   matters.
 - **One event per change.** No repeats by default: the issue stays open in the tool until someone resolves it.
-  `POSTWERK_QUEUE_STALE_REPEAT` writes it again at an interval for tools that only notify on new events; repeating
-  and escalating are the tool's job (D57).
+  `POSTWERK_QUEUE_STALE_REPEAT` writes it again at an interval while the target stays stale. Each repeat lands in
+  the same issue, so it reminds only where a rule acts on events of an open issue: a Sentry alert on events,
+  throttled per issue. GlitchTip (tested with 7.0.0) notifies once per issue and stays silent while it is open; a
+  repeat notifies again only after someone resolved the issue while the queue was still stuck
+  ([design.md](design.md#91-alerting), [kubernetes.md](kubernetes.md#73-alert-rules)). Repeating and escalating
+  are the tool's job (D57).
 - **Restarts keep the state.** The check starts from the newest `queue.*` event of each target, so a restart neither
   repeats `queue.stale` nor loses `queue.recovered`. The lookup at start has no index on the kind and reads the
   events from the newest back; an index would need a migration for a query that runs once per start.
