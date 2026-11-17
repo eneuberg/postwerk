@@ -67,7 +67,7 @@ workflow, so the signature names the workflow and the tag it ran for. Check it w
 version:
 
 ```sh
-VERSION=1.0.0   # a released version from CHANGELOG.md
+VERSION=1.1.0   # a released version from CHANGELOG.md
 cosign verify ghcr.io/eneuberg/postwerk:$VERSION \
   --certificate-identity https://github.com/eneuberg/postwerk/.github/workflows/release.yml@refs/tags/v$VERSION \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com

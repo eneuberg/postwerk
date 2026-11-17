@@ -10,6 +10,13 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-17
+
+Sender keys with a policy per application, statistics, a new UI design, and the data lock. Upgrading from 1.0 needs
+no change to the configuration: 1.0 password lines keep working, and without a policy a sender may do what it could
+in 1.0. The database is migrated at start to schema version 10; take a backup first
+([docs/versioning.md](docs/versioning.md)).
+
 ### Added
 
 - A Statistics page in the UI (`/stats`): mails received per bucket by their state now, as stacked bars drawn on the
@@ -18,7 +25,6 @@ One short line per change, written for operators. At a release, Unreleased becom
   application (with refused logins, commands and rate-limit refusals).
 - `GET /v1/stats` for `admin` API tokens with the same counts as JSON.
 - Migration 10 adds two indexes for the statistics; counted hours are kept in memory (at most about 8 MiB).
-
 - Sender keys: `postwerk gen-sender NAME` prints a random key (`pwk_<id>_<secret>`, the application's SMTP password)
   and its senders-file line, which holds only a SHA-256 of the key. One key per application, two at once for a
   rotation without downtime. Password lines from 1.0 keep working.
@@ -49,8 +55,8 @@ One short line per change, written for operators. At a release, Unreleased becom
 
 ### Changed
 
-- Database schema version 9 (two migrations: managed senders, per-mail audit columns). As always, there is no way
-  back to an older version except a backup.
+- Database schema version 10 (three migrations: managed senders, per-mail audit columns, statistics indexes). As
+  always, there is no way back to an older version except a backup.
 - A senders-file password that has the exact form of a sender key (`pwk_` followed by 12 and 52 base32 characters)
   is now checked as a key. No password made by `hash-password` or chosen by a person has that form.
 - The UI has a new design ([docs/design-system.md](docs/design-system.md)): colour only for state, each status a lamp
@@ -164,5 +170,6 @@ The first release.
 - `ALLOW_RECIPIENTS` refuses an address with a character that only lower-cases to ASCII (the Kelvin sign), which
   would otherwise match an ASCII pattern (D60).
 
-[Unreleased]: https://github.com/eneuberg/postwerk/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/eneuberg/postwerk/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/eneuberg/postwerk/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/eneuberg/postwerk/releases/tag/v1.0.0
