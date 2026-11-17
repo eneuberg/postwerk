@@ -317,6 +317,10 @@ type harnessOpts struct {
 	store        store.Options
 	// backoff replaces the 20 ms between attempts.
 	backoff time.Duration
+	// probeInterval replaces the 20 ms before the first probe.
+	probeInterval time.Duration
+	// downAfterProbes is Options.DownAfterProbes; 0 reports at once.
+	downAfterProbes int
 }
 
 // newSealer returns a Sealer with one new key.
@@ -384,10 +388,14 @@ func startPostwerk(t *testing.T, targets []config.Target, ho harnessOpts) *harne
 		},
 		PollInterval:  50 * time.Millisecond,
 		ProbeInterval: 20 * time.Millisecond, ProbeMaxInterval: 80 * time.Millisecond,
-		DialTimeout: 2 * time.Second, CommandTimeout: 2 * time.Second, SubmissionTimeout: 3 * time.Second,
+		DownAfterProbes: ho.downAfterProbes,
+		DialTimeout:     2 * time.Second, CommandTimeout: 2 * time.Second, SubmissionTimeout: 3 * time.Second,
 	}
 	if ho.rootCAs != nil {
 		opts.rootCAs = ho.rootCAs.Pool
+	}
+	if ho.probeInterval > 0 {
+		opts.ProbeInterval, opts.ProbeMaxInterval = ho.probeInterval, ho.probeInterval
 	}
 	h.mgr = New(opts)
 

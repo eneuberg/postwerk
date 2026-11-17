@@ -589,6 +589,7 @@ and the alert said the same thing seven times.
 - **Down on the first failure, also for `unreachable`.** Waiting for a second failure would mean one more login with
   a wrong password, and for a network blip it saves only one event pair. A blip now gives `target.down` and, 30 s
   later, `target.recovered`; an error tracker can group or mute that pair, which is its job, not Postwerk's.
+  (Changed by D58: the state still changes on the first failure, the `unreachable` event waits for a failed probe.)
 - **On contact, everything queued is due.** When a probe succeeds, and when a worker starts, every queued delivery
   of the target gets its next attempt now. A live test against Mailjet showed a mail waiting the rest of its backoff
   after the credentials were fixed and Postwerk restarted, up to an hour after a long outage. Telling the mails that
@@ -825,3 +826,23 @@ the platform knows how to back up a volume.
   processing agreements, certificates, network access, secrets.
 - **New features are checked against it.** A suggestion that moves one of these duties into Postwerk needs a reason
   why the tool that has it today cannot do it.
+
+## D58 An unreachable target is reported after a failed probe; a rejected login at once
+
+D45 wrote `target.down` on the first failure, also for an unreachable target, and left a blip to the error tracker.
+A test against GlitchTip 7.0.0 showed that it cannot: its alerts notify on the first event of an issue and cannot
+filter by kind or mute a pair, so a provider restart of a few seconds would notify whoever watches the channel, and
+the `target.recovered` that follows is `info` and reaches no one.
+
+- **The event waits, the state does not.** On the first failure the target still goes down at once: its worker
+  stops sending and probes (D45). Only the `target.down` event for an `unreachable` target waits until
+  `POSTWERK_TARGET_DOWN_AFTER_PROBES` probes (default 1) failed too; it then carries the last probe's error. With the
+  default probe interval that is about 30 s after the failure.
+- **A blip writes nothing.** If a probe succeeds before that, neither `target.down` nor `target.recovered` is
+  written; the log has a line for each, and the mail whose attempt failed has its `delivery.retry`.
+- **`535` stays immediate.** A rejected login does not go away by itself; a person has to fix the credentials, so it
+  is reported at the first failure, whatever the setting. A probe that turns an unreachable target into a rejected
+  login reports it at once too.
+- **Configurable, 0 to 10.** `0` restores D45's behaviour. More than one failed probe is for a target known to be
+  flaky; the wait doubles with each probe, so 3 means about 3.5 minutes with the defaults. `queue.stale` (D49) still
+  catches mail that waits, whatever this says.

@@ -24,6 +24,9 @@ No version has been released yet. This section lists what exists today.
   (`POSTWERK_PROBE_INTERVAL`, `POSTWERK_PROBE_MAX_INTERVAL`) until `target.recovered`; then, and after every
   start, the queued mails go out at once. The UI and the API overview
   show each target as up or down.
+- `target.down` for an unreachable target only after the first probe failed too
+  (`POSTWERK_TARGET_DOWN_AFTER_PROBES`, default 1, `0` at once), so a blip writes no event pair; a rejected login
+  (`535`) is still reported at once (D58).
 - `delivery.rejected` (warn) for a recipient address the target refuses, apart from `delivery.failed` (error).
 - A mail's state comes from its required targets only; optional targets keep their own delivery state.
 - Mailjet open and click tracking switched off per mail by default (`POSTWERK_TARGET_<NAME>_MAILJET_TRACKING`).

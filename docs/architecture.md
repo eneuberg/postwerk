@@ -163,7 +163,7 @@ mail id either.
 | `delivery.not_allowed` | warn | a recipient is outside the target's allow-list; the whole target is skipped, one event per recipient |
 | `delivery.unsupported` | error (warn: optional) | the mail (or this recipient's address) needs `SMTPUTF8` or `8BITMIME` and the target does not offer it; nothing was sent |
 | `delivery.too_large` | error (warn: optional) | the message as Postwerk would send it is larger than the `SIZE` the target offers; nothing was sent |
-| `target.down` | error (warn: optional) | the target answered `535` (text `auth: <reply>`) or connecting, TLS, the greeting or `EHLO` failed (`unreachable: <error>`); its worker stops sending and probes (D45). One per outage |
+| `target.down` | error (warn: optional) | the target answered `535` (text `auth: <reply>`) or connecting, TLS, the greeting or `EHLO` failed (`unreachable: <error>`); its worker stops sending and probes (D45). One per outage; for `unreachable` only once `POSTWERK_TARGET_DOWN_AFTER_PROBES` probes (default 1) failed too, and then with the last probe's error (D58) |
 | `target.recovered` | info | a probe of a down target succeeded; text `<reason>, down for <duration>` |
 | `retention.raw_expired` | error (warn: optional) | the stored message was removed while this recipient was `queued` or `unknown`; it is now `failed` |
 | `retention.purged` | info | a retention run changed something; text holds counts only (`raw_purged=… raw_expired=… pseudonymized=… records_deleted=… events_deleted=…`) |
@@ -243,7 +243,8 @@ target; retries and `delivery.rejected` are `warn`.
 **Target health** (D45, `internal/delivery/health.go`). Each worker keeps its target's state in memory: up, or down
 since a time with a reason. `process` marks the target down when the attempt failed while connecting (dial, TLS,
 greeting, `EHLO`, whatever the reply) or with a `535` before the message; the attempt's recipients are queued as for a
-temporary failure, then `target.down` is appended. While down, the worker claims nothing. Each loop step first fails
+temporary failure, then `target.down` is appended: at once for `535`, for an unreachable target after
+`DownAfterProbes` failed probes (D58; a target back before that writes neither `target.down` nor `target.recovered`). While down, the worker claims nothing. Each loop step first fails
 the queued recipients whose retry window is over (`store.ExpireQueued`, `delivery.failed`, at most 200 deliveries
 per transaction), then sleeps until the next probe (wake signals are ignored) or runs it: `connect` and `AUTH`
 through the same code as a send, then `QUIT`. A failed probe doubles the wait up to the maximum; a good one sets the

@@ -113,9 +113,11 @@ nothing about the mail; it is the target that is broken. On the first such failu
   The same happens when Postwerk starts, so after fixing the credentials and restarting, the queue goes out at once.
   The rule is simply "on contact, everything queued is due"; it also brings forward a mail that waited for a `4xx`,
   which costs one early attempt at most.
-- One `target.down` event (`error`, `warn` for an optional target) when it goes down, with the reason (`auth` or
+- One `target.down` event (`error`, `warn` for an optional target) per outage, with the reason (`auth` or
   `unreachable`) and the redacted reply or error; one `target.recovered` event (`info`) when it comes back, with how
-  long it was down. The mail whose attempt found the problem gets a `delivery.retry` (`warn`) like any temporary
+  long it was down. A rejected login is raised at once. An unreachable target is raised only after
+  `POSTWERK_TARGET_DOWN_AFTER_PROBES` probes (default 1) failed too, so a blip of a few seconds, which the first probe
+  finds over, writes neither event (D58); sending pauses at once all the same. The mail whose attempt found the problem gets a `delivery.retry` (`warn`) like any temporary
   failure; the mails behind it get nothing until they are sent.
 - The retry window still ends: a recipient queued at a down target past its window becomes `failed`
   (`delivery.failed`) without another attempt.

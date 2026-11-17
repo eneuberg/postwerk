@@ -216,6 +216,10 @@ type Config struct {
 	// that is down (D45): the first after ProbeInterval, then doubling up
 	// to ProbeMaxInterval.
 	ProbeInterval, ProbeMaxInterval time.Duration
+	// DownAfterProbes is how many probes of an unreachable target must
+	// fail before target.down is written; 0 writes it at the first failed
+	// attempt, as a rejected login always is (D58).
+	DownAfterProbes int
 
 	// StoreKeys encrypts raw messages at rest; nil only with
 	// POSTWERK_STORE_ENCRYPTION=off.

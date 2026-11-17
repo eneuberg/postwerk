@@ -72,6 +72,10 @@ type Options struct {
 	// Zero means the config defaults.
 	ProbeInterval    time.Duration
 	ProbeMaxInterval time.Duration
+	// DownAfterProbes is how many probes of an unreachable target must
+	// fail before target.down is written (D58). Zero writes it at once,
+	// as a rejected login always is. The configuration's default is 1.
+	DownAfterProbes int
 	// Now returns the current time; nil means time.Now.
 	Now func() time.Time
 

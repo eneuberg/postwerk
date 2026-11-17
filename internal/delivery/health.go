@@ -23,6 +23,13 @@ import (
 // between write nothing, so a provider that locks an account after repeated
 // failed logins sees one login per probe, not one per mail.
 //
+// A target that cannot be reached is often back a moment later (a
+// provider's restart, a network blip). So for it target.down waits until
+// DownAfterProbes probes have failed too (D58); sending pauses at once all
+// the same. If a probe succeeds first, nothing is written: no target.down,
+// no target.recovered. A rejected login is written at once, since it does
+// not go away by itself.
+//
 // The state lives in memory only. After a restart every target starts up,
 // and the first attempt finds out again. At start and on recovery every
 // queued delivery of the target becomes due at once (resume).
@@ -60,6 +67,10 @@ type health struct {
 	// Only the worker goroutine uses these.
 	probeWait time.Duration
 	probeAt   time.Time
+	// reported is set once target.down is written for this outage;
+	// failedProbes counts the probes that failed since it began.
+	reported     bool
+	failedProbes int
 }
 
 func (h *health) get() (down bool, since time.Time, reason Reason) {
@@ -84,14 +95,30 @@ func (m *Manager) Health() []Health {
 	return out
 }
 
-// goDown marks the target down after a failed attempt and writes the one
-// target.down event; detail is the reply or error, redacted by the store.
+// goDown marks the target down after a failed attempt. It writes the one
+// target.down event at once for a rejected login, and for an unreachable
+// target only if DownAfterProbes is 0; otherwise whileDown writes it.
+// detail is the reply or error, redacted by the store.
 func (w *worker) goDown(ctx context.Context, reason Reason, code int, detail string) {
 	now := w.opts.Now()
 	w.health.set(true, now, reason)
 	w.health.probeWait = w.opts.ProbeInterval
 	w.health.probeAt = now.Add(w.health.probeWait)
+	w.health.reported, w.health.failedProbes = false, 0
 	w.log.Warn("target down, sending paused until a probe succeeds", "reason", string(reason), "code", code)
+	w.reportDown(ctx, now, reason, code, detail)
+}
+
+// reportDown writes target.down once per outage, when the reason and the
+// number of failed probes call for it (D58).
+func (w *worker) reportDown(ctx context.Context, now time.Time, reason Reason, code int, detail string) {
+	if w.health.reported {
+		return
+	}
+	if reason == ReasonUnreachable && w.health.failedProbes < w.opts.DownAfterProbes {
+		return
+	}
+	w.health.reported = true
 	if err := w.opts.Store.Append(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetDown,
 		Level: w.problem(), Code: code, Text: join(string(reason), detail)}); err != nil {
 		w.log.Error("writing target.down failed", "err", err)
@@ -117,17 +144,23 @@ func (w *worker) whileDown(ctx context.Context) {
 	if err != nil {
 		w.health.probeWait = min(2*w.health.probeWait, w.opts.ProbeMaxInterval)
 		w.health.probeAt = now.Add(w.health.probeWait)
+		w.health.failedProbes++
 		if reason != was {
 			w.health.set(true, since, reason)
 		}
 		w.log.Info("target still down", "reason", string(reason), "code", code, "err", err,
 			"next_probe_in", w.health.probeWait.String())
+		_, _, text := Classify(err, false)
+		w.reportDown(ctx, now, reason, code, text)
 		return
 	}
 	down := now.Sub(since).Round(time.Second)
 	w.health.set(false, now, "")
 	w.resume(ctx, now)
 	w.log.Info("target up again, sending resumes", "down_for", down.String())
+	if !w.health.reported {
+		return // down too briefly for target.down, so no target.recovered either
+	}
 	if err := w.opts.Store.Append(ctx, store.Event{Time: now, Target: w.target.Name, Kind: store.KindTargetRecovered,
 		Level: store.Info, Text: fmt.Sprintf("%s, down for %s", was, down)}); err != nil {
 		w.log.Error("writing target.recovered failed", "err", err)

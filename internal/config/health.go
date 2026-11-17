@@ -10,6 +10,7 @@ import (
 const (
 	envProbeInterval    = "POSTWERK_PROBE_INTERVAL"
 	envProbeMaxInterval = "POSTWERK_PROBE_MAX_INTERVAL"
+	envDownAfterProbes  = "POSTWERK_TARGET_DOWN_AFTER_PROBES"
 
 	// DefaultProbeInterval is the wait before the first probe of a target
 	// that went down; each failed probe doubles it.
@@ -18,9 +19,14 @@ const (
 	// provider that locks an account after repeated failed logins, a
 	// rejected login is retried at most every 5 minutes.
 	DefaultProbeMaxInterval = 5 * time.Minute
+	// DefaultDownAfterProbes is how many probes of an unreachable target
+	// must fail before target.down is written (D58). A rejected login
+	// (535) is reported at once.
+	DefaultDownAfterProbes = 1
+	maxDownAfterProbes     = 10
 )
 
-var probeVars = []string{envProbeInterval, envProbeMaxInterval}
+var probeVars = []string{envProbeInterval, envProbeMaxInterval, envDownAfterProbes}
 
 func (l *loader) probe(c *Config) {
 	c.ProbeInterval = l.duration(envProbeInterval, DefaultProbeInterval, false)
@@ -28,6 +34,7 @@ func (l *loader) probe(c *Config) {
 	if c.ProbeInterval > 0 && c.ProbeMaxInterval > 0 && c.ProbeMaxInterval < c.ProbeInterval {
 		l.errorf("%s must be at least %s", envProbeMaxInterval, envProbeInterval)
 	}
+	c.DownAfterProbes = l.integer(envDownAfterProbes, DefaultDownAfterProbes, 0, maxDownAfterProbes)
 }
 
 // maxCAFile bounds a CA bundle; a system bundle is about 200 KiB.

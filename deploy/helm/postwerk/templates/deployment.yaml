@@ -230,6 +230,8 @@ spec:
               value: {{ .Values.targetProbe.interval | quote }}
             - name: POSTWERK_PROBE_MAX_INTERVAL
               value: {{ .Values.targetProbe.maxInterval | quote }}
+            - name: POSTWERK_TARGET_DOWN_AFTER_PROBES
+              value: {{ .Values.targetProbe.downAfterProbes | toString | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

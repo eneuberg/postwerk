@@ -270,7 +270,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, eventOu
 
 	mgr := delivery.New(delivery.Options{
 		Store: st, Sealer: sealer, Targets: cfg.Targets, Logger: logger, HeloName: cfg.Hostname,
-		ProbeInterval: cfg.ProbeInterval, ProbeMaxInterval: cfg.ProbeMaxInterval,
+		ProbeInterval: cfg.ProbeInterval, ProbeMaxInterval: cfg.ProbeMaxInterval, DownAfterProbes: cfg.DownAfterProbes,
 	})
 	// Deliveries left in sending by a crash are recovered first, so that the
 	// first retention run sees them as queued or unknown. Each worker retries

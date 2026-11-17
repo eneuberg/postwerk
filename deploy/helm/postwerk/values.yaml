@@ -107,10 +107,13 @@ retryWindow: 24h
 
 # A target that rejects the login (535) or cannot be reached goes down: no
 # mail is sent to it, a probe (connect and log in, no mail) runs after
-# interval, doubling up to maxInterval, until it succeeds.
+# interval, doubling up to maxInterval, until it succeeds. A rejected login
+# raises target.down at once; an unreachable target only after
+# downAfterProbes probes failed too (0: at once).
 targetProbe:
   interval: 30s
   maxInterval: 5m
+  downAfterProbes: 1
 
 limits:
   # The smallest message limit of your targets (recommended: 15 MiB, the

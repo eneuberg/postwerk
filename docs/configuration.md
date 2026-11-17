@@ -205,6 +205,7 @@ their own retention. Backups should not live longer than `POSTWERK_RECORD_RETENT
 | `POSTWERK_TARGET_<NAME>_CA_FILE` | none (the system roots) | path to a PEM file with one or more `CERTIFICATE` blocks | The certificate authorities this target's certificate comes from, for a relay with a private CA. They **replace** the system roots for this target only; other targets keep the system roots. Checked at start: every PEM block must be a certificate that parses. Not allowed with `smtp+plain`. Not a secret file. |
 | `POSTWERK_PROBE_INTERVAL` | `30s` | a duration > 0 | Wait before the first probe of a target that is down (section "Target down"). |
 | `POSTWERK_PROBE_MAX_INTERVAL` | `5m` | a duration ≥ `POSTWERK_PROBE_INTERVAL` | Each failed probe doubles the wait, up to this. |
+| `POSTWERK_TARGET_DOWN_AFTER_PROBES` | `1` | `0` to `10` | Failed probes of an **unreachable** target before `target.down` is written; `0` writes it at the failed attempt. A rejected login (`535`) is written at once. Sending pauses at once either way. |
 
 `<NAME>` is the target name in upper case. Security notes: prefer `smtps://` or `smtp://`; use `smtp+plain://` only for
 a capture tool on the same host or network. **No capture target in production**: a capture tool holds working password
@@ -213,8 +214,10 @@ retention to a day or less (Mailpit: `--max-age 1d`, `--ui-auth-file`).
 
 **Target down.** When a target rejects the login (`535`) or cannot be reached (connecting, TLS, the greeting or
 `EHLO` fails), Postwerk stops sending to it and writes one `target.down` event (`error`, `warn` for an optional
-target). Mails stay queued. It then probes the target (connect, `EHLO`, `AUTH`, `QUIT`; no mail) after
-`POSTWERK_PROBE_INTERVAL`, doubling up to `POSTWERK_PROBE_MAX_INTERVAL`. The first probe that works writes
+target): for a rejected login at once, for an unreachable target only after `POSTWERK_TARGET_DOWN_AFTER_PROBES`
+probes failed too (so with the defaults about 30 s later; a target back by then writes nothing, D58). Mails stay
+queued. It then probes the target (connect, `EHLO`, `AUTH`, `QUIT`; no mail) after `POSTWERK_PROBE_INTERVAL`,
+doubling up to `POSTWERK_PROBE_MAX_INTERVAL`. The first probe that works writes
 `target.recovered`, and every queued mail of that target is due at once, whatever its backoff; the same happens at
 every start, so after fixing credentials and restarting the queue goes out immediately. A provider that locks an account after repeated failed logins sees at most one
 login per probe. Mails whose retry window ends meanwhile become `failed`. The state is kept in memory only: after a

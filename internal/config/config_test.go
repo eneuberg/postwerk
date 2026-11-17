@@ -250,8 +250,12 @@ func TestTrackingCAAndProbe(t *testing.T) {
 		DefaultProbeInterval != 30*time.Second || DefaultProbeMaxInterval != 5*time.Minute {
 		t.Fatalf("probe = %v, %v", c.ProbeInterval, c.ProbeMaxInterval)
 	}
-	c, err = Load(append(minimalEnv(), "POSTWERK_PROBE_INTERVAL=10s", "POSTWERK_PROBE_MAX_INTERVAL=10m"), f.read)
-	if err != nil || c.ProbeInterval != 10*time.Second || c.ProbeMaxInterval != 10*time.Minute {
+	if c.DownAfterProbes != 1 {
+		t.Fatalf("down after probes = %d, want 1", c.DownAfterProbes)
+	}
+	c, err = Load(append(minimalEnv(), "POSTWERK_PROBE_INTERVAL=10s", "POSTWERK_PROBE_MAX_INTERVAL=10m",
+		"POSTWERK_TARGET_DOWN_AFTER_PROBES=0"), f.read)
+	if err != nil || c.ProbeInterval != 10*time.Second || c.ProbeMaxInterval != 10*time.Minute || c.DownAfterProbes != 0 {
 		t.Fatalf("probe = %+v, %v", c, err)
 	}
 }
@@ -369,6 +373,8 @@ func TestErrors(t *testing.T) {
 		{"ca file without pem", []string{"POSTWERK_TARGET_MAILPIT_URL=smtps://x", "POSTWERK_TARGET_MAILPIT_CA_FILE=/run/secrets/senders"}, "no PEM certificate in the file"},
 		{"ca file with a key", []string{"POSTWERK_TARGET_MAILPIT_URL=smtps://x", "POSTWERK_TARGET_MAILPIT_CA_FILE=/tls/key.pem"}, `PEM block "PRIVATE KEY" is not a certificate`},
 		{"bad probe interval", []string{"POSTWERK_PROBE_INTERVAL=0s"}, "POSTWERK_PROBE_INTERVAL"},
+		{"down after probes too high", []string{"POSTWERK_TARGET_DOWN_AFTER_PROBES=11"}, "POSTWERK_TARGET_DOWN_AFTER_PROBES"},
+		{"down after probes negative", []string{"POSTWERK_TARGET_DOWN_AFTER_PROBES=-1"}, "POSTWERK_TARGET_DOWN_AFTER_PROBES"},
 		{"probe max below min", []string{"POSTWERK_PROBE_INTERVAL=1m", "POSTWERK_PROBE_MAX_INTERVAL=30s"}, "POSTWERK_PROBE_MAX_INTERVAL must be at least POSTWERK_PROBE_INTERVAL"},
 		{"tokens with admin off", []string{"POSTWERK_ADMIN_LISTEN=off"}, "POSTWERK_UI_TOKENS_FILE is set but the admin listener is off"},
 	}
