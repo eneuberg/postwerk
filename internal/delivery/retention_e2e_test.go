@@ -246,7 +246,7 @@ func TestMailjetCustomIDReplaced(t *testing.T) {
 	h.waitStatus(mailID, "mailjet", store.HandedOff)
 	h.waitStatus(mailID, "other", store.HandedOff)
 
-	want := "X-Postwerk-Id: " + mailID + "\r\nX-MJ-CustomID: " + mailID + "\r\n" + deliveredBody
+	want := "X-MJ-CustomID: " + mailID + "\r\nX-Postwerk-Id: " + mailID + "\r\n" + deliveredBody
 	if got := string(mj.got()[0].data); got != want {
 		t.Fatalf("mailjet received:\n%q\nwant\n%q", got, want)
 	}

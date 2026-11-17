@@ -669,7 +669,7 @@ func TestHappyPath(t *testing.T) {
 		}
 		want := "X-Postwerk-Id: " + mailID + "\r\n"
 		if name == "mailjet" {
-			want += "X-MJ-CustomID: " + mailID + "\r\n"
+			want = "X-MJ-CustomID: " + mailID + "\r\n" + want
 		}
 		want += deliveredBody
 		if string(r.data) != want {
@@ -1194,9 +1194,9 @@ func TestMailjetTracking(t *testing.T) {
 	}
 	body := strings.Replace(msg, "X-Postwerk-Ref: order-42\r\n", "", 1)
 	want := map[*fakeTarget]string{
-		off: "X-Postwerk-Id: " + mailID + "\r\nX-MJ-CustomID: " + mailID + "\r\n" +
-			"X-Mailjet-TrackOpen: 0\r\nX-Mailjet-TrackClick: 0\r\n" + deliveredBody,
-		account: "X-Postwerk-Id: " + mailID + "\r\nX-MJ-CustomID: " + mailID + "\r\n" + body,
+		off: "X-Mailjet-TrackOpen: 0\r\nX-Mailjet-TrackClick: 0\r\n" +
+			"X-MJ-CustomID: " + mailID + "\r\nX-Postwerk-Id: " + mailID + "\r\n" + deliveredBody,
+		account: "X-MJ-CustomID: " + mailID + "\r\nX-Postwerk-Id: " + mailID + "\r\n" + body,
 		other:   "X-Postwerk-Id: " + mailID + "\r\n" + body,
 	}
 	for f, w := range want {

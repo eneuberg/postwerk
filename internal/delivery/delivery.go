@@ -632,18 +632,22 @@ func isASCII(s string) bool {
 
 func (w *worker) headers(mailID string) []message.Field { return headersFor(w.target, mailID) }
 
-// headersFor returns the header fields Postwerk adds for target t.
+// headersFor returns the header fields Postwerk adds for target t, in the
+// order they are written. X-Postwerk-Id comes last: a message whose first
+// line starts with white space continues the field written before it, so
+// the sender could otherwise append to a tracking switch ("0" becoming
+// "0 1") or to X-MJ-CustomID (D60).
 func headersFor(t config.Target, mailID string) []message.Field {
-	h := []message.Field{{Name: message.HeaderID, Value: mailID}}
+	var h []message.Field
 	if t.Status == config.StatusMailjet {
-		h = append(h, message.Field{Name: message.HeaderMailjetCustomID, Value: mailID})
 		if t.MailjetTracking == config.TrackingOff {
 			h = append(h,
 				message.Field{Name: message.HeaderMailjetTrackOpen, Value: "0"},
 				message.Field{Name: message.HeaderMailjetTrackClick, Value: "0"})
 		}
+		h = append(h, message.Field{Name: message.HeaderMailjetCustomID, Value: mailID})
 	}
-	return h
+	return append(h, message.Field{Name: message.HeaderID, Value: mailID})
 }
 
 // stripFor removes the sender's header fields that Postwerk sets itself for
