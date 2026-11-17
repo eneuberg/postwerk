@@ -65,6 +65,7 @@ The first release.
 
 ### Security
 
+- Helm chart sets `hostNetwork`, `hostPID` and `hostIPC` to `false` explicitly, for policy checks that do not accept defaults.
 - Stored messages encrypted at rest with AES-256-GCM; keys only from files, with rotation by key id.
 - Recipient addresses replaced by keyed hashes (HMAC-SHA256) after the pseudonymization period.
 - No message content in events, logs, the UI or the API; addresses removed from reply texts before they are stored.

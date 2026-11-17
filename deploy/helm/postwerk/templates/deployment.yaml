@@ -30,6 +30,11 @@ spec:
       serviceAccountName: {{ include "postwerk.serviceAccountName" . }}
       # Postwerk needs no access to the Kubernetes API.
       automountServiceAccountToken: false
+      # Written out, not left to defaults, so policy checks that require
+      # them explicitly pass.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
       # Service links would add variables such as POSTWERK_PORT for a
       # Service named "postwerk"; Postwerk refuses unknown POSTWERK_*
       # variables, so they must stay off.
