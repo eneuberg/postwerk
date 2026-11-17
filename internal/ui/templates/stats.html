@@ -79,7 +79,7 @@
     <div>
       <p class="board-label">Failed</p>
       <p class="board-value num">{{if and $s.Totals.Failed (not $s.Sender)}}<a href="/mails?state=failed{{with $s.Target}}&amp;target={{.}}{{end}}&amp;from={{$v.ListFrom}}&amp;to={{$v.ListTo}}">{{count $s.Totals.Failed}}</a>{{else}}{{count $s.Totals.Failed}}{{end}}</p>
-      <p class="board-sub muted">{{count $s.Totals.Unknown}} unknown, {{count $s.Totals.Rejected}} recipients rejected</p>
+      <p class="board-sub muted">{{count $s.Totals.Unknown}} unknown, {{count $s.Totals.Rejected}} {{plural $s.Totals.Rejected "recipient" "recipients"}} rejected</p>
     </div>
   </li>
   <li class="board-part">
