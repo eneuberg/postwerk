@@ -9,7 +9,7 @@ Postwerk is a small, self-hosted SMTP relay for outgoing transactional email, wr
 Kubernetes send their mail through it instead of straight to a provider. Postwerk keeps an audit log of every mail and
 tracks its delivery to each target. It runs as one binary with one SQLite file.
 
-![Animated diagram: applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to monitoring. In a second round Mailjet answers with error 550, the error event raises an alert in monitoring (for example GlitchTip), and an audit lookup in the UI or the query API asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
+![Animated diagram: a frame marks your own server or cluster, with the applications, the audit lookup and Mailpit inside it; Postwerk sits on the edge of the frame as the one way out, and Mailjet and Sentry are outside. Applications send a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log, and delivers one copy each to Mailjet and Mailpit. Every event also goes out as a report to Sentry. In a second round Mailjet answers with error 550, the error event raises an alert in Sentry, and an audit lookup in the UI or the query API asks Postwerk what happened to the mail and gets the answer from the event log](docs/flow.svg)
 
 To try it on your machine with Docker Compose and Mailpit, see [Getting started](docs/getting-started.md). To run it in
 a cluster, there is a Helm chart (`deploy/helm/postwerk`) and a [Kubernetes guide](docs/kubernetes.md). Released versions

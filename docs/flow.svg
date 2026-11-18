@@ -1,14 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 384" width="760" height="384" role="img" aria-labelledby="t d">
   <title id="t">Postwerk mail flow, reports and audit lookup</title>
-  <desc id="d">Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet and Mailpit. Every event is also pushed out as a report to monitoring, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to monitoring, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI and through the query API.</desc>
+  <desc id="d">A frame marks what runs on your own server or cluster: the applications, the audit lookup in the UI or the query API, and Mailpit. Postwerk sits on the edge of that frame, because it is the one place where mail leaves for outside services. Outside the frame are the mail provider, Mailjet, and the error monitoring, Sentry. Two rounds in a loop. First: an application hands a mail to Postwerk over SMTP; Postwerk stores it, writes each step to its event log and delivers one copy to each target, Mailjet outside and Mailpit inside. Every event is also pushed out as a report to Sentry, which stays quiet. Second: Mailjet answers a delivery with error 550; Postwerk logs the failure and pushes the error event to Sentry, which raises an alert. Then someone asks Postwerk what happened to the mail, and Postwerk answers from its event log. That lookup works in the UI and through the query API.</desc>
   <style>
     .card   { fill: #f3f5f1; stroke: #cdd2cc; }
+    .zone   { fill: #e7eae5; stroke: #8f9791; stroke-width: 1.4; }
     .box    { fill: #ffffff; stroke: #8f9791; stroke-width: 1.2; }
     .core   { fill: #ffffff; stroke: #262b28; stroke-width: 2; }
     .edge   { fill: none; stroke: #8f9791; stroke-width: 1.4; }
     .plan   { stroke-dasharray: 5 4; }
     .txt    { fill: #1c201e; font: 500 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .title  { fill: #1c201e; font: 600 16px system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .zlabel { fill: #1c201e; font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .muted  { fill: #555d58; font: 400 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .small  { fill: #555d58; font: 500 10px system-ui, -apple-system, "Segoe UI", sans-serif; }
     .log    { fill: #1c201e; font: 400 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -29,10 +31,11 @@
 
     @media (prefers-color-scheme: dark) {
       .card  { fill: #232825; stroke: #3a423d; }
+      .zone  { fill: #2b312d; stroke: #5e6862; }
       .box   { fill: #1b1f1d; stroke: #5e6862; }
       .core  { fill: #1b1f1d; stroke: #e4e8e3; }
       .edge  { stroke: #5e6862; }
-      .txt, .title, .log, .note { fill: #e4e8e3; }
+      .txt, .title, .zlabel, .log, .note { fill: #e4e8e3; }
       .muted, .small { fill: #a0a9a2; }
       .tick  { stroke: #5cc489; }
       .icon  { stroke: #e4e8e3; }
@@ -79,16 +82,16 @@
     .hlQ    { animation: hitQ 10s linear infinite; }
 
     @keyframes in1 {
-      0%   { transform: translate(162px, 60.9px); opacity: 0; }
-      2%   { transform: translate(166px, 62.8px); opacity: 1; }
-      10%  { transform: translate(282px, 116.3px); opacity: 1; }
-      12%, 100% { transform: translate(288px, 119.1px); opacity: 0; }
+      0%   { transform: translate(162px, 92.9px); opacity: 0; }
+      2%   { transform: translate(166px, 94.8px); opacity: 1; }
+      10%  { transform: translate(282px, 148.3px); opacity: 1; }
+      12%, 100% { transform: translate(288px, 151.1px); opacity: 0; }
     }
     @keyframes in2 {
-      0%, 38% { transform: translate(162px, 120px); opacity: 0; }
-      40%  { transform: translate(166px, 120px); opacity: 1; }
-      48%  { transform: translate(282px, 120px); opacity: 1; }
-      50%, 100% { transform: translate(288px, 120px); opacity: 0; }
+      0%, 38% { transform: translate(162px, 152px); opacity: 0; }
+      40%  { transform: translate(166px, 152px); opacity: 1; }
+      48%  { transform: translate(282px, 152px); opacity: 1; }
+      50%, 100% { transform: translate(288px, 152px); opacity: 0; }
     }
     @keyframes store {
       0%, 11%  { opacity: 0.55; }
@@ -123,25 +126,27 @@
       67%, 96% { opacity: 1; }
       99%, 100% { opacity: 0.18; }
     }
+    /* one copy leaves the frame for Mailjet */
     @keyframes outA {
-      0%, 16% { transform: translate(472px, 120px); opacity: 0; }
-      17%  { transform: translate(478px, 117.7px); opacity: 1; }
-      26%  { transform: translate(606px, 81.1px); opacity: 1; }
-      27%  { transform: translate(612px, 79.4px); opacity: 0; }
-      28%, 55% { transform: translate(472px, 120px); opacity: 0; }
-      56%  { transform: translate(478px, 117.7px); opacity: 1; }
-      64%  { transform: translate(606px, 81.1px); opacity: 1; }
-      65%, 100% { transform: translate(612px, 79.4px); opacity: 0; }
+      0%, 16% { transform: translate(472px, 152px); opacity: 0; }
+      17%  { transform: translate(478px, 149.7px); opacity: 1; }
+      26%  { transform: translate(606px, 113.1px); opacity: 1; }
+      27%  { transform: translate(612px, 111.4px); opacity: 0; }
+      28%, 55% { transform: translate(472px, 152px); opacity: 0; }
+      56%  { transform: translate(478px, 149.7px); opacity: 1; }
+      64%  { transform: translate(606px, 113.1px); opacity: 1; }
+      65%, 100% { transform: translate(612px, 111.4px); opacity: 0; }
     }
+    /* one copy stays inside, for Mailpit */
     @keyframes outB {
-      0%, 16% { transform: translate(472px, 120px); opacity: 0; }
-      17%  { transform: translate(478px, 122.3px); opacity: 1; }
-      26%  { transform: translate(606px, 158.9px); opacity: 1; }
-      27%  { transform: translate(612px, 160.6px); opacity: 0; }
-      28%, 55% { transform: translate(472px, 120px); opacity: 0; }
-      56%  { transform: translate(478px, 122.3px); opacity: 1; }
-      64%  { transform: translate(606px, 158.9px); opacity: 1; }
-      65%, 100% { transform: translate(612px, 160.6px); opacity: 0; }
+      0%, 16% { transform: translate(348px, 242px); opacity: 0; }
+      17%  { transform: translate(348px, 246px); opacity: 1; }
+      26%  { transform: translate(348px, 298px); opacity: 1; }
+      27%  { transform: translate(348px, 302px); opacity: 0; }
+      28%, 55% { transform: translate(348px, 242px); opacity: 0; }
+      56%  { transform: translate(348px, 246px); opacity: 1; }
+      64%  { transform: translate(348px, 298px); opacity: 1; }
+      65%, 100% { transform: translate(348px, 302px); opacity: 0; }
     }
     @keyframes hitA {
       0%, 26%  { opacity: 0; }
@@ -157,29 +162,29 @@
     }
     /* quiet reports: one small dot per event, no alert */
     @keyframes rep1 {
-      0%, 13% { transform: translate(474px, 192px); opacity: 0; }
-      14%  { transform: translate(477px, 195px); opacity: 1; }
-      21%  { transform: translate(563px, 283px); opacity: 1; }
-      22%, 100% { transform: translate(566px, 286px); opacity: 0; }
+      0%, 13% { transform: translate(474px, 224px); opacity: 0; }
+      14%  { transform: translate(477px, 227px); opacity: 1; }
+      21%  { transform: translate(563px, 315px); opacity: 1; }
+      22%, 100% { transform: translate(566px, 318px); opacity: 0; }
     }
     @keyframes rep2 {
-      0%, 28% { transform: translate(474px, 192px); opacity: 0; }
-      29%  { transform: translate(477px, 195px); opacity: 1; }
-      36%  { transform: translate(563px, 283px); opacity: 1; }
-      37%, 100% { transform: translate(566px, 286px); opacity: 0; }
+      0%, 28% { transform: translate(474px, 224px); opacity: 0; }
+      29%  { transform: translate(477px, 227px); opacity: 1; }
+      36%  { transform: translate(563px, 315px); opacity: 1; }
+      37%, 100% { transform: translate(566px, 318px); opacity: 0; }
     }
     @keyframes rep3 {
-      0%, 52% { transform: translate(474px, 192px); opacity: 0; }
-      53%  { transform: translate(477px, 195px); opacity: 1; }
-      60%  { transform: translate(563px, 283px); opacity: 1; }
-      61%, 100% { transform: translate(566px, 286px); opacity: 0; }
+      0%, 52% { transform: translate(474px, 224px); opacity: 0; }
+      53%  { transform: translate(477px, 227px); opacity: 1; }
+      60%  { transform: translate(563px, 315px); opacity: 1; }
+      61%, 100% { transform: translate(566px, 318px); opacity: 0; }
     }
     /* Mailjet answers with an error */
     @keyframes reply {
-      0%, 65% { transform: translate(606px, 81.1px); opacity: 0; }
-      66%  { transform: translate(600px, 82.8px); opacity: 1; }
-      69%  { transform: translate(484px, 116.3px); opacity: 1; }
-      70%, 100% { transform: translate(478px, 117.7px); opacity: 0; }
+      0%, 65% { transform: translate(606px, 113.1px); opacity: 0; }
+      66%  { transform: translate(600px, 114.8px); opacity: 1; }
+      69%  { transform: translate(484px, 148.3px); opacity: 1; }
+      70%, 100% { transform: translate(478px, 149.7px); opacity: 0; }
     }
     @keyframes errA {
       0%, 64%  { opacity: 0; }
@@ -188,10 +193,10 @@
     }
     /* the error event goes out and raises an alert */
     @keyframes alarm {
-      0%, 71% { transform: translate(474px, 192px); opacity: 0; }
-      72%  { transform: translate(477px, 195px); opacity: 1; }
-      78%  { transform: translate(563px, 283px); opacity: 1; }
-      79%, 100% { transform: translate(566px, 286px); opacity: 0; }
+      0%, 71% { transform: translate(474px, 224px); opacity: 0; }
+      72%  { transform: translate(477px, 227px); opacity: 1; }
+      78%  { transform: translate(563px, 315px); opacity: 1; }
+      79%, 100% { transform: translate(566px, 318px); opacity: 0; }
     }
     @keyframes alert {
       0%, 78.5% { opacity: 0; }
@@ -213,10 +218,10 @@
       99%, 100% { opacity: 0; }
     }
     @keyframes ask {
-      0%, 81% { transform: translate(192px, 288px); opacity: 0; }
-      82%  { transform: translate(195px, 285px); opacity: 1; }
-      86%  { transform: translate(283px, 195px); opacity: 1; }
-      87%, 100% { transform: translate(286px, 192px); opacity: 0; }
+      0%, 81% { transform: translate(192px, 320px); opacity: 0; }
+      82%  { transform: translate(195px, 317px); opacity: 1; }
+      86%  { transform: translate(283px, 227px); opacity: 1; }
+      87%, 100% { transform: translate(286px, 224px); opacity: 0; }
     }
     @keyframes scan {
       0%, 86%  { opacity: 0; }
@@ -224,10 +229,10 @@
       95%, 100% { opacity: 0; }
     }
     @keyframes answer {
-      0%, 89% { transform: translate(286px, 192px); opacity: 0; }
-      90%  { transform: translate(283px, 195px); opacity: 1; }
-      95%  { transform: translate(195px, 285px); opacity: 1; }
-      96%, 100% { transform: translate(192px, 288px); opacity: 0; }
+      0%, 89% { transform: translate(286px, 224px); opacity: 0; }
+      90%  { transform: translate(283px, 227px); opacity: 1; }
+      95%  { transform: translate(195px, 317px); opacity: 1; }
+      96%, 100% { transform: translate(192px, 320px); opacity: 0; }
     }
     @keyframes hitQ {
       0%, 95%  { opacity: 0; }
@@ -238,101 +243,108 @@
     @media (prefers-reduced-motion: reduce) {
       .in1, .in2, .outA, .outB, .store, .row1, .row2, .row2x, .row3, .hlA, .hlB, .rep1, .rep2, .rep3,
       .reply, .errA, .alarm, .alert, .bell, .ask, .askq, .scan, .answer, .hlQ { animation: none; }
-      /* static picture of round 2: Mailjet failed, monitoring alerted, lookup asked */
+      /* static picture of round 2: Mailjet failed, Sentry alerted, lookup asked */
       .row2 { opacity: 0; }
       .row2x, .errA, .alert, .askq { opacity: 1; }
     }
   </style>
 
-  <rect class="card" x="0.5" y="0.5" width="759" height="339" rx="12"/>
+  <rect class="card" x="0.5" y="0.5" width="759" height="383" rx="12"/>
+
+  <!-- your server or cluster: everything inside the frame; Postwerk sits on its edge -->
+  <rect class="zone" x="8" y="22" width="406" height="346" rx="10"/>
+  <text class="zlabel" x="20" y="42">your server or cluster</text>
+  <text class="muted" x="740" y="42" text-anchor="end">external services</text>
 
   <!-- edges -->
-  <path class="edge" d="M160 60 L290 120 M160 120 L290 120 M160 180 L290 120"/>
-  <path class="edge" d="M470 120 L610 80 M470 120 L610 160"/>
-  <path class="edge" d="M470 190 L570 292"/>
-  <path class="edge plan" d="M190 292 L290 190"/>
-  <text class="muted" x="214" y="111" text-anchor="middle">SMTP</text>
-  <text class="muted" x="566" y="118" text-anchor="middle">one copy</text>
-  <text class="muted" x="566" y="132" text-anchor="middle">per target</text>
-  <text class="muted" x="522" y="262" text-anchor="end">reports (push)</text>
-  <text class="muted" x="534" y="276" text-anchor="end">every event</text>
-  <text class="muted" x="236" y="262">lookup (pull)</text>
-  <text class="muted" x="224" y="276">from the log</text>
+  <path class="edge" d="M160 92 L290 152 M160 152 L290 152 M160 212 L290 152"/>
+  <path class="edge" d="M470 152 L610 112"/>
+  <path class="edge" d="M348 240 L348 304"/>
+  <path class="edge" d="M470 222 L570 324"/>
+  <path class="edge plan" d="M190 324 L290 222"/>
+  <text class="muted" x="214" y="143" text-anchor="middle">SMTP</text>
+  <text class="muted" x="556" y="156" text-anchor="middle">one copy</text>
+  <text class="muted" x="556" y="170" text-anchor="middle">per target</text>
+  <text class="muted" x="522" y="294" text-anchor="end">reports (push)</text>
+  <text class="muted" x="534" y="308" text-anchor="end">every event</text>
+  <text class="muted" x="236" y="294">lookup (pull)</text>
+  <text class="muted" x="224" y="308">from the log</text>
 
   <!-- applications -->
-  <rect class="box" x="20" y="42" width="140" height="36" rx="7"/>
-  <text class="txt" x="90" y="64.5" text-anchor="middle">web app</text>
-  <rect class="box" x="20" y="102" width="140" height="36" rx="7"/>
-  <text class="txt" x="90" y="124.5" text-anchor="middle">auth service</text>
-  <rect class="box" x="20" y="162" width="140" height="36" rx="7"/>
-  <text class="txt" x="90" y="184.5" text-anchor="middle">worker</text>
-  <text class="muted" x="90" y="28" text-anchor="middle">applications</text>
+  <rect class="box" x="20" y="74" width="140" height="36" rx="7"/>
+  <text class="txt" x="90" y="96.5" text-anchor="middle">web app</text>
+  <rect class="box" x="20" y="134" width="140" height="36" rx="7"/>
+  <text class="txt" x="90" y="156.5" text-anchor="middle">auth service</text>
+  <rect class="box" x="20" y="194" width="140" height="36" rx="7"/>
+  <text class="txt" x="90" y="216.5" text-anchor="middle">worker</text>
+  <text class="muted" x="90" y="65" text-anchor="middle">applications</text>
 
-  <!-- Postwerk -->
-  <rect class="core" x="290" y="40" width="180" height="168" rx="10"/>
-  <text class="title" x="380" y="66" text-anchor="middle">Postwerk</text>
+  <!-- Postwerk, on the edge of your server: the one way out -->
+  <rect class="core" x="290" y="72" width="180" height="168" rx="10"/>
+  <text class="title" x="380" y="98" text-anchor="middle">Postwerk</text>
   <g class="store">
-    <path class="disk" d="M308 86 v16 a12 4 0 0 0 24 0 v-16"/>
-    <ellipse class="disk" cx="320" cy="86" rx="12" ry="4"/>
-    <text class="muted" x="342" y="98">stored on disk</text>
+    <path class="disk" d="M308 118 v16 a12 4 0 0 0 24 0 v-16"/>
+    <ellipse class="disk" cx="320" cy="118" rx="12" ry="4"/>
+    <text class="muted" x="342" y="130">stored on disk</text>
   </g>
-  <line class="rule" x1="304" y1="118" x2="456" y2="118"/>
-  <text class="muted" x="306" y="134">event log</text>
-  <rect class="scan" x="300" y="142" width="160" height="58" rx="5"/>
+  <line class="rule" x1="304" y1="150" x2="456" y2="150"/>
+  <text class="muted" x="306" y="166">event log</text>
+  <rect class="scan" x="300" y="174" width="160" height="58" rx="5"/>
   <g class="row1">
-    <path class="tick" d="M307 150 l3 3 l6 -7"/>
-    <text class="log" x="322" y="154">accepted</text>
+    <path class="tick" d="M307 182 l3 3 l6 -7"/>
+    <text class="log" x="322" y="186">accepted</text>
   </g>
   <g class="row2">
-    <path class="tick" d="M307 170 l3 3 l6 -7"/>
-    <text class="log" x="322" y="174">mailjet  handed off</text>
+    <path class="tick" d="M307 202 l3 3 l6 -7"/>
+    <text class="log" x="322" y="206">mailjet  handed off</text>
   </g>
   <g class="row2x">
-    <path class="badln" d="M308 165 l7 7 m0 -7 l-7 7"/>
-    <text class="log badtxt" x="322" y="174">mailjet  failed 550</text>
+    <path class="badln" d="M308 197 l7 7 m0 -7 l-7 7"/>
+    <text class="log badtxt" x="322" y="206">mailjet  failed 550</text>
   </g>
   <g class="row3">
-    <path class="tick" d="M307 190 l3 3 l6 -7"/>
-    <text class="log" x="322" y="194">mailpit  handed off</text>
+    <path class="tick" d="M307 222 l3 3 l6 -7"/>
+    <text class="log" x="322" y="226">mailpit  handed off</text>
   </g>
 
-  <!-- targets -->
-  <rect class="box" x="610" y="58" width="130" height="44" rx="7"/>
-  <rect class="hl hlA" x="610" y="58" width="130" height="44" rx="7"/>
-  <text class="txt" x="675" y="77" text-anchor="middle">Mailjet</text>
-  <text class="muted" x="675" y="93" text-anchor="middle">provider</text>
+  <!-- target outside: the mail provider -->
+  <rect class="box" x="610" y="90" width="130" height="44" rx="7"/>
+  <rect class="hl hlA" x="610" y="90" width="130" height="44" rx="7"/>
+  <text class="txt" x="675" y="109" text-anchor="middle">Mailjet</text>
+  <text class="muted" x="675" y="125" text-anchor="middle">mail provider</text>
   <g class="errA">
-    <rect class="badbox" x="610" y="58" width="130" height="44" rx="7"/>
-    <text class="note badtxt" x="675" y="118" text-anchor="middle">replies 550</text>
+    <rect class="badbox" x="610" y="90" width="130" height="44" rx="7"/>
+    <text class="note badtxt" x="675" y="150" text-anchor="middle">replies 550</text>
   </g>
-  <rect class="box" x="610" y="138" width="130" height="44" rx="7"/>
-  <rect class="hl hlB" x="610" y="138" width="130" height="44" rx="7"/>
-  <text class="txt" x="675" y="157" text-anchor="middle">Mailpit</text>
-  <text class="muted" x="675" y="173" text-anchor="middle">capture, optional</text>
-  <text class="muted" x="675" y="28" text-anchor="middle">targets</text>
 
-  <!-- monitoring: Postwerk pushes every event, errors raise an alert -->
-  <rect class="box" x="570" y="264" width="170" height="56" rx="7"/>
+  <!-- target inside: Mailpit runs on your server -->
+  <rect class="box" x="298" y="304" width="100" height="44" rx="7"/>
+  <rect class="hl hlB" x="298" y="304" width="100" height="44" rx="7"/>
+  <text class="txt" x="348" y="323" text-anchor="middle">Mailpit</text>
+  <text class="muted" x="348" y="339" text-anchor="middle">capture, optional</text>
+
+  <!-- error monitoring outside: Postwerk pushes every event, errors raise an alert -->
+  <rect class="box" x="570" y="296" width="170" height="56" rx="7"/>
   <g class="alert">
-    <rect class="badbox" x="570" y="264" width="170" height="56" rx="7"/>
-    <text class="note badtxt" x="740" y="252" text-anchor="end">alert: mailjet failed</text>
-    <circle class="bad" cx="599" cy="281" r="3"/>
+    <rect class="badbox" x="570" y="296" width="170" height="56" rx="7"/>
+    <text class="note badtxt" x="740" y="284" text-anchor="end">alert: mailjet failed</text>
+    <circle class="bad" cx="599" cy="313" r="3"/>
   </g>
   <g class="bell">
-    <path class="icon" d="M592 297 h16 l-2 -3 v-6 c0 -4 -2 -6.5 -6 -6.5 c-4 0 -6 2.5 -6 6.5 v6 z"/>
-    <path class="icon" d="M598 300 a2 2 0 0 0 4 0"/>
+    <path class="icon" d="M592 329 h16 l-2 -3 v-6 c0 -4 -2 -6.5 -6 -6.5 c-4 0 -6 2.5 -6 6.5 v6 z"/>
+    <path class="icon" d="M598 332 a2 2 0 0 0 4 0"/>
   </g>
-  <text class="txt" x="616" y="289">monitoring (alerts)</text>
-  <text class="muted" x="616" y="305">e.g. GlitchTip</text>
+  <text class="txt" x="616" y="321">Sentry</text>
+  <text class="muted" x="616" y="337">error monitoring</text>
 
   <!-- audit / lookup -->
-  <rect class="box" x="20" y="264" width="170" height="56" rx="7"/>
-  <rect class="hl hlQ" x="20" y="264" width="170" height="56" rx="7"/>
-  <circle class="icon" cx="40" cy="288" r="6"/>
-  <path class="icon" d="M44.5 292.5 l5 5"/>
-  <text class="txt" x="60" y="289">audit / lookup</text>
-  <text class="muted" x="60" y="305">query API, UI</text>
-  <text class="note askq" x="20" y="252">what happened to mail X?</text>
+  <rect class="box" x="20" y="296" width="170" height="56" rx="7"/>
+  <rect class="hl hlQ" x="20" y="296" width="170" height="56" rx="7"/>
+  <circle class="icon" cx="40" cy="320" r="6"/>
+  <path class="icon" d="M44.5 324.5 l5 5"/>
+  <text class="txt" x="60" y="321">audit / lookup</text>
+  <text class="muted" x="60" y="337">query API, UI</text>
+  <text class="note askq" x="20" y="284">what happened to mail X?</text>
 
   <!-- moving dots -->
   <circle class="mail in1" cx="0" cy="0" r="5"/>
